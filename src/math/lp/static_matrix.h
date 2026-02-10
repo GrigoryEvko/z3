@@ -423,8 +423,8 @@ public:
             reference operator*() const {
                 return column_cell_plus(*m_c, m_A);
             }        
-            self_type operator++() {  self_type i = *this; m_c++; return i;  }
-            self_type operator++(int) { m_c++; return *this; }
+            self_type operator++() { m_c++; return *this; }
+            self_type operator++(int) { self_type i = *this; m_c++; return i; }
 
             const_iterator(const column_cell* it, const static_matrix& A) :
                 m_c(it),

@@ -514,7 +514,7 @@ public:
     void pivot_to_reduced_costs_tableau(unsigned i, unsigned j);
 
     bool pivot_column_tableau(unsigned j, unsigned row_index);
-    bool divide_row_by_pivot(unsigned pivot_row, unsigned pivot_col);
+    bool divide_row_by_pivot(unsigned pivot_row, unsigned pivot_col, int& pivot_col_cell_index);
     
     simplex_strategy_enum simplex_strategy() const { return
             m_settings.simplex_strategy();

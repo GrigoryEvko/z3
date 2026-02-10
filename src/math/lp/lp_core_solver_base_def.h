@@ -222,7 +222,7 @@ template <typename T, typename X> bool lp_core_solver_base<T, X>::inf_heap_is_co
 
 
 template <typename T, typename X> bool lp_core_solver_base<T, X>::
-divide_row_by_pivot(unsigned pivot_row, unsigned pivot_col) {
+divide_row_by_pivot(unsigned pivot_row, unsigned pivot_col, int& pivot_col_cell_index) {
     int pivot_index = -1;
     auto & row = m_A.m_rows[pivot_row];
     unsigned size = static_cast<unsigned>(row.size());
@@ -237,9 +237,13 @@ divide_row_by_pivot(unsigned pivot_row, unsigned pivot_col) {
         return false;
     auto & pivot_cell = row[pivot_index];
     T & coeff = pivot_cell.coeff();
-    if (is_zero(coeff)) 
+    if (is_zero(coeff))
         return false;
-    
+
+    // Use the row-to-column cross-reference for O(1) lookup of the pivot cell
+    // in the column strip, instead of the linear scan that was here before.
+    pivot_col_cell_index = static_cast<int>(pivot_cell.offset());
+
     // this->m_b[pivot_row] /= coeff;
     for (unsigned j = 0; j < size; ++j) {
         auto & c = row[j];
@@ -253,17 +257,11 @@ divide_row_by_pivot(unsigned pivot_row, unsigned pivot_col) {
 }
 template <typename T, typename X> bool lp_core_solver_base<T, X>::
 pivot_column_tableau(unsigned j, unsigned piv_row_index) {
-	if (!divide_row_by_pivot(piv_row_index, j))
+    int pivot_col_cell_index = -1;
+	if (!divide_row_by_pivot(piv_row_index, j, pivot_col_cell_index))
         return false;
     auto &column = m_A.m_columns[j];
-    int pivot_col_cell_index = -1;
-    for (unsigned k = 0; k < column.size(); ++k) {
-        if (column[k].var() == piv_row_index) {
-            pivot_col_cell_index = k;
-            break;
-        }
-    }
-    if (pivot_col_cell_index < 0)
+    if (pivot_col_cell_index < 0 || static_cast<unsigned>(pivot_col_cell_index) >= column.size())
         return false;
         
     if (pivot_col_cell_index != 0) {
