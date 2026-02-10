@@ -545,8 +545,11 @@ namespace euf {
         for (enode* c : enode_class(n1)) 
             c->m_root = r2;
         std::swap(r1->m_next, r2->m_next);
-        r2->inc_class_size(r1->class_size());   
+        r2->inc_class_size(r1->class_size());
         r2->set_is_shared(l_undef);
+        // Invalidate cached class_generation on the new root so it is
+        // lazily recomputed to include the merged class's generations.
+        r2->m_class_generation = UINT_MAX;
         merge_th_eq(r1, r2);
         reinsert_parents(r1, r2);
         if (j.is_congruence() && (m.is_false(r2->get_expr()) || m.is_true(r2->get_expr())))
@@ -629,6 +632,9 @@ namespace euf {
         TRACE(euf_verbose, tout << "undo-eq old-root: " << bpp(r1) << " current-root " << bpp(r2) << " node: " << bpp(n1) << "\n";);
         r2->dec_class_size(r1->class_size());
         r2->set_is_shared(l_undef);
+        // Invalidate cached class_generation on both roots after unmerge.
+        r1->m_class_generation = UINT_MAX;
+        r2->m_class_generation = UINT_MAX;
         std::swap(r1->m_next, r2->m_next);
         auto begin = r2->begin_parents() + r2_num_parents, end = r2->end_parents();
         for (auto it = begin; it != end; ++it) {

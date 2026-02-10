@@ -74,10 +74,11 @@ namespace euf {
             unsigned operator()(enode * n) const {
                 SASSERT(n->num_args() == 2);
                 unsigned h1 = get_root(n, 0)->hash();
-                unsigned h2 = get_root(n, 1)->hash(); 
-                if (h1 > h2)
-                    std::swap(h1, h2);
-                return hash_u((h1 << 16) | (h2 & 0xFFFF));
+                unsigned h2 = get_root(n, 1)->hash();
+                // Order-independent hash using all 32 bits from both operands.
+                // The old scheme truncated each hash to 16 bits before combining,
+                // discarding half the entropy and causing unnecessary collisions.
+                return hash_u(h1 + h2) ^ hash_u(h1 ^ h2);
             }
         };
         

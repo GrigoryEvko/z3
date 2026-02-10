@@ -155,10 +155,13 @@ namespace euf {
     }
 
     unsigned enode::class_generation() {
+        enode* r = get_root();
+        if (r->m_class_generation != UINT_MAX)
+            return r->m_class_generation;
         unsigned gen = m_generation;
-        
-        for (enode* n : enode_class(this)) 
+        for (enode* n : enode_class(this))
             gen = std::min(n->generation(), gen);
+        r->m_class_generation = gen;
         return gen;
     }
 

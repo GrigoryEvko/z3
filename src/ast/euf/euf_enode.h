@@ -54,6 +54,7 @@ namespace euf {
         unsigned      m_class_size = 1;         // Size of the equivalence class if the enode is the root.
         unsigned      m_table_id = UINT_MAX;       
         unsigned      m_generation = 0;         // Tracks how many quantifier instantiation rounds were needed to generate this enode.
+        unsigned      m_class_generation = UINT_MAX; // Cached minimum generation across equivalence class (UINT_MAX = not cached).
         enode_vector  m_parents;
         enode*        m_next   = nullptr;
         enode*        m_root   = nullptr;
