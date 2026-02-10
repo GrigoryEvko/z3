@@ -1854,6 +1854,7 @@ namespace {
         enode *             m_n2;
         enode *             m_app;
         const bind *        m_b;
+        bool                m_trace_enabled;  // cached at execute_core entry to avoid repeated checks in hot loop
 
         // equalities used for pattern match. The first element of the tuple gives the argument (or null) of some term that was matched against some higher level
         // structure of the trigger, the second element gives the term that argument is replaced with in order to match the trigger. Used for logging purposes only.
@@ -1877,7 +1878,7 @@ namespace {
         void update_max_generation(enode * n, enode * prev) {
             m_max_generation = std::max(m_max_generation, n->get_generation());
 
-            if (m.has_trace_stream() || is_trace_enabled(TraceTag::causality))
+            if (m_trace_enabled)
                 m_used_enodes.push_back(std::make_tuple(prev, n));
         }
 
@@ -1916,58 +1917,18 @@ namespace {
             unsigned num_args = pc->m_num_args;
             enode * n         = m_registers[pc->m_ireg];
             func_decl * f     = pc->m_label;
-            enode * first     = n;
-            switch (num_args) {
-            case 1:
-                m_args[0] = m_registers[pc->m_iregs[0]]->get_root();
-                SASSERT(n != 0);
-                do {
-                    if (n->get_decl() == f &&
-                        n->get_arg(0)->get_root() == m_args[0]) {
-                        update_max_generation(n, first);
-                        return true;
-                    }
-                    n = n->get_next();
-                }
-                while (n != first);
-                return false;
-            case 2:
-                m_args[0] = m_registers[pc->m_iregs[0]]->get_root();
-                m_args[1] = m_registers[pc->m_iregs[1]]->get_root();
-                SASSERT(n != 0);
-                do {
-                    if (n->get_decl() == f &&
-                        n->get_arg(0)->get_root() == m_args[0] &&
-                        n->get_arg(1)->get_root() == m_args[1]) {
-                        update_max_generation(n, first);
-                        return true;
-                    }
-                    n = n->get_next();
-                }
-                while (n != first);
-                return false;
-            default: {
-                m_args.reserve(num_args+1, 0);
-                for (unsigned i = 0; i < num_args; ++i)
-                    m_args[i] = m_registers[pc->m_iregs[i]]->get_root();
-                SASSERT(n != 0);
-                do {
-                    if (n->get_decl() == f && n->get_num_args() == num_args) {
-                        unsigned i = 0;
-                        for (; i < num_args; ++i) {
-                            if (n->get_arg(i)->get_root() != m_args[i])
-                                break;
-                        }
-                        if (i == num_args) {
-                            update_max_generation(n, first);
-                            return true;
-                        }
-                    }
-                    n = n->get_next();
-                }
-                while (n != first);
-                return false;
-            } }
+            SASSERT(n != 0);
+            // Prepare root-normalized args
+            m_args.reserve(num_args + 1, 0);
+            for (unsigned i = 0; i < num_args; ++i)
+                m_args[i] = m_registers[pc->m_iregs[i]]->get_root();
+            // O(1) congruence table lookup instead of linear equivalence class scan
+            enode * cg = m_context.get_enode_eq_to(f, num_args, m_args.data());
+            if (cg != nullptr && cg->get_root() == n->get_root()) {
+                update_max_generation(cg, n);
+                return true;
+            }
+            return false;
         }
 
         enode_vector * mk_depth1_vector(enode * n, func_decl * f, unsigned i);
@@ -2294,8 +2255,9 @@ namespace {
         m_max_top_generation.reset();
         m_pattern_instances.push_back(n);
         m_max_generation = n->get_generation();
+        m_trace_enabled = m.has_trace_stream() || is_trace_enabled(TraceTag::causality);
 
-        if (m.has_trace_stream() || is_trace_enabled(TraceTag::causality)) {
+        if (m_trace_enabled) {
             m_used_enodes.reset();
             m_used_enodes.push_back(std::make_tuple(nullptr, n)); // null indicates that n was matched against the trigger at the top-level
         }
@@ -2397,7 +2359,7 @@ namespace {
                 goto backtrack;
             
             // We will use the common root when instantiating the quantifier => log the necessary equalities
-            if (m.has_trace_stream() || is_trace_enabled(TraceTag::causality)) {
+            if (m_trace_enabled) {
                 m_used_enodes.push_back(std::make_tuple(m_n1, m_n1->get_root()));
                 m_used_enodes.push_back(std::make_tuple(m_n2, m_n2->get_root()));
             }
@@ -2417,7 +2379,7 @@ namespace {
                 goto backtrack;
 
             // we used the equality m_n1 = m_n2 for the match and need to make sure it ends up in the log
-            if (m.has_trace_stream() || is_trace_enabled(TraceTag::causality)) {
+            if (m_trace_enabled) {
                 m_used_enodes.push_back(std::make_tuple(m_n1, m_n2));
             }
 
@@ -2603,7 +2565,7 @@ namespace {
             if (m_n1 == 0 || !m_context.is_relevant(m_n1))                                                                                                              \
                 goto backtrack;                                                                                                                                         \
             update_max_generation(m_n1, nullptr);                                                                                                                       \
-            if (m.has_trace_stream() || is_trace_enabled(TraceTag::causality)) {                                                                                                                     \
+            if (m_trace_enabled) {                                                                                                                                          \
                 for (unsigned i = 0; i < static_cast<const get_cgr *>(m_pc)->m_num_args; ++i) {                                                                         \
                     m_used_enodes.push_back(std::make_tuple(m_n1->get_arg(i), m_n1->get_arg(i)->get_root()));                                                           \
                 }                                                                                                                                                       \
@@ -2699,7 +2661,7 @@ namespace {
         backtrack_point & bp = m_backtrack_stack[m_top - 1];
         m_max_generation     = bp.m_old_max_generation;
 
-        if (m.has_trace_stream() || is_trace_enabled(TraceTag::causality))
+        if (m_trace_enabled)
             m_used_enodes.shrink(bp.m_old_used_enodes_size);
 
         TRACE(mam_int, tout << "backtrack top: " << bp.m_instr << " " << *(bp.m_instr) << "\n";);

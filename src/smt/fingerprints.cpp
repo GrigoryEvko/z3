@@ -62,8 +62,7 @@ namespace smt {
     }
 
     
-    fingerprint * fingerprint_set::insert(void * data, unsigned data_hash, unsigned num_args, enode * const * args, expr* def) {
-        
+    static unsigned compute_fingerprint_hash(unsigned data_hash, unsigned num_args, enode * const * args) {
         struct arg_data {
             unsigned data_hash;
             enode* const* args;
@@ -78,22 +77,28 @@ namespace smt {
                 return d.args[i]->hash();
             }
         };
-        arg_data arg_data({ data_hash, args });
+        arg_data ad({ data_hash, args });
         khash kh;
         arghash ah;
-        data_hash = get_composite_hash(arg_data, num_args, kh, ah);
+        return get_composite_hash(ad, num_args, kh, ah);
+    }
 
-        fingerprint * d = mk_dummy(data, data_hash, num_args, args);
-        if (m_set.contains(d)) 
+    fingerprint * fingerprint_set::insert(void * data, unsigned data_hash, unsigned num_args, enode * const * args, expr* def) {
+        unsigned composite_hash = compute_fingerprint_hash(data_hash, num_args, args);
+
+        fingerprint * d = mk_dummy(data, composite_hash, num_args, args);
+        if (m_set.contains(d))
             return nullptr;
         for (unsigned i = 0; i < num_args; ++i)
             d->m_args[i] = d->m_args[i]->get_root();
+        // Recompute hash after root normalization since root enodes may have different hashes
+        d->m_data_hash = compute_fingerprint_hash(data_hash, num_args, d->m_args);
         if (m_set.contains(d)) {
             TRACE(fingerprint_bug, tout << "failed: " << *d;);
             return nullptr;
         }
         TRACE(fingerprint_bug, tout << "inserting @" << m_scopes.size() << " " << *d;);
-        fingerprint * f = new (m_region) fingerprint(m_region, data, data_hash, def, num_args, d->m_args);
+        fingerprint * f = new (m_region) fingerprint(m_region, data, d->m_data_hash, def, num_args, d->m_args);
         m_fingerprints.push_back(f);
         m_defs.push_back(def);
         m_set.insert(f);
@@ -101,11 +106,14 @@ namespace smt {
     }
 
     bool fingerprint_set::contains(void * data, unsigned data_hash, unsigned num_args, enode * const * args) {
-        fingerprint * d = mk_dummy(data, data_hash, num_args, args);
-        if (m_set.contains(d)) 
+        unsigned composite_hash = compute_fingerprint_hash(data_hash, num_args, args);
+        fingerprint * d = mk_dummy(data, composite_hash, num_args, args);
+        if (m_set.contains(d))
             return true;
         for (unsigned i = 0; i < num_args; ++i)
             d->m_args[i] = d->m_args[i]->get_root();
+        // Recompute hash after root normalization since root enodes may have different hashes
+        d->m_data_hash = compute_fingerprint_hash(data_hash, num_args, d->m_args);
         if (m_set.contains(d))
             return true;
         return false;
