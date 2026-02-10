@@ -556,8 +556,7 @@ namespace euf {
                 auto idx = to_var(arg)->get_idx();
                 pat2bound.reserve(idx + 1);
                 pat2bound[idx] = m.mk_var(--num_bound, arg->get_sort());
-            }   
-            p1 = a->get_arg(0);
+            }
         }
         var_subst sub(m, false);
         expr_ref lam = sub(t, pat2bound);

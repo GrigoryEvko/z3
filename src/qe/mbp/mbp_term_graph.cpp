@@ -218,8 +218,8 @@ public:
     // roots of children and function declaration.
 
     unsigned get_hash() const {
-        unsigned a, b, c;
-        a = b = c = get_decl_id();
+        unsigned a = 0, b, c;
+        b = c = get_decl_id();
         for (term *ch : children(this)) {
             a = ch->get_root().get_id();
             mix(a, b, c);

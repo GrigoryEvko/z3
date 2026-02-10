@@ -216,6 +216,7 @@ namespace sat {
             if (!binaries.find(b, b)) {
                 return false;
             }
+            if (!b.use_list) return false;
             for (auto p : *b.use_list) {
                 u = p.first;
                 c2 = p.second;
@@ -247,6 +248,7 @@ namespace sat {
             if (!binaries.find(b, b)) {
                 return false;
             }
+            if (!b.use_list) return false;
             for (auto p : *b.use_list) {
                 u = p.first;
                 if (u == z) continue;
@@ -288,6 +290,7 @@ namespace sat {
             clause *c1, *c2;
             binary b(x, y, nullptr);
             if (!binaries.find(b, b)) return false;
+            if (!b.use_list) return false;
 
             for (auto p : *b.use_list) {
                 u = p.first;

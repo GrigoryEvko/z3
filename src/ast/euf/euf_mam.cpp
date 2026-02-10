@@ -1161,8 +1161,8 @@ namespace euf {
                         best_j         = j;
                     }
                 }
+                if (!best) return;
                 m_mp_already_processed[best_j] = true;
-                SASSERT(best != 0);
                 app * p                 = best;
                 func_decl * lbl         = p->get_decl();
                 unsigned short num_args = p->get_num_args();
@@ -1402,6 +1402,7 @@ namespace euf {
                 // to check it again.
                 get_check_mark(reg) == NOT_CHECKED &&
                 is_ground(m_registers[reg]) &&
+                instr->m_enode &&
                 get_pat_lbl_hash(reg) == instr->m_enode->get_lbl_hash();
         }
 
@@ -3410,6 +3411,7 @@ namespace euf {
                 prev_sibling = t;
                 t = t->m_sibling;
             }
+            if (!prev_sibling) return;
             ctx.get_trail().push(set_ptr_trail<path_tree>(prev_sibling->m_sibling));
             prev_sibling->m_sibling = mk_path_tree(p, qa, mp);
             if (!found_label) {

@@ -4499,13 +4499,9 @@ expr* fpa2bv_converter_wrapped::bv2fpa_value(sort* s, expr* a, expr* b, expr* c)
         SASSERT(c);
         rational sgn_r(0), exp_r(0), sig_r(0);
 
-        bool r = m_bv_util.is_numeral(a, sgn_r, bv_sz);
-        SASSERT(r && bv_sz == 1);
-        r = m_bv_util.is_numeral(b, exp_r, bv_sz);
-        SASSERT(r && bv_sz == ebits);
-        r = m_bv_util.is_numeral(c, sig_r, bv_sz);
-        SASSERT(r && bv_sz == sbits - 1);
-        (void)r;
+        VERIFY(m_bv_util.is_numeral(a, sgn_r, bv_sz) && bv_sz == 1);
+        VERIFY(m_bv_util.is_numeral(b, exp_r, bv_sz) && bv_sz == ebits);
+        VERIFY(m_bv_util.is_numeral(c, sig_r, bv_sz) && bv_sz == sbits - 1);
 
         SASSERT(mpzm.is_one(sgn_r.to_mpq().denominator()));
         SASSERT(mpzm.is_one(exp_r.to_mpq().denominator()));

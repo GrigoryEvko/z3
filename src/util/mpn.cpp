@@ -350,7 +350,7 @@ char * mpn_manager::to_string(mpn_digit const * a, unsigned lng, char * buf, uns
             temp[i] = a[i];
     
         unsigned j = 0;
-        mpn_digit rem;
+        mpn_digit rem = 0;
         mpn_digit ten = 10;        
         while (!temp.empty() && (temp.size() > 1 || temp[0] != 0)) {
             unsigned d = div_normalize(&temp[0], temp.size(), &ten, 1, t_numer, t_denom);

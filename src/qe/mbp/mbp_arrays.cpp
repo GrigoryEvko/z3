@@ -531,6 +531,7 @@ namespace mbp {
             }
             arr_vars.shrink(j);
             aux_vars.append (m_aux_vars);
+            m_mev = nullptr;
         }
     };
 

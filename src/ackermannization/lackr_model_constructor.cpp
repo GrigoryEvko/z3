@@ -311,7 +311,6 @@ private:
                                          expr_ref& result) {
         const unsigned num = values.size();
         func_decl * const fd = a->get_decl();
-        const family_id fid = fd->get_family_id();
         expr_ref term(m);
         term = m.mk_app(a->get_decl(), num, values.data());
         m_evaluator->operator() (term, result);
@@ -319,6 +318,7 @@ private:
               tout << "eval(\n" << mk_ismt2_pp(term.get(), m, 2) << "\n->"
               << mk_ismt2_pp(result.get(), m, 2) << ")\n"; );
         return;
+        const family_id fid = fd->get_family_id();
         if (fid == m_b_rw.get_fid()) {
             decl_kind k = fd->get_decl_kind();
             if (k == OP_EQ) {
