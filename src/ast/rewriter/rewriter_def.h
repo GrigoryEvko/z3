@@ -615,10 +615,11 @@ void rewriter_tpl<Config>::process_quantifier(quantifier * q, frame & fr) {
     m_shifts.shrink(m_shifts.size() - num_decls);
     end_scope();
     cache_result<ProofGen>(q, m_r, m_pr, fr.m_cache_result);
-    set_new_child_flag(q, m_r);
+    expr * saved_r = m_r;
     m_r = nullptr;
     m_pr = nullptr;
     frame_stack().pop_back();
+    set_new_child_flag(q, saved_r);
 }
 
 template<typename Config>
