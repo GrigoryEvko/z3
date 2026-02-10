@@ -52,6 +52,30 @@ class mpq_manager : public mpz_manager<SYNCH> {
     }
 
     void normalize(mpq & a) {
+        // Fast path: denominator is 1 (integer) — nothing to normalize
+        if (is_one(a.m_den))
+            return;
+        // Fast path: when denominator is a power of 2, use bit shifts
+        // instead of full GCD. Common in modular arithmetic proofs.
+        unsigned den_shift;
+        if (this->is_power_of_two(a.m_den, den_shift)) {
+            if (is_zero(a.m_num)) {
+                reset_denominator(a);
+                return;
+            }
+            unsigned num_tz = this->power_of_two_multiple(a.m_num);
+            unsigned common = num_tz < den_shift ? num_tz : den_shift;
+            if (common > 0) {
+                this->machine_div2k(a.m_num, common);
+                if (common == den_shift) {
+                    del(a.m_den);
+                    a.m_den.set(1);
+                } else {
+                    this->machine_div2k(a.m_den, common);
+                }
+            }
+            return;
+        }
         if (SYNCH) {
             mpz tmp;
             gcd(a.m_num, a.m_den, tmp);
