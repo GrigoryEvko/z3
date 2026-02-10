@@ -36,6 +36,23 @@ Revision History:
 # include <xmmintrin.h>
 #endif
 
+// Precomputed table for pow(0.95, age) to avoid expensive transcendental calls
+// in the hot anti-exploration decay path. Ages beyond MAX_DECAY_AGE are clamped.
+static const unsigned MAX_DECAY_AGE = 512;
+static double s_decay_table[MAX_DECAY_AGE + 1];
+static bool   s_decay_table_init = false;
+
+static double decay_pow095(uint64_t age) {
+    if (!s_decay_table_init) {
+        s_decay_table[0] = 1.0;
+        for (unsigned i = 1; i <= MAX_DECAY_AGE; i++)
+            s_decay_table[i] = s_decay_table[i - 1] * 0.95;
+        s_decay_table_init = true;
+    }
+    if (age >= MAX_DECAY_AGE)
+        return s_decay_table[MAX_DECAY_AGE];
+    return s_decay_table[static_cast<unsigned>(age)];
+}
 
 namespace sat {
 
@@ -881,7 +898,8 @@ namespace sat {
 
     void solver::assign_core(literal l, justification j) {
         SASSERT(value(l) == l_undef);
-        SASSERT(!m_trail.contains(l) && !m_trail.contains(~l));
+        // value(l) == l_undef already implies l is not on the trail; O(1) vs O(n) scan
+        SASSERT(value(~l) == l_undef);
         TRACE(sat_assign_core, tout << l << " " << j << "\n";);
         if (j.level() == 0) {
             if (m_config.m_drat) 
@@ -911,7 +929,7 @@ namespace sat {
         if (m_config.m_anti_exploration) {
             uint64_t age = m_stats.m_conflict - m_canceled[v];
             if (age > 0) {
-                double decay = pow(0.95, static_cast<double>(age));
+                double decay = decay_pow095(age);
                 set_activity(v, static_cast<unsigned>(m_activity[v] * decay));
                 // NB. MapleSAT does not update canceled.
                 m_canceled[v] = m_stats.m_conflict;
@@ -1673,7 +1691,7 @@ namespace sat {
                 next = m_case_split_queue.min_var();
                 auto age = m_stats.m_conflict - m_canceled[next];
                 while (age > 0) {
-                    set_activity(next, static_cast<unsigned>(m_activity[next] * pow(0.95, static_cast<double>(age))));
+                    set_activity(next, static_cast<unsigned>(m_activity[next] * decay_pow095(age)));
                     m_canceled[next] = m_stats.m_conflict;
                     next = m_case_split_queue.min_var();
                     age = m_stats.m_conflict - m_canceled[next];                    
@@ -3413,9 +3431,9 @@ namespace sat {
                     }
                 }
                 else {
-                    // May miss some binary/ternary clauses, but that is ok.
-                    // I sort the watch lists at every simplification round.
-                    break;
+                    // Skip non-binary entries; binary watches learned after
+                    // the last simplification round may appear after them.
+                    continue;
                 }
             }
             // try to use cached implication if available

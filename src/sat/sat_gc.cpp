@@ -18,6 +18,7 @@ Revision History:
 --*/
 
 
+#include <algorithm>
 #include "sat/sat_solver.h"
 
 namespace sat {
@@ -122,25 +123,29 @@ namespace sat {
     };
 
     void solver::gc_glue() {
-        std::stable_sort(m_learned.begin(), m_learned.end(), glue_lt());
+        if (m_learned.size() >= 2)
+            std::nth_element(m_learned.begin(), m_learned.begin() + m_learned.size()/2, m_learned.end(), glue_lt());
         gc_half("glue");
     }
 
     void solver::gc_psm() {
         save_psm();
-        std::stable_sort(m_learned.begin(), m_learned.end(), psm_lt());
+        if (m_learned.size() >= 2)
+            std::nth_element(m_learned.begin(), m_learned.begin() + m_learned.size()/2, m_learned.end(), psm_lt());
         gc_half("psm");
     }
 
     void solver::gc_glue_psm() {
         save_psm();
-        std::stable_sort(m_learned.begin(), m_learned.end(), glue_psm_lt());
+        if (m_learned.size() >= 2)
+            std::nth_element(m_learned.begin(), m_learned.begin() + m_learned.size()/2, m_learned.end(), glue_psm_lt());
         gc_half("glue-psm");
     }
 
     void solver::gc_psm_glue() {
         save_psm();
-        std::stable_sort(m_learned.begin(), m_learned.end(), psm_glue_lt());
+        if (m_learned.size() >= 2)
+            std::nth_element(m_learned.begin(), m_learned.begin() + m_learned.size()/2, m_learned.end(), psm_glue_lt());
         gc_half("psm-glue");
     }
 
