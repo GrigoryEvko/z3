@@ -315,10 +315,24 @@ public:
         return rational::m().eq(r1.m_val, r2.m_val);
     }
 
-    friend inline bool operator<(rational const & r1, rational const & r2) { 
+    friend inline bool operator<(rational const & r1, rational const & r2) {
         return rational::m().lt(r1.m_val, r2.m_val);
     }
-    
+
+    // Fast comparisons against int, avoiding temporary rational construction.
+    // Found via ADL when one argument is rational.
+    friend inline bool operator==(rational const & a, int b) {
+        return rational::m().eq(a.m_val, b);
+    }
+
+    friend inline bool operator<(rational const & a, int b) {
+        return rational::m().lt(a.m_val, b);
+    }
+
+    friend inline bool operator<(int a, rational const & b) {
+        return rational::m().lt(a, b.m_val);
+    }
+
     void neg() {
         m().neg(m_val);
     }
@@ -510,7 +524,10 @@ public:
     }
 
     unsigned get_num_bits() const {
-        return get_num_digits(rational(2));
+        SASSERT(is_int());
+        SASSERT(!is_neg());
+        if (is_zero()) return 1;
+        return m().log2(m_val.numerator()) + 1;
     }
 
     unsigned get_num_decimal() const {
@@ -536,9 +553,7 @@ public:
     unsigned trailing_zeros() const {
         if (is_zero())
             return 0;
-        unsigned k = 0;
-        for (; !get_bit(k); ++k); 
-        return k;
+        return m().power_of_two_multiple(m_val.numerator());
     }
 
     /** Number of trailing zeros in an N-bit representation */
@@ -561,16 +576,8 @@ inline bool operator>(rational const & r1, rational const & r2) {
     return operator<(r2, r1); 
 }
 
-inline bool operator<(int r1, rational const & r2) {
-    return rational(r1) < r2;
-}
-
-inline bool operator<(rational const & r1, int r2) {
-    return r1 < rational(r2);
-}
-
-inline bool operator<=(rational const & r1, rational const & r2) { 
-    return !operator>(r1, r2); 
+inline bool operator<=(rational const & r1, rational const & r2) {
+    return !operator>(r1, r2);
 }
 
 inline bool operator>=(rational const & r1, rational const & r2) { 
@@ -578,35 +585,31 @@ inline bool operator>=(rational const & r1, rational const & r2) {
 }
 
 inline bool operator>(rational const & a, int b) {
-    return a > rational(b);
+    return operator<(b, a);  // uses friend operator<(int, rational)
 }
 
 inline bool operator>(int a, rational const & b) {
-    return rational(a) > b;
+    return operator<(b, a);  // uses friend operator<(rational, int)
 }
 
 inline bool operator>=(rational const& a, int b) {
-    return a >= rational(b);
+    return !operator<(a, b);  // uses friend operator<(rational, int)
 }
 
 inline bool operator>=(int a, rational const& b) {
-    return rational(a) >= b;
+    return !operator<(a, b);  // uses friend operator<(int, rational)
 }
 
 inline bool operator<=(rational const& a, int b) {
-    return a <= rational(b);
+    return !operator<(b, a);  // uses friend operator<(int, rational)
 }
 
 inline bool operator<=(int a, rational const& b) {
-    return rational(a) <= b;
+    return !operator<(b, a);  // uses friend operator<(rational, int)
 }
 
 inline bool operator!=(rational const& a, int b) {
-    return !(a == rational(b));
-}
-
-inline bool operator==(rational const & a, int b) {
-    return a == rational(b);
+    return !operator==(a, b);  // uses friend operator==(rational, int)
 }
 
 inline rational operator+(rational const & r1, rational const & r2) { 

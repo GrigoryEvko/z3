@@ -595,6 +595,10 @@ public:
         return eq(a.m_num, b.m_num) && eq(a.m_den, b.m_den);
     }
 
+    bool eq(mpq const & a, int b) {
+        return is_int(a) && mpz_manager<SYNCH>::eq(a.m_num, b);
+    }
+
     bool lt(mpz const & a, mpz const & b) { return mpz_manager<SYNCH>::lt(a, b); }
 
     bool lt(mpq const & a, mpq const & b) {
@@ -602,6 +606,18 @@ public:
             return lt(a.m_num, b.m_num);
         else
             return rat_lt(a, b);
+    }
+
+    bool lt(mpq const & a, int b) {
+        if (is_int(a))
+            return mpz_manager<SYNCH>::lt(a.m_num, b);
+        return lt(a, mpq(b));
+    }
+
+    bool lt(int a, mpq const & b) {
+        if (is_int(b))
+            return mpz_manager<SYNCH>::lt(a, b.m_num);
+        return lt(mpq(a), b);
     }
 
     bool neq(mpz const & a, mpz const & b) { return mpz_manager<SYNCH>::neq(a, b); }

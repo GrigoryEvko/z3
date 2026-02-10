@@ -471,6 +471,15 @@ public:
         }
     }
 
+    static bool eq(mpz const & a, int b) {
+        // Fast path: small mpz is just a machine int comparison.
+        // Avoids constructing a temporary mpz(b).
+        if (is_small(a))
+            return a.value() == b;
+        // Large mpz cannot equal a machine int (it overflowed small repr)
+        return false;
+    }
+
     bool lt(mpz const& a, int b) {
         if (is_small(a)) {
             return a.value() < b;
@@ -478,6 +487,16 @@ public:
         else {
             return lt(a, mpz(b));
         }
+    }
+
+    static bool lt(int a, mpz const & b) {
+        // Fast path: both small is just a machine int comparison.
+        // Avoids constructing a temporary mpz(a).
+        if (is_small(b))
+            return a < b.value();
+        // b is large: sign determines result.
+        // Large positive => a < b. Large negative => a >= b.
+        return is_pos(b);
     }
 
     bool lt(mpz const & a, mpz const & b) {

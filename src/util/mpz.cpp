@@ -2296,49 +2296,23 @@ unsigned mpz_manager<SYNCH>::power_of_two_multiple(mpz const & a) {
     if (is_zero(a))
         return 0;
     if (is_small(a)) {
-        unsigned r = 0;
-        int v      = a.m_val;
-#define COUNT_DIGIT_RIGHT_ZEROS()               \
-        if (v % (1 << 16) == 0) {               \
-            r += 16;                            \
-            v /= (1 << 16);                     \
-        }                                       \
-        if (v % (1 << 8) == 0) {                \
-            r += 8;                             \
-            v /= (1 << 8);                      \
-        }                                       \
-        if (v % (1 << 4) == 0) {                \
-            r += 4;                             \
-            v /= (1 << 4);                      \
-        }                                       \
-        if (v % (1 << 2) == 0) {                \
-            r += 2;                             \
-            v /= (1 << 2);                      \
-        }                                       \
-        if (v % 2 == 0) {                       \
-            r++;                                \
-        }
-        COUNT_DIGIT_RIGHT_ZEROS();
-        return r;
+        // Use hardware ctz on the absolute value.
+        // For negative values, two's complement trailing zeros count is the
+        // same as for the absolute value (since -v = ~v + 1, trailing zeros
+        // of v are preserved). So we can use the raw bit pattern directly.
+        return _trailing_zeros32(static_cast<uint32_t>(a.m_val > 0 ? a.m_val : -a.m_val));
     }
 #ifndef _MP_GMP
     mpz_cell * c        = a.m_ptr;
     unsigned sz         = c->m_size;
     unsigned r          = 0;
-    digit_t * source    = c->m_digits; 
+    digit_t * source    = c->m_digits;
     for (unsigned i = 0; i < sz; ++i) {
         if (source[i] != 0) {
-            digit_t v = source[i];
-            if (sizeof(digit_t) == 8) {
-                // TODO: we can remove this if after we move to MPN
-                // In MPN the digit_t is always an unsigned integer
-                if (static_cast<uint64_t>(v) % (static_cast<uint64_t>(1) << 32) == 0) {
-                    r += 32;                     
-                    v = static_cast<digit_t>(static_cast<uint64_t>(v) / (static_cast<uint64_t>(1) << 32));
-                }                                
-            }
-            COUNT_DIGIT_RIGHT_ZEROS();
-            return r;
+            if (sizeof(digit_t) == 8)
+                return r + static_cast<unsigned>(_trailing_zeros64(static_cast<uint64_t>(source[i])));
+            else
+                return r + _trailing_zeros32(static_cast<uint32_t>(source[i]));
         }
         r += (8 * sizeof(digit_t));
     }
