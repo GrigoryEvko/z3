@@ -276,7 +276,13 @@ public:
     }
 
     void swap(core_hashtable & source) noexcept {
-        std::swap(*this, source);
+        std::swap(m_table, source.m_table);
+        std::swap(m_capacity, source.m_capacity);
+        std::swap(m_size, source.m_size);
+        std::swap(m_num_deleted, source.m_num_deleted);
+        HS_CODE({
+            std::swap(m_st_collision, source.m_st_collision);
+        });
     }
 
     void reset() {
@@ -621,15 +627,18 @@ public:
         return *this;
     }
 
-    core_hashtable& operator=(core_hashtable && other) {
+    core_hashtable& operator=(core_hashtable && other) noexcept {
         if (this == &other) return *this;
         delete_table();
-        m_table = other.m_table;
-        m_capacity = other.m_capacity;
-        m_size = other.m_size;
+        m_table       = other.m_table;
+        m_capacity    = other.m_capacity;
+        m_size        = other.m_size;
         m_num_deleted = other.m_num_deleted;
         HS_CODE(m_st_collision = other.m_st_collision);
-        other.m_table = nullptr;
+        other.m_table       = nullptr;
+        other.m_capacity    = 0;
+        other.m_size        = 0;
+        other.m_num_deleted = 0;
         return *this;
     }
 
