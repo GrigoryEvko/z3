@@ -161,43 +161,45 @@ struct th_rewriter_cfg : public default_rewriter_cfg {
         br_status st = BR_FAILED;
         if (fid == m_b_rw.get_fid()) {
             decl_kind k = f->get_decl_kind();
-            if (k == OP_EQ) {
+            switch (k) {
+            case OP_EQ:
                 // theory dispatch for =
                 SASSERT(num == 2);
                 st = reduce_eq(args[0], args[1], result);
                 if (st != BR_FAILED)
                     return st;
-            }
-            if (k == OP_ITE) {
+                if (m_seq_rw.u().has_seq() && is_app(args[0]) &&
+                    to_app(args[0])->get_family_id() == m_seq_rw.get_fid()) {
+                    st = m_seq_rw.mk_eq_core(args[0], args[1], result);
+                    if (st != BR_FAILED)
+                        return st;
+                }
+                break;
+            case OP_ITE:
                 SASSERT(num == 3);
-                family_id s_fid = args[1]->get_sort()->get_family_id();
-                if (s_fid == m_bv_rw.get_fid())
+                if (args[1]->get_sort()->get_family_id() == m_bv_rw.get_fid())
                     st = m_bv_rw.mk_ite_core(args[0], args[1], args[2], result);
                 if (st != BR_FAILED)
                     return st;
+                break;
+            case OP_AND:
+            case OP_OR:
+                if (m_seq_rw.u().has_re()) {
+                    st = m_seq_rw.mk_bool_app(f, num, args, result);
+                    if (st != BR_FAILED)
+                        return st;
+                }
+                break;
+            case OP_DISTINCT:
+                if (num > 0 && m_bv_rw.is_bv(args[0])) {
+                    st = m_bv_rw.mk_distinct(num, args, result);
+                    if (st != BR_FAILED)
+                        return st;
+                }
+                break;
+            default:
+                break;
             }
-            if ((k == OP_AND || k == OP_OR) && m_seq_rw.u().has_re()) {
-                st = m_seq_rw.mk_bool_app(f, num, args, result);
-                if (st != BR_FAILED)
-                    return st;
-            }
-            if (false && k == OP_AND) {
-                st = m_a_rw.mk_and_core(num, args, result);
-                if (st != BR_FAILED)
-                    return st;
-            }
-            if (k == OP_EQ && m_seq_rw.u().has_seq() && is_app(args[0]) &&
-                to_app(args[0])->get_family_id() == m_seq_rw.get_fid()) {
-                st = m_seq_rw.mk_eq_core(args[0], args[1], result);
-                if (st != BR_FAILED)
-                    return st;
-            }
-            if (k == OP_DISTINCT && num > 0 && m_bv_rw.is_bv(args[0])) {
-               st = m_bv_rw.mk_distinct(num, args, result);
-               if (st != BR_FAILED)
-                    return st;
-            }
-
             return m_b_rw.mk_app_core(f, num, args, result);
         }
         if (fid == m_a_rw.get_fid() && OP_LE == f->get_decl_kind() && m_seq_rw.u().has_seq()) {

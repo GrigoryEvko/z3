@@ -2753,8 +2753,8 @@ namespace smt {
         SASSERT (m_fparams.m_recent_lemmas_size < sz);
         unsigned end_at        = sz - m_fparams.m_recent_lemmas_size;
         SASSERT(start_at < end_at);
-        std::stable_sort(m_lemmas.begin() + start_at, m_lemmas.begin() + end_at, clause_lt());
         unsigned start_del_at  = (start_at + end_at) / 2;
+        std::nth_element(m_lemmas.begin() + start_at, m_lemmas.begin() + start_del_at, m_lemmas.begin() + end_at, clause_lt());
         unsigned i             = start_del_at;
         unsigned j             = i;
         unsigned num_del_cls   = 0;
