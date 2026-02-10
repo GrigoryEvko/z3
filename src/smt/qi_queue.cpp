@@ -468,7 +468,7 @@ namespace smt {
             if (qa2info.find(qa, info)) {
                 info.m_num++;
                 info.m_min_cost = std::min(info.m_min_cost, e.m_cost);
-                info.m_max_cost = std::min(info.m_max_cost, e.m_cost);
+                info.m_max_cost = std::max(info.m_max_cost, e.m_cost);
             }
             else {
                 qas.push_back(qa);

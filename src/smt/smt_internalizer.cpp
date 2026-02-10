@@ -82,10 +82,10 @@ namespace smt {
         while (!todo.empty()) {
             expr * curr = todo.back();
             todo.pop_back();
-            if (visited.is_marked(n)) {
+            if (visited.is_marked(curr)) {
                 continue;
             }
-            visited.mark(n, true);
+            visited.mark(curr, true);
             if (!is_app(curr) || to_app(curr)->get_family_id() != fid) {
                 descendants.push_back(curr);
                 continue;
