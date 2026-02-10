@@ -994,7 +994,7 @@ class ast_translation;
 
 class ast_table : public chashtable<ast*, obj_ptr_hash<ast>, ast_eq_proc> {
 public:
-    ast_table() : chashtable({}, {}, 512 * 1024, 8 * 1024) {}
+    ast_table() : chashtable({}, {}, 8 * 1024, 1024) {}
     void push_erase(ast * n);
     ast* pop_erase();
 };
