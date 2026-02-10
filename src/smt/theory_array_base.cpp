@@ -474,10 +474,8 @@ namespace smt {
         enode_vector::const_iterator end = r->end_parents();
         for (; it != end; ++it) {
             enode * parent       = *it;
-#if 0
             if (!ctx.is_relevant(parent))
                 continue;
-#endif
             unsigned    num_args = parent->get_num_args();
             if (is_store(parent)) {
                 SET_ARRAY(parent->get_arg(0));

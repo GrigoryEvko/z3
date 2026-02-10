@@ -826,8 +826,11 @@ namespace smt {
         unsigned num_old_vars = get_old_num_vars(num_scopes);
         theory_array::pop_scope_eh(num_scopes);
         std::for_each(m_var_data_full.begin() + num_old_vars, m_var_data_full.end(), delete_proc<var_data_full>());
-        m_var_data_full.shrink(num_old_vars);        
-        m_eqs.reset();
+        m_var_data_full.shrink(num_old_vars);
+        // m_eqs intentionally NOT reset: array equality axioms are
+        // tautologies valid across scopes; keeping them avoids
+        // redundant mk_eq / mark_as_relevant / assert_axiom work
+        // on every backtrack.  Full reset in reset_eh() still clears it.
     }
 
     void theory_array_full::collect_statistics(::statistics & st) const {
