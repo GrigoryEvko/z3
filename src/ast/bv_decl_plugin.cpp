@@ -823,13 +823,15 @@ expr * bv_decl_plugin::get_some_value(sort * s) {
 rational bv_recognizers::norm(rational const & val, unsigned bv_size, bool is_signed) const {
     rational r = mod2k(val, bv_size);
     SASSERT(!r.is_neg());
-    if (is_signed) {        
-        if (r >= rational::power_of_two(bv_size - 1)) {
+    if (is_signed) {
+        rational half = rational::power_of_two(bv_size - 1);
+        if (r >= half) {
+            // r is in [2^(bv_size-1), 2^bv_size), map to negative signed range
             r -= rational::power_of_two(bv_size);
         }
-        if (r < -rational::power_of_two(bv_size - 1)) {
-            r += rational::power_of_two(bv_size);
-        }
+        // Note: the branch (r < -half) is unreachable because mod2k always
+        // returns r in [0, 2^bv_size), and the subtraction above produces
+        // r in [-2^(bv_size-1), -1], which satisfies r >= -half.
     }
     return r;
 }
@@ -865,7 +867,14 @@ bool bv_recognizers::is_allone(expr const * e) const {
     if (!is_numeral(e, r, bv_size)) {
         return false;
     }
-    bool result = (r == rational::power_of_two(bv_size) - rational(1));
+    bool result;
+    if (bv_size <= 64) {
+        // Fast path: direct uint64 comparison avoids allocating a temporary rational.
+        result = r.is_uint64() && r.get_uint64() == (bv_size == 64 ? UINT64_MAX : ((uint64_t(1) << bv_size) - 1));
+    }
+    else {
+        result = (r == rational::power_of_two(bv_size) - rational(1));
+    }
     TRACE(is_allone, tout << r << " " << result << "\n";);
     return result;
 }

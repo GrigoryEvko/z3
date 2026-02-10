@@ -1042,16 +1042,12 @@ br_status bv_rewriter::mk_bv_ashr(expr * arg1, expr * arg2, expr_ref & result) {
     if (is_num1 && is_num2) {
         SASSERT(r2 < numeral(bv_size));
         bool   sign = m_util.has_sign_bit(r1, bv_size);
-        div(r1, rational::power_of_two(r2.get_unsigned()), r1);
-        if (sign) {
-            // pad ones.
-            numeral p(1);
-            for (unsigned i = 0; i < bv_size; ++i) {
-                if (r1 < p) {
-                    r1 += p;
-                }
-                p *= numeral(2);
-            }
+        unsigned shift = r2.get_unsigned();
+        div(r1, rational::power_of_two(shift), r1);
+        if (sign && shift > 0) {
+            // Set bits [bv_size - shift, bv_size - 1] to 1 in a single operation.
+            numeral mask = rational::power_of_two(bv_size) - rational::power_of_two(bv_size - shift);
+            r1 = bitwise_or(r1, mask);
         }
         result = mk_numeral(r1, bv_size);
         return BR_DONE;
@@ -1603,12 +1599,10 @@ unsigned bv_rewriter::num_leading_zero_bits(expr* e) {
     numeral v;
     unsigned sz = get_bv_size(e);
     if (m_util.is_numeral(e, v)) {
-        while (v.is_pos()) {
-            SASSERT(sz > 0);
-            --sz;
-            v = div(v, numeral(2));
-        }
-        return sz;
+        if (v.is_zero())
+            return sz;
+        // bitsize() returns log2(v) + 1, i.e. the number of significant bits
+        return sz - v.bitsize();
     }
     else if (m_util.is_concat(e)) {
         app* a = to_app(e);
@@ -1868,23 +1862,20 @@ br_status bv_rewriter::mk_bv_or(unsigned num, expr * const * args, expr_ref & re
 #endif
         // OR is a mask
         expr * t = new_args[0];
-        numeral two(2);
         ptr_buffer<expr> exs;
         unsigned low = 0;
         unsigned i = 0;
         while (i < sz) {
-            while (i < sz && v1.is_odd()) {
+            while (i < sz && v1.get_bit(i)) {
                 i++;
-                div(v1, two, v1);
             }
             if (i != low) {
                 unsigned num_sz = i - low;
                 exs.push_back(m_util.mk_numeral(rational::power_of_two(num_sz) - numeral(1), num_sz));
                 low = i;
             }
-            while (i < sz && v1.is_even()) {
+            while (i < sz && !v1.get_bit(i)) {
                 i++;
-                div(v1, two, v1);
             }
             if (i != low) {
                 exs.push_back(m_mk_extract(i-1, low, t));
@@ -2013,24 +2004,21 @@ br_status bv_rewriter::mk_bv_xor(unsigned num, expr * const * args, expr_ref & r
                 break;
         }
         SASSERT(t != 0);
-        numeral two(2);
         expr_ref_buffer exs(m);
         expr_ref not_t(m);
         not_t = m_util.mk_bv_not(t);
         unsigned low = 0;
         unsigned i = 0;
         while (i < sz) {
-            while (i < sz && mod(v1, two).is_one()) {
+            while (i < sz && v1.get_bit(i)) {
                 i++;
-                div(v1, two, v1);
             }
             if (i != low) {
                 exs.push_back(m_mk_extract(i-1, low, not_t));
                 low = i;
             }
-            while (i < sz && mod(v1, two).is_zero()) {
+            while (i < sz && !v1.get_bit(i)) {
                 i++;
-                div(v1, two, v1);
             }
             if (i != low) {
                 exs.push_back(m_mk_extract(i-1, low, t));
@@ -2495,19 +2483,17 @@ br_status bv_rewriter::mk_bv_mul(unsigned num_args, expr * const * args, expr_re
 }
 
 br_status bv_rewriter::mk_bit2bool(expr * n, int idx, expr_ref & result) {
-    rational v, bit;
+    rational v;
     unsigned sz = 0;
     if (m_util.is_mkbv(n)) {
         result = to_app(n)->get_arg(idx);
         return BR_DONE;
     }
-    if (!is_numeral(n, v, sz)) 
+    if (!is_numeral(n, v, sz))
         return BR_FAILED;
-    if (idx < 0 || idx >= static_cast<int>(sz)) 
+    if (idx < 0 || idx >= static_cast<int>(sz))
         return BR_FAILED;
-    div(v, rational::power_of_two(idx), bit);
-    mod(bit, rational(2), bit);
-    result = m.mk_bool_val(bit.is_one());
+    result = m.mk_bool_val(v.get_bit(idx));
     return BR_DONE;
 }
 
