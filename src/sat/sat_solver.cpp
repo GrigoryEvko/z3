@@ -936,16 +936,6 @@ namespace sat {
             }
         }
         
-        if (m_config.m_propagate_prefetch) {
-#if defined(__GNUC__) || defined(__clang__)
-            __builtin_prefetch((const char*)((m_watches[l.index()].data())));
-#else
-    #if !defined(_M_ARM) && !defined(_M_ARM64)
-            _mm_prefetch((const char*)((m_watches[l.index()].data())), _MM_HINT_T1);
-    #endif
-#endif
-        }
-
         SASSERT(!l.sign() || !m_phase[v]);
         SASSERT(l.sign()  || m_phase[v]);
         SASSERT(!l.sign() || value(v) == l_false);
@@ -977,14 +967,25 @@ namespace sat {
     // -----------------------
 
     bool solver::propagate_core(bool update) {
-        if (m_ext && (!is_probing() || at_base_lvl())) 
-            m_ext->unit_propagate();    
+        if (m_ext && (!is_probing() || at_base_lvl()))
+            m_ext->unit_propagate();
+        unsigned prop_counter = 0;
         while (m_qhead < m_trail.size() && !m_inconsistent) {
             do {
-                checkpoint();
+                if ((prop_counter++ & 63) == 0)
+                    checkpoint();
                 m_cleaner.dec();
                 literal l = m_trail[m_qhead];
                 m_qhead++;
+                if (m_config.m_propagate_prefetch && m_qhead < m_trail.size()) {
+#if defined(__GNUC__) || defined(__clang__)
+                    __builtin_prefetch((const char*)((m_watches[m_trail[m_qhead].index()].data())));
+#else
+    #if !defined(_M_ARM) && !defined(_M_ARM64)
+                    _mm_prefetch((const char*)((m_watches[m_trail[m_qhead].index()].data())), _MM_HINT_T1);
+    #endif
+#endif
+                }
                 if (!propagate_literal(l, update))
                     return false;
             } while (m_qhead < m_trail.size());
@@ -1099,65 +1100,90 @@ namespace sat {
                     break;
                 }
                 VERIFY(c[1] == not_l);
-                
-                unsigned undef_index = 0;
-                unsigned assign_level = curr_level;
-                unsigned max_index = 1;
-                unsigned num_undef = 0;
+
                 unsigned sz = c.size();
 
-                for (unsigned i = 2; i < sz && num_undef <= 1; ++i) {
-                    literal lit = c[i];
-                    switch (value(lit)) {
-                    case l_true:
-                        it2->set_clause(lit, cls_off);
-                        it2++;
-                        goto end_clause_case;
-                    case l_undef:
-                        undef_index = i;
-                        ++num_undef;
-                        break;
-                    case l_false: {
-                        unsigned level = lvl(lit);
+                if (value(c[0]) == l_undef) {
+                    // Fast path: c[0] is undef, just find ANY non-false tail literal
+                    // to move the watch to. No assign_level tracking needed.
+                    for (unsigned i = 2; i < sz; ++i) {
+                        literal lit = c[i];
+                        switch (value(lit)) {
+                        case l_true:
+                            it2->set_clause(lit, cls_off);
+                            it2++;
+                            goto end_clause_case;
+                        case l_undef:
+                            set_watch(c, i, cls_off);
+                            goto end_clause_case;
+                        default:
+                            break;
+                        }
+                    }
+                    // All tail literals are false, c[0] is undef: unit propagation.
+                    // Need assign_level and max_index for watch placement.
+                    unsigned assign_level = curr_level;
+                    unsigned max_index = 1;
+                    for (unsigned i = 2; i < sz; ++i) {
+                        unsigned level = lvl(c[i]);
                         if (level > assign_level) {
                             assign_level = level;
                             max_index = i;
                         }
-                        break;
                     }
+                    if (max_index != 1) {
+                        IF_VERBOSE(20, verbose_stream() << "swap watch for: " << c[1] << " " << c[max_index] << "\n");
+                        set_watch(c, max_index, cls_off);
                     }
+                    else {
+                        *it2 = *it;
+                        it2++;
+                    }
+                    propagate_clause(c, update, assign_level, cls_off);
                 }
+                else {
+                    // c[0] is false: need full scan for undefs and assign_level tracking
+                    SASSERT(value(c[0]) == l_false);
+                    unsigned undef_index = 0;
+                    unsigned assign_level = std::max(curr_level, lvl(c[0]));
+                    unsigned num_undef = 0;
 
-                if (value(c[0]) == l_false)
-                    assign_level = std::max(assign_level, lvl(c[0]));
-
-                if (undef_index != 0) {       
-                    set_watch(c, undef_index, cls_off);
-                    if (value(c[0]) == l_false && num_undef == 1) {   
-                        std::swap(c[0], c[1]);
-                        propagate_clause(c, update, assign_level, cls_off);
+                    for (unsigned i = 2; i < sz && num_undef <= 1; ++i) {
+                        literal lit = c[i];
+                        switch (value(lit)) {
+                        case l_true:
+                            it2->set_clause(lit, cls_off);
+                            it2++;
+                            goto end_clause_case;
+                        case l_undef:
+                            undef_index = i;
+                            ++num_undef;
+                            break;
+                        case l_false: {
+                            unsigned level = lvl(lit);
+                            if (level > assign_level) {
+                                assign_level = level;
+                            }
+                            break;
+                        }
+                        }
                     }
-                    goto end_clause_case;
-                }
 
-                if (value(c[0]) == l_false) {
+                    if (undef_index != 0) {
+                        set_watch(c, undef_index, cls_off);
+                        if (num_undef == 1) {
+                            std::swap(c[0], c[1]);
+                            propagate_clause(c, update, assign_level, cls_off);
+                        }
+                        goto end_clause_case;
+                    }
+
+                    // All literals false: conflict
                     c.mark_used();
                     CONFLICT_CLEANUP();
                     set_conflict(justification(assign_level, cls_off));
                     return false;
                 }
-
-                // value(c[0]) == l_undef
-
-                if (max_index != 1) {
-                    IF_VERBOSE(20, verbose_stream() << "swap watch for: " << c[1] << " " << c[max_index] << "\n");
-                    set_watch(c, max_index, cls_off);
-                }
-                else {
-                    *it2 = *it;
-                    it2++;
-                }
-                propagate_clause(c, update, assign_level, cls_off);
             end_clause_case:
                 break;
             }
