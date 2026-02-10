@@ -190,48 +190,50 @@ mpz_manager<SYNCH>::~mpz_manager() {
 // cells being repeatedly allocated and freed during simplex pivoting.
 // Profiling shows mpz_manager::del at 4.3% of total Z3 time, with
 // most cost in free() calls from the SYNCH=true (rational) path.
+//
+// Uses raw void* overlay for intrusive linking — does NOT access any
+// private mpz_cell members. Capacity is passed explicitly by the caller.
 namespace {
-    static const unsigned MPZ_FREE_LIST_BUCKETS = 8;  // capacity 4..11
-    static const unsigned MPZ_FREE_LIST_MAX = 128;    // max cells per bucket
-    static const unsigned MPZ_FREE_LIST_BASE_CAP = 4; // m_init_cell_capacity on 64-bit
+    static const unsigned MPZ_FL_BUCKETS = 8;   // capacity 4..11
+    static const unsigned MPZ_FL_MAX = 128;     // max cells per bucket
+    static const unsigned MPZ_FL_BASE_CAP = 4;  // m_init_cell_capacity on 64-bit
 
     struct mpz_free_list {
-        mpz_cell* lists[MPZ_FREE_LIST_BUCKETS] = {};
-        unsigned  counts[MPZ_FREE_LIST_BUCKETS] = {};
+        void*    lists[MPZ_FL_BUCKETS] = {};
+        unsigned counts[MPZ_FL_BUCKETS] = {};
 
-        unsigned bucket(unsigned capacity) {
-            if (capacity < MPZ_FREE_LIST_BASE_CAP) return MPZ_FREE_LIST_BUCKETS;
-            unsigned idx = capacity - MPZ_FREE_LIST_BASE_CAP;
-            return idx < MPZ_FREE_LIST_BUCKETS ? idx : MPZ_FREE_LIST_BUCKETS;
+        static unsigned bucket(unsigned capacity) {
+            if (capacity < MPZ_FL_BASE_CAP) return MPZ_FL_BUCKETS;
+            unsigned idx = capacity - MPZ_FL_BASE_CAP;
+            return idx < MPZ_FL_BUCKETS ? idx : MPZ_FL_BUCKETS;
         }
 
-        mpz_cell* try_alloc(unsigned capacity) {
+        void* try_alloc(unsigned capacity) {
             unsigned b = bucket(capacity);
-            if (b >= MPZ_FREE_LIST_BUCKETS || lists[b] == nullptr)
+            if (b >= MPZ_FL_BUCKETS || !lists[b])
                 return nullptr;
-            mpz_cell* cell = lists[b];
-            // Use the first digit slot as a next pointer (intrusive list)
-            lists[b] = *reinterpret_cast<mpz_cell**>(&cell->m_digits[0]);
+            void* cell = lists[b];
+            // Next pointer is stored at the start of the freed cell's memory
+            lists[b] = *static_cast<void**>(cell);
             counts[b]--;
-            cell->m_capacity = capacity;
             return cell;
         }
 
-        bool try_free(mpz_cell* ptr) {
-            unsigned b = bucket(ptr->m_capacity);
-            if (b >= MPZ_FREE_LIST_BUCKETS || counts[b] >= MPZ_FREE_LIST_MAX)
+        bool try_free(void* ptr, unsigned capacity) {
+            unsigned b = bucket(capacity);
+            if (b >= MPZ_FL_BUCKETS || counts[b] >= MPZ_FL_MAX)
                 return false;
-            // Store next pointer in the digit slot (intrusive list)
-            *reinterpret_cast<mpz_cell**>(&ptr->m_digits[0]) = lists[b];
+            // Store next pointer at the start of the cell's memory
+            *static_cast<void**>(ptr) = lists[b];
             lists[b] = ptr;
             counts[b]++;
             return true;
         }
 
         ~mpz_free_list() {
-            for (unsigned b = 0; b < MPZ_FREE_LIST_BUCKETS; b++) {
+            for (unsigned b = 0; b < MPZ_FL_BUCKETS; b++) {
                 while (lists[b]) {
-                    mpz_cell* next = *reinterpret_cast<mpz_cell**>(&lists[b]->m_digits[0]);
+                    void* next = *static_cast<void**>(lists[b]);
                     memory::deallocate(lists[b]);
                     lists[b] = next;
                 }
@@ -247,10 +249,9 @@ mpz_cell * mpz_manager<SYNCH>::allocate(unsigned capacity) {
     SASSERT(capacity >= m_init_cell_capacity);
     mpz_cell * cell;
     if (SYNCH) {
-        cell = g_mpz_free_list.try_alloc(capacity);
-        if (!cell) {
-            cell = reinterpret_cast<mpz_cell*>(memory::allocate(cell_size(capacity)));
-        }
+        void* p = g_mpz_free_list.try_alloc(capacity);
+        cell = p ? reinterpret_cast<mpz_cell*>(p)
+                 : reinterpret_cast<mpz_cell*>(memory::allocate(cell_size(capacity)));
     }
     else {
         cell = reinterpret_cast<mpz_cell*>(m_allocator.allocate(cell_size(capacity)));
@@ -264,7 +265,7 @@ template<bool SYNCH>
 void mpz_manager<SYNCH>::deallocate(bool is_heap, mpz_cell * ptr) {
     if (is_heap) {
         if (SYNCH) {
-            if (!g_mpz_free_list.try_free(ptr))
+            if (!g_mpz_free_list.try_free(ptr, ptr->m_capacity))
                 memory::deallocate(ptr);
         }
         else {

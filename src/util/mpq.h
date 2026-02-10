@@ -66,12 +66,12 @@ class mpq_manager : public mpz_manager<SYNCH> {
             unsigned num_tz = this->power_of_two_multiple(a.m_num);
             unsigned common = num_tz < den_shift ? num_tz : den_shift;
             if (common > 0) {
-                this->machine_div2k(a.m_num, common);
+                this->machine_div2k(a.m_num, common, a.m_num);
                 if (common == den_shift) {
                     del(a.m_den);
                     a.m_den.set(1);
                 } else {
-                    this->machine_div2k(a.m_den, common);
+                    this->machine_div2k(a.m_den, common, a.m_den);
                 }
             }
             return;
