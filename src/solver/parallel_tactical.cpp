@@ -686,7 +686,16 @@ private:
 
     bool canceled(solver_state& s) {
         if (s.canceled()) {
-            m_has_undef = true;
+            if (!m_has_undef) {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (!m_has_undef) {
+                    m_has_undef = true;
+                    m_reason_undef = "canceled";
+                }
+            }
+            else {
+                m_has_undef = true;
+            }
             return true;
         }
         else {
@@ -822,8 +831,11 @@ public:
             if (m_core) {
                 ast_translation tr(m_core->get_manager(), m);
                 expr_ref_vector core(tr(*m_core));
-                for (expr * c : core)
-                    lcore = m.mk_join(lcore, m.mk_leaf(bool2dep.find(c)));
+                for (expr * c : core) {
+                    expr* dep = nullptr;
+                    if (bool2dep.find(c, dep))
+                        lcore = m.mk_join(lcore, m.mk_leaf(dep));
+                }
             }
             g->assert_expr(m.mk_false(), pr, lcore);            
             break;

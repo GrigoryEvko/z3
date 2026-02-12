@@ -17,7 +17,7 @@
 #pragma once
 
 #include "ast/converters/model_converter.h"
-#include "ackermannization/ackr_info.h"
+#include "ackermannization/lackr_model_constructor.h"
 
-model_converter * mk_lackr_model_converter_lazy(ast_manager & m, const ackr_info_ref& info, model_ref& abstr_model);
+model_converter * mk_lackr_model_converter_lazy(ast_manager & m, const lackr_model_constructor_ref& model_constructor);
 

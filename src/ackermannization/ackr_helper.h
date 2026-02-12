@@ -42,7 +42,7 @@ public:
         if (is_uninterp(a))
             return true;
         decl_plugin * p = m_bvutil.get_manager().get_plugin(a->get_family_id());
-        return p->is_considered_uninterpreted(a->get_decl());        
+        return p && p->is_considered_uninterpreted(a->get_decl());        
     }
 
     /**
@@ -105,7 +105,7 @@ public:
     
     /** \brief Calculate n choose 2 guarded for overflow. Returns infinity if unsafe. **/
     inline static double n_choose_2_chk(unsigned n) {
-        SASSERT(std::numeric_limits<unsigned>().max() & 32);
+        SASSERT(sizeof(unsigned) >= 4);
         return n & (1 << 16) ? std::numeric_limits<double>().infinity() : n_choose_2(n);
     }
 

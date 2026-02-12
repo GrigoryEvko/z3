@@ -141,7 +141,9 @@ public:
                 expr_ref_vector core(m);
                 local_solver->get_unsat_core(core);
                 for (expr* c : core) {
-                    lcore = m.mk_join(lcore, m.mk_leaf(bool2dep.find(c)));
+                    expr* dep = nullptr;
+                    if (bool2dep.find(c, dep))
+                        lcore = m.mk_join(lcore, m.mk_leaf(dep));
                 }
             }
             in->assert_expr(m.mk_false(), pr, lcore);

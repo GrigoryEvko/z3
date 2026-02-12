@@ -1393,10 +1393,7 @@ namespace mbp {
         void assert_store_select(app* store, model & mdl, term_graph& tg, expr_ref_vector& lits) {
             SASSERT(a.is_store(store));
             ptr_vector<app> indices;
-            for (unsigned i = 1; i + 1 < store->get_num_args(); ++i) {
-                SASSERT(indices.empty());
-                assert_store_select(indices, store, mdl, tg, lits);
-            }
+            assert_store_select(indices, store, mdl, tg, lits);
         }
 
         void assert_store_select(ptr_vector<app>& indices, app* store, model & mdl, term_graph& tg, expr_ref_vector& lits) {

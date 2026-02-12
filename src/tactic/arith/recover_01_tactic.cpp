@@ -84,6 +84,8 @@ class recover_01_tactic : public tactic {
         
         void updt_params_core(params_ref const & p) {
             m_cls_max_size   = p.get_uint("recover_01_max_bits", 10);
+            if (m_cls_max_size > 32)
+                m_cls_max_size = 32;
         }
         
         void updt_params(params_ref const & p) {

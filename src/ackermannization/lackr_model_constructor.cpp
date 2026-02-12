@@ -19,9 +19,6 @@
 #include "ast/ast_smt2_pp.h"
 #include "ackermannization/ackr_info.h"
 #include "ast/for_each_expr.h"
-#include "ast/rewriter/bv_rewriter.h"
-#include "ast/rewriter/bool_rewriter.h"
-#include <iostream>
 
 struct lackr_model_constructor::imp {
 public:
@@ -34,8 +31,6 @@ public:
         , m_abstr_model(abstr_model)
         , m_conflicts(conflicts)
         , m_pinned(m)
-        , m_b_rw(m)
-        , m_bv_rw(m)
         , m_evaluator(nullptr)
         , m_empty_model(m)
         , m_ackr_helper(m)
@@ -107,8 +102,6 @@ private:
     model_ref&                      m_abstr_model;
     conflict_list&                  m_conflicts;
     ast_ref_vector                  m_pinned;
-    bool_rewriter                   m_b_rw;
-    bv_rewriter                     m_bv_rw;
     scoped_ptr<model_evaluator>     m_evaluator;
     model                           m_empty_model;
 private:
@@ -317,27 +310,6 @@ private:
         TRACE(model_constructor,
               tout << "eval(\n" << mk_ismt2_pp(term.get(), m, 2) << "\n->"
               << mk_ismt2_pp(result.get(), m, 2) << ")\n"; );
-        return;
-        const family_id fid = fd->get_family_id();
-        if (fid == m_b_rw.get_fid()) {
-            decl_kind k = fd->get_decl_kind();
-            if (k == OP_EQ) {
-                // theory dispatch for =
-                SASSERT(num == 2);
-                family_id s_fid = values[0]->get_sort()->get_family_id();
-                if (s_fid == m_bv_rw.get_fid())
-                    m_bv_rw.mk_eq_core(values.get(0), values.get(1), result);
-            } else {
-                m_b_rw.mk_app_core(fd, num, values.data(), result);
-            }
-        } else {
-            if (fid == m_bv_rw.get_fid()) {
-                m_bv_rw.mk_app_core(fd, num, values.data(), result);
-            }
-            else {
-                UNREACHABLE();
-            }
-        }
     }
 };
 

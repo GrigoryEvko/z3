@@ -1038,6 +1038,7 @@ namespace tb {
         expr_ref_vector       m_rename;
         expr_ref_vector       m_sub1;
         expr_ref_vector       m_sub2;
+        qe_lite               m_qe;
     public:
         unifier(ast_manager& m):
             m(m),
@@ -1046,7 +1047,8 @@ namespace tb {
             m_S2(m, false),
             m_rename(m),
             m_sub1(m),
-            m_sub2(m) {}
+            m_sub2(m),
+            m_qe(m, params_ref()) {}
 
         bool operator()(ref<clause>& tgt, unsigned idx, ref<clause>& src, bool compute_subst, ref<clause>& result) {
             return unify(*tgt, idx, *src, compute_subst, result);
@@ -1062,7 +1064,7 @@ namespace tb {
         }
 
         bool unify(clause const& tgt, unsigned idx, clause const& src, bool compute_subst, ref<clause>& result) {
-            qe_lite qe(m, params_ref());
+            qe_lite& qe = m_qe;
             reset();
             SASSERT(tgt.get_predicate(idx)->get_decl() == src.get_decl());
             unsigned var_cnt = std::max(tgt.get_num_vars(), src.get_num_vars());

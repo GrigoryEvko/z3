@@ -77,6 +77,7 @@ class nla2bv_tactic : public tactic {
             m_trail(m),
             m_fmc(nullptr) {
             m_default_bv_size = m_num_bits = p.get_uint("nla2bv_bv_size", 4);
+            if (m_num_bits == 0) m_num_bits = m_default_bv_size = 1;
         }
 
         void updt_params(params_ref const& p)  {} 

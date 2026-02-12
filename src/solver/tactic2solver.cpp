@@ -221,7 +221,7 @@ void tactic2solver::pop_core(unsigned n) {
 
 lbool tactic2solver::check_sat_core2(unsigned num_assumptions, expr * const * assumptions) {
     if (m_tactic.get() == nullptr)
-        return l_false;
+        return l_undef;
     m_last_assertions_valid = false;
     ast_manager & m = m_assertions.m();
     m_result = alloc(simple_check_sat_result, m);
