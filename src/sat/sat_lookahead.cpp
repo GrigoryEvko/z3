@@ -2127,7 +2127,8 @@ namespace sat {
         for (nary * n : m_nary_clauses) {
             h += 1.0 / pow(m_config.m_cube_psat_clause_base, static_cast<double>(n->size() - 1));
         }
-        h /= pow(m_freevars.size(), m_config.m_cube_psat_var_exp);
+        if (!m_freevars.empty())
+            h /= pow(m_freevars.size(), m_config.m_cube_psat_var_exp);
         IF_VERBOSE(10, verbose_stream() << "(sat-cube-psat :val " << h << ")\n";);
         return h;
     }
@@ -2297,7 +2298,7 @@ namespace sat {
             unsigned sz = m_ternary_count[idx];
             for (binary const& b : m_ternary[idx]) {
                 if (sz-- == 0) break;
-                if (idx < b.m_u.index() && idx << b.m_v.index()) {
+                if (idx < b.m_u.index() && idx < b.m_v.index()) {
                     out << lit << " " << b.m_u << " " << b.m_v << "\n";
                 }
             }

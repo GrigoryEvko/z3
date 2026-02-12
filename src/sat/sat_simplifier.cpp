@@ -1989,7 +1989,6 @@ namespace sat {
         save_clauses(mc_entry, m_pos_cls);
         save_clauses(mc_entry, m_neg_cls);
         s.set_eliminated(v, true);
-        m_elim_counter -= num_pos * num_neg + before_lits;
 
         for (auto & c1 : m_pos_cls) {
             if (c1.was_removed() && !c1.contains(pos_l))

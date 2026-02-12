@@ -20,6 +20,7 @@ Revision History:
 
 #include "sat/sat_types.h"
 #include "util/ref_vector.h"
+#include <atomic>
 
 namespace sat {
     /**
@@ -38,7 +39,10 @@ namespace sat {
 
     class solver;
 
-    static unsigned counter = 0;
+    inline std::atomic<unsigned>& elim_stack_counter() {
+        static std::atomic<unsigned> c{0};
+        return c;
+    }
 
     class model_converter {
         
@@ -56,7 +60,7 @@ namespace sat {
                 m_counter(0),
                 m_refcount(0), 
                 m_stack(std::move(stack)) {
-                m_counter = ++counter;
+                m_counter = ++elim_stack_counter();
             }
             void inc_ref() { ++m_refcount; }
             void dec_ref() { if (0 == --m_refcount) { dealloc(this); } }

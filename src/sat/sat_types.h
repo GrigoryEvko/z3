@@ -108,8 +108,8 @@ namespace sat {
     public:
         status(st s, int o, proof_hint const* ps = nullptr) : m_st(s), m_orig(o), m_hint(ps) {};
         status(status const& s) : m_st(s.m_st), m_orig(s.m_orig), m_hint(s.m_hint) {}
-        status(status&& s) noexcept { m_st = st::asserted; m_orig = -1; std::swap(m_st, s.m_st); std::swap(m_orig, s.m_orig); std::swap(m_hint, s.m_hint); }
-        status& operator=(status const& other) { m_st = other.m_st; m_orig = other.m_orig; return *this; }
+        status(status&& s) noexcept : m_st(s.m_st), m_orig(s.m_orig), m_hint(s.m_hint) { s.m_st = st::asserted; s.m_orig = -1; s.m_hint = nullptr; }
+        status& operator=(status const& other) { m_st = other.m_st; m_orig = other.m_orig; m_hint = other.m_hint; return *this; }
         static status redundant() { return status(status::st::redundant, -1); }
         static status asserted() { return status(status::st::asserted, -1); }
         static status deleted() { return status(status::st::deleted, -1); }
@@ -158,14 +158,16 @@ namespace sat {
 
         void inc(unsigned num_clauses) {
             count++;
-            unsigned d = base * count * log2(count + 1);
-            unsigned cl = log2(num_clauses + 2);
-            limit = cl * cl * d;
+            uint64_t d = (uint64_t)base * count * log2(count + 1);
+            uint64_t cl = log2(num_clauses + 2);
+            uint64_t lim = cl * cl * d;
+            limit = static_cast<unsigned>(std::min(lim, (uint64_t)UINT_MAX));
         }
 
         void inc(unsigned num_conflicts, unsigned num_clauses) {
             inc(num_clauses);
-            limit += num_conflicts;
+            uint64_t lim = (uint64_t)limit + num_conflicts;
+            limit = static_cast<unsigned>(std::min(lim, (uint64_t)UINT_MAX));
         }
 
     };

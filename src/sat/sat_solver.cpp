@@ -19,6 +19,7 @@ Revision History:
 
 
 #include <cmath>
+#include <atomic>
 #ifndef SINGLE_THREAD
 #include <thread>
 #endif
@@ -38,20 +39,24 @@ Revision History:
 
 // Precomputed table for pow(0.95, age) to avoid expensive transcendental calls
 // in the hot anti-exploration decay path. Ages beyond MAX_DECAY_AGE are clamped.
+// Uses C++11 thread-safe local static initialization to avoid data races
+// when multiple solver instances run in parallel.
 static const unsigned MAX_DECAY_AGE = 512;
-static double s_decay_table[MAX_DECAY_AGE + 1];
-static bool   s_decay_table_init = false;
+
+struct decay_table {
+    double values[MAX_DECAY_AGE + 1];
+    decay_table() {
+        values[0] = 1.0;
+        for (unsigned i = 1; i <= MAX_DECAY_AGE; i++)
+            values[i] = values[i - 1] * 0.95;
+    }
+};
 
 static double decay_pow095(uint64_t age) {
-    if (!s_decay_table_init) {
-        s_decay_table[0] = 1.0;
-        for (unsigned i = 1; i <= MAX_DECAY_AGE; i++)
-            s_decay_table[i] = s_decay_table[i - 1] * 0.95;
-        s_decay_table_init = true;
-    }
+    static const decay_table table;
     if (age >= MAX_DECAY_AGE)
-        return s_decay_table[MAX_DECAY_AGE];
-    return s_decay_table[static_cast<unsigned>(age)];
+        return table.values[MAX_DECAY_AGE];
+    return table.values[static_cast<unsigned>(age)];
 }
 
 namespace sat {
@@ -1019,7 +1024,7 @@ namespace sat {
             c.mark_used();                                          
             assign_core(c[0], justification(assign_level, cls_off)); 
             if (update && c.is_learned() && c.glue() > 2 && num_diff_levels_below(c.size(), c.begin(), c.glue() - 1, glue)) 
-                c.set_glue(glue);                                   \
+                c.set_glue(glue);
     }
 
     void solver::set_watch(clause& c, unsigned idx, clause_offset cls_off) {

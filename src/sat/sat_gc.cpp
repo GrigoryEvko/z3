@@ -186,11 +186,18 @@ namespace sat {
     bool solver::can_delete(clause const & c) const {
         if (c.on_reinit_stack())
             return false;
-        literal l0 = c[0];
-        if (value(l0) != l_true)
-            return true;
-        justification const & jst = m_justification[l0.var()];
-        return !jst.is_clause() || cls_allocator().get_clause(jst.get_clause_offset()) != &c;
+        // Check both watched literals: either c[0] or c[1] could be the
+        // propagated literal (c[1] is propagated in attach_nary_clause when
+        // c[0] is false at attachment time).
+        for (unsigned i = 0; i < 2; ++i) {
+            literal li = c[i];
+            if (value(li) == l_true) {
+                justification const& jst = m_justification[li.var()];
+                if (jst.is_clause() && cls_allocator().get_clause(jst.get_clause_offset()) == &c)
+                    return false;
+            }
+        }
+        return true;
     }
 
     /**
