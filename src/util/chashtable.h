@@ -570,6 +570,7 @@ public:
 #endif
         std::swap(m_next_cell,   other.m_next_cell);
         std::swap(m_free_cell,   other.m_free_cell);
+        std::swap(m_tofree_cell, other.m_tofree_cell);
     }
 
     unsigned collisions() const {

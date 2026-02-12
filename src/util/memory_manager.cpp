@@ -302,6 +302,8 @@ void * memory::allocate(size_t s) {
     }
     void * r = malloc(s);
     if (r == nullptr) {
+        g_memory_thread_alloc_size -= s;
+        g_memory_thread_alloc_count -= 1;
         throw_out_of_memory();
         return nullptr;
     }
@@ -335,6 +337,8 @@ void* memory::reallocate(void *p, size_t s) {
 
     void *r = realloc(real_p, s);
     if (r == nullptr) {
+        g_memory_thread_alloc_size -= (s - sz);
+        g_memory_thread_alloc_count -= 1;
         throw_out_of_memory();
         return nullptr;
     }
@@ -376,13 +380,21 @@ void * memory::allocate(size_t s) {
     g_memory_alloc_count += 1;
     if (g_memory_alloc_size > g_memory_max_used_size)
         g_memory_max_used_size = g_memory_alloc_size;
-    if (g_memory_max_size != 0 && g_memory_alloc_size > g_memory_max_size)
+    if (g_memory_max_size != 0 && g_memory_alloc_size > g_memory_max_size) {
+        g_memory_alloc_size -= s;
+        g_memory_alloc_count -= 1;
         throw_out_of_memory();
-    if (g_memory_max_alloc_count != 0 && g_memory_alloc_count > g_memory_max_alloc_count)
+    }
+    if (g_memory_max_alloc_count != 0 && g_memory_alloc_count > g_memory_max_alloc_count) {
+        g_memory_alloc_size -= s;
+        g_memory_alloc_count -= 1;
         throw_alloc_counts_exceeded();
+    }
 
     void * r = malloc(s);
     if (r == nullptr) {
+        g_memory_alloc_size -= s;
+        g_memory_alloc_count -= 1;
         throw_out_of_memory();
         return nullptr;
     }
@@ -412,13 +424,21 @@ void* memory::reallocate(void *p, size_t s) {
     g_memory_alloc_count += 1;
     if (g_memory_alloc_size > g_memory_max_used_size)
         g_memory_max_used_size = g_memory_alloc_size;
-    if (g_memory_max_size != 0 && g_memory_alloc_size > g_memory_max_size)
+    if (g_memory_max_size != 0 && g_memory_alloc_size > g_memory_max_size) {
+        g_memory_alloc_size -= (s - sz);
+        g_memory_alloc_count -= 1;
         throw_out_of_memory();
-    if (g_memory_max_alloc_count != 0 && g_memory_alloc_count > g_memory_max_alloc_count)
+    }
+    if (g_memory_max_alloc_count != 0 && g_memory_alloc_count > g_memory_max_alloc_count) {
+        g_memory_alloc_size -= (s - sz);
+        g_memory_alloc_count -= 1;
         throw_alloc_counts_exceeded();
+    }
 
     void *r = realloc(real_p, s);
     if (r == nullptr) {
+        g_memory_alloc_size -= (s - sz);
+        g_memory_alloc_count -= 1;
         throw_out_of_memory();
         return nullptr;
     }

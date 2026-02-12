@@ -223,13 +223,20 @@ bool bit_vector::contains(bit_vector const& other) const {
 }
 
 unsigned bit_vector::get_hash() const {
-    return string_hash(std::string_view(reinterpret_cast<char const* const>(m_data), size()/8),  0);
+    return string_hash(std::string_view(reinterpret_cast<char const* const>(m_data), (size() + 7)/8),  0);
 }
 
 bit_vector& bit_vector::neg() {
     unsigned n = num_words();
     for (unsigned i = 0; i < n; ++i) {
         m_data[i] = ~m_data[i];
+    }
+    // Mask out trailing bits beyond m_num_bits in the last word
+    if (n > 0) {
+        unsigned bit_rest = m_num_bits % 32;
+        if (bit_rest != 0) {
+            m_data[n - 1] &= (1U << bit_rest) - 1;
+        }
     }
     return *this;
 }

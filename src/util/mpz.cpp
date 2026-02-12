@@ -65,12 +65,10 @@ static uint32_t _trailing_zeros32(uint32_t x) {
 }
 #endif
 
-#if (defined(__LP64__) || defined(_WIN64)) && defined(_M_X64) && !defined(_M_ARM64EC)
 #if HAS_BUILTIN(__builtin_ctzll)
 #define _trailing_zeros64(X) __builtin_ctzll(X)
-#elif !defined(__clang__)
+#elif (defined(_WIN64) || defined(_M_X64)) && !defined(_M_ARM64EC) && !defined(__clang__)
 #define _trailing_zeros64(X) _tzcnt_u64(X)
-#endif
 #else
 static uint64_t _trailing_zeros64(uint64_t x) {
     uint64_t r = 0;
@@ -602,7 +600,9 @@ void mpz_manager<SYNCH>::submul(mpz const & a, mpz const & b, mpz const & c, mpz
 
 template<bool SYNCH>
 void mpz_manager<SYNCH>::machine_div_rem(mpz const & a, mpz const & b, mpz & q, mpz & r) {
-    STRACE(mpz, tout << "[mpz-ext] divrem(" << to_string(a) << ",  " << to_string(b) << ") == ";); 
+    STRACE(mpz, tout << "[mpz-ext] divrem(" << to_string(a) << ",  " << to_string(b) << ") == ";);
+    if (is_zero(b))
+        throw default_exception("division by 0");
     if (is_small(a) && is_small(b)) {
         int64_t _a = i64(a);
         int64_t _b = i64(b);
@@ -636,7 +636,9 @@ void mpz_manager<SYNCH>::reset(mpz & a) {
 
 template<bool SYNCH>
 void mpz_manager<SYNCH>::rem(mpz const & a, mpz const & b, mpz & c) {
-    STRACE(mpz, tout << "[mpz-ext] rem(" << to_string(a) << ",  " << to_string(b) << ") == ";); 
+    STRACE(mpz, tout << "[mpz-ext] rem(" << to_string(a) << ",  " << to_string(b) << ") == ";);
+    if (is_zero(b))
+        throw default_exception("division by 0");
     if (is_small(a) && is_small(b)) {
         set_i64(c, i64(a) % i64(b));
     }
@@ -2021,16 +2023,14 @@ void mpz_manager<SYNCH>::power(mpz const & a, unsigned p, mpz & b) {
         }
     }
 #endif
-    // general purpose
-    unsigned mask = 1;
+    // general purpose: binary exponentiation by scanning bits of p
     mpz power;
     set(power, a);
     set(b, 1);
-    while (mask <= p) {
+    for (unsigned mask = 1; mask != 0 && mask <= p; mask <<= 1) {
         if (mask & p)
             mul(b, power, b);
         mul(power, power, power);
-        mask = mask << 1;
     }
     del(power);
 }

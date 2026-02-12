@@ -19,7 +19,7 @@ Revision History:
 #include<cmath>
 
 unsigned get_luby(unsigned i) {
-    if (i == 1) 
+    if (i <= 1)
         return 1;
     double k = log(static_cast<double>(i+1))/log(static_cast<double>(2));
     

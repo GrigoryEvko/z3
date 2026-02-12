@@ -352,6 +352,7 @@ public:
     }
 
     unsigned operator()(unsigned u) {
+        SASSERT(u > 0);
         unsigned r = static_cast<unsigned>((*this)());
         return r % u;
     }

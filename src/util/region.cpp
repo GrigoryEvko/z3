@@ -75,7 +75,7 @@ region::~region() {
 
 void * region::allocate(size_t size) {
     char * new_curr_ptr = m_curr_ptr + size;
-    if (new_curr_ptr < m_curr_end_ptr) {
+    if (new_curr_ptr <= m_curr_end_ptr) {
         char * result = m_curr_ptr;
         m_curr_ptr = ALIGN(char *, new_curr_ptr);
         return result;

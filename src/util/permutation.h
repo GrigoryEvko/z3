@@ -39,8 +39,6 @@ public:
     bool check_invariant() const;
 };
 
-void swap(unsigned i, unsigned j) noexcept;
-
 inline std::ostream & operator<<(std::ostream & out, permutation const & p) {
     p.display(out);
     return out;

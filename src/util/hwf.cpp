@@ -147,20 +147,24 @@ void hwf_manager::set(hwf & o, mpf_rounding_mode rm, mpq const & significand, mp
     m_mpq_manager.set(sig, significand);
     int64_t exp = m_mpz_manager.get_int64(exponent);
 
-    if (m_mpq_manager.is_zero(significand))
+    if (m_mpq_manager.is_zero(significand)) {
         o.value = 0.0;
-    else
-    {
-        while (m_mpq_manager.lt(sig, 1))
-        {
+    }
+    else {
+        while (m_mpq_manager.lt(sig, 1)) {
             m_mpq_manager.mul(sig, 2, sig);
             exp--;
         }
 
         hwf s; s.value = m_mpq_manager.get_double(sig);
-        uint64_t r = (RAW(s.value) & 0x800FFFFFFFFFFFFFull) | ((exp + 1023) << 52);
+        // Clamp biased exponent to valid IEEE 754 double range [0, 2047]
+        int64_t biased = exp + 1023;
+        if (biased < 0) biased = 0;
+        if (biased > 2047) biased = 2047;
+        uint64_t r = (RAW(s.value) & 0x800FFFFFFFFFFFFFull) | (static_cast<uint64_t>(biased) << 52);
         o.value = DBL(r);
     }
+    m_mpq_manager.del(sig);
 }
 
 void hwf_manager::set(hwf & o, bool sign, uint64_t significand, int exponent) {
@@ -312,35 +316,43 @@ void hwf_manager::rem(hwf const & x, hwf const & y, hwf & o) {
 }
 
 void hwf_manager::maximum(hwf const & x, hwf const & y, hwf & o) {
-#ifdef USE_INTRINSICS
-    _mm_store_sd(&o.value, _mm_max_sd(_mm_set_sd(x.value), _mm_set_sd(y.value)));
-#else
-    // use __max ?
+    // Handle NaN explicitly: return the non-NaN operand.
+    // _mm_max_sd returns the second operand when the first is NaN,
+    // which gives wrong results for max(non-NaN, NaN).
     if (is_nan(x))
         o.value = y.value;
     else if (is_nan(y))
         o.value = x.value;
-    else if (lt(x, y))
-        o.value = y.value;
-    else
-        o.value = x.value;
+    else {
+#ifdef USE_INTRINSICS
+        _mm_store_sd(&o.value, _mm_max_sd(_mm_set_sd(x.value), _mm_set_sd(y.value)));
+#else
+        if (lt(x, y))
+            o.value = y.value;
+        else
+            o.value = x.value;
 #endif
+    }
 }
 
 void hwf_manager::minimum(hwf const & x, hwf const & y, hwf & o) {
-#ifdef USE_INTRINSICS
-    _mm_store_sd(&o.value, _mm_min_sd(_mm_set_sd(x.value), _mm_set_sd(y.value)));
-#else
-    // use __min ?
+    // Handle NaN explicitly: return the non-NaN operand.
+    // _mm_min_sd returns the second operand when the first is NaN,
+    // which gives wrong results for min(non-NaN, NaN).
     if (is_nan(x))
         o.value = y.value;
     else if (is_nan(y))
         o.value = x.value;
-    else if (lt(x, y))
-        o.value = x.value;
-    else
-        o.value = y.value;
+    else {
+#ifdef USE_INTRINSICS
+        _mm_store_sd(&o.value, _mm_min_sd(_mm_set_sd(x.value), _mm_set_sd(y.value)));
+#else
+        if (lt(x, y))
+            o.value = x.value;
+        else
+            o.value = y.value;
 #endif
+    }
 }
 
 std::string hwf_manager::to_string(hwf const & x) {

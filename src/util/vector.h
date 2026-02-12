@@ -324,8 +324,9 @@ public:
         T* v;
     public:
         reverse_iterator(T* v):v(v) {}
-        
-        T operator*() { return *v; }
+
+        T& operator*() { return *v; }
+        T const& operator*() const { return *v; }
         reverse_iterator operator++(int) {
             reverse_iterator tmp = *this;
             --v;
@@ -341,8 +342,8 @@ public:
         }
     };
 
-    reverse_iterator rbegin() { return reverse_iterator(end() - 1); }
-    reverse_iterator rend() { return reverse_iterator(begin() - 1); }
+    reverse_iterator rbegin() { return empty() ? reverse_iterator(nullptr) : reverse_iterator(end() - 1); }
+    reverse_iterator rend() { return empty() ? reverse_iterator(nullptr) : reverse_iterator(begin() - 1); }
 
     void set_end(iterator it) {
         if (m_data) {
@@ -494,7 +495,7 @@ public:
     }
 
     template<typename Args>
-    void resize(SZ s, Args args...) {
+    void resize(SZ s, Args const& args) {
         SZ sz = size();
         if (s <= sz) { shrink(s); return; }
         while (s > capacity()) {
@@ -505,7 +506,7 @@ public:
         iterator it  = m_data + sz;
         iterator end = m_data + s;
         for (; it != end; ++it) {
-            new (it) T(std::forward<Args>(args));
+            new (it) T(args);
         }
     }
 

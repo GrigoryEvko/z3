@@ -109,7 +109,7 @@ public:
    This entry uses 0x0 and 0x1 to represent HT_FREE and HT_DELETED.
 */
 template<typename T>
-class ptr_addr_hash_entry : public ptr_hash_entry<T> {
+class ptr_addr_hash_entry {
     T *             m_ptr = nullptr;
 public:
     typedef T * data;
@@ -652,11 +652,6 @@ public:
         if (m_num_deleted + m_size > m_capacity)
             return false;
 
-        // Checking that m_num_deleted is less than or equal to m_size.
-        if (m_num_deleted > m_size) {
-            return false;
-        }
-
         entry * curr = m_table;
         entry * end  = m_table + m_capacity;
         unsigned num_deleted = 0;
@@ -690,7 +685,9 @@ public:
     else if (curr->is_free()) {                                         \
         continue;                                                       \
     }                                                                   \
-    collisions.push_back(curr->get_data());                             \
+    else {                                                              \
+        continue;                                                       \
+    }                                                                   \
     } ((void) 0);    
 
     void get_collisions(data const& e, vector<data>& collisions) {        

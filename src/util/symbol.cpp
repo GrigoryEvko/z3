@@ -158,6 +158,7 @@ std::string symbol::str() const {
 bool symbol::contains(char ch) const {
     SASSERT(!is_marked());
     if (GET_TAG(m_data) == 0) {
+        if (m_data == nullptr) return false;
         return strchr(m_data, ch) != nullptr;
     }
     else {
@@ -168,6 +169,7 @@ bool symbol::contains(char ch) const {
 unsigned symbol::display_size() const {
     SASSERT(!is_marked());
     if (GET_TAG(m_data) == 0) {
+        if (m_data == nullptr) return 0;
         return static_cast<unsigned>(strlen(m_data));
     }
     else {

@@ -20,6 +20,7 @@ Revision History:
 #include "util/str_hashtable.h"
 
 #ifndef SINGLE_THREAD
+#include <atomic>
 #include <mutex>
 #include <thread>
 
@@ -28,12 +29,14 @@ void verbose_lock() { g_verbose_mux.lock(); }
 void verbose_unlock() { g_verbose_mux.unlock(); }
 
 static std::thread::id g_thread_id = std::this_thread::get_id();
-static bool g_is_threaded = false;
+static std::atomic<bool> g_is_threaded{false};
 
 bool is_threaded() {
-    if (g_is_threaded) return true;
-    g_is_threaded = std::this_thread::get_id() != g_thread_id;
-    return g_is_threaded;
+    if (g_is_threaded.load(std::memory_order_relaxed)) return true;
+    bool threaded = std::this_thread::get_id() != g_thread_id;
+    if (threaded)
+        g_is_threaded.store(true, std::memory_order_relaxed);
+    return threaded;
 }
 
 #endif

@@ -289,15 +289,14 @@ void mpq_manager<SYNCH>::power(mpq const & a, unsigned p, mpq & b) {
         set(b, 1);
         return;
     }
-    unsigned mask = 1;
+    // Binary exponentiation by scanning bits of p
     mpq power;
     set(power, a);
     set(b, 1);
-    while (mask <= p) {
+    for (unsigned mask = 1; mask != 0 && mask <= p; mask <<= 1) {
         if (mask & p)
             mul(b, power, b);
         mul(power, power, power);
-        mask = mask << 1;
     }
     del(power);
 }

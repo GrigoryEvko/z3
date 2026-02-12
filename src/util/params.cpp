@@ -45,6 +45,8 @@ std::string norm_param_name(char const* n) {
 std::string norm_param_name(symbol const & n) {
     if (n.is_null())
         return "_";
+    if (n.is_numerical())
+        return std::to_string(n.get_num());
     return norm_param_name(n.bare_str());
 }
 
@@ -197,7 +199,6 @@ struct param_descrs::imp {
             }
             info d;
             m_info.find(name, d);
-            SASSERT(!d.m_descr.empty());
             if (markdown) 
                 out << " | " << d.m_kind << " ";
             else
@@ -919,7 +920,7 @@ rational params::get_rat(symbol const & k, rational const & _default) const {
                 return *(it->second.m_rat_value);
             }
             if (it->second.m_kind == CPK_UINT) {
-                return rational(static_cast<int>(it->second.m_uint_value));
+                return rational(it->second.m_uint_value);
             }
         });
     return _default;                                                            
@@ -932,7 +933,7 @@ rational params::get_rat(char const * k, rational const & _default) const {
                 return *(it->second.m_rat_value);
             }
             if (it->second.m_kind == CPK_UINT) {
-                return rational(static_cast<int>(it->second.m_uint_value));
+                return rational(it->second.m_uint_value);
             }
         });
     return _default;                                                            
@@ -1063,13 +1064,13 @@ void params::set_rat(char const * k, rational const & v) {
 #define SET_SYM_VALUE() SET_VALUE({                     \
     del_value(*it);                                     \
     it->second.m_kind = CPK_SYMBOL;                     \
-    it->second.m_sym_value = v.bare_str();              \
+    it->second.m_sym_value = v;                         \
 },                                                      \
 {                                                       \
     entry new_entry;                                    \
     new_entry.first  = symbol(k);                       \
     new_entry.second.m_kind = CPK_SYMBOL;               \
-    new_entry.second.m_sym_value = v.bare_str();        \
+    new_entry.second.m_sym_value = v;                   \
     m_entries.push_back(new_entry);                     \
 })
 

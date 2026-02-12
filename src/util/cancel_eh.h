@@ -49,7 +49,12 @@ public:
     }
 
     bool canceled() const { return m_canceled; }
-    void reset() { m_canceled = false; }
+    void reset() {
+        if (m_canceled) {
+            m_obj.dec_cancel();
+            m_canceled = false;
+        }
+    }
     T& t() { return m_obj; }
     void set_auto_cancel() { m_auto_cancel = true; }
 };

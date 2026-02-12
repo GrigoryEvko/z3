@@ -573,7 +573,7 @@ public:
     }
 
     void set(mpz & a, uint64_t val) {
-        if (val < INT_MAX) {
+        if (val <= INT_MAX) {
             a.set(static_cast<int>(val));
         }
         else {
@@ -604,11 +604,11 @@ public:
 
     int64_t get_int64(mpz const & a) const;
 
-    bool is_uint(mpz const & a) const { return is_uint64(a) && get_uint64(a) < UINT_MAX; }
+    bool is_uint(mpz const & a) const { return is_uint64(a) && get_uint64(a) <= UINT_MAX; }
     
     unsigned get_uint(mpz const & a) const { SASSERT(is_uint(a)); return static_cast<unsigned>(get_uint64(a)); }
 
-    bool is_int(mpz const & a) const { return is_int64(a) && INT_MIN < get_int64(a) && get_int64(a) < INT_MAX; }
+    bool is_int(mpz const & a) const { return is_int64(a) && INT_MIN <= get_int64(a) && get_int64(a) <= INT_MAX; }
     
     int get_int(mpz const & a) const { SASSERT(is_int(a)); return static_cast<int>(get_int64(a)); }
 

@@ -180,6 +180,7 @@ static void display_internal(std::ostream & out, M const & m) {
                 out << "_";
             else
                 out << *key;
+            key++;
         }
         out << " " << kv.m_value << "\n";
     }

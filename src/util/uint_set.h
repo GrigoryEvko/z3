@@ -82,7 +82,7 @@ public:
     uint_set & operator |=(const uint_set & source) {
         auto source_size = source.size();
         if (source_size > size()) {
-            resize(source_size + 1);
+            resize(source_size);
         }
         for (unsigned i = 0; i < source_size; ++i) {
             (*this)[i] |= source[i];

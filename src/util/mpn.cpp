@@ -145,8 +145,10 @@ bool mpn_manager::div(mpn_digit const * numer, unsigned lnum,
     bool res = false;    
 
     if (lnum < lden) {
-        for (unsigned i = 0; i < (lnum-lden+1); ++i)
-            quot[i] = 0;
+        // When numerator has fewer digits than denominator, quotient is 0
+        // and remainder is the numerator (zero-padded to lden digits).
+        // Note: lnum-lden+1 would underflow since both are unsigned and lnum < lden.
+        quot[0] = 0;
         for (unsigned i = 0; i < lden; ++i)
             rem[i] = (i < lnum) ? numer[i] : 0;
         return false;
@@ -351,11 +353,16 @@ char * mpn_manager::to_string(mpn_digit const * a, unsigned lng, char * buf, uns
     
         unsigned j = 0;
         mpn_digit rem = 0;
-        mpn_digit ten = 10;        
+        mpn_digit ten = 10;
         while (!temp.empty() && (temp.size() > 1 || temp[0] != 0)) {
             unsigned d = div_normalize(&temp[0], temp.size(), &ten, 1, t_numer, t_denom);
             div_1(t_numer, t_denom[0], &temp[0]);
             div_unnormalize(t_numer, t_denom, d, &rem);
+            if (j + 1 >= lbuf) {
+                // Buffer too small; truncate and null-terminate
+                buf[lbuf > 0 ? lbuf - 1 : 0] = 0;
+                return buf;
+            }
             buf[j++] = '0' + rem;
             while (!temp.empty() && temp.back() == 0)
                 temp.pop_back();
