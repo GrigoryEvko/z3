@@ -19,6 +19,7 @@ Author:
 #pragma once
 
 #include "util/scoped_ptr_vector.h"
+#include "util/uint_set.h"
 #include "ast/expr_substitution.h"
 #include "ast/rewriter/th_rewriter.h"
 #include "ast/simplifiers/extract_eqs.h"
@@ -59,13 +60,15 @@ namespace euf {
         ptr_vector<expr>              m_todo;
         expr_mark                     m_visited;
         obj_map<expr, unsigned>       m_num_occs;
+        obj_map<expr, uint_set>       m_expr_vars;     // expr -> set of reachable variable IDs (cached)
 
 
         bool is_var(expr* e) const { return e->get_id() < m_var2id.size() && m_var2id[e->get_id()] != UINT_MAX; }
         unsigned var2id(expr* v) const { return m_var2id[v->get_id()]; }
         bool can_be_var(expr* e) const { return is_uninterp_const(e) && !m_unsafe_vars.is_marked(e) && check_occs(e); }
         void get_eqs(dep_eq_vector& eqs);
-        void filter_unsafe_vars();        
+        void filter_unsafe_vars();
+        void compute_expr_vars();
         void extract_subst();
         void extract_dep_graph(dep_eq_vector& eqs);
         void normalize();

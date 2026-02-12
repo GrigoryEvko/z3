@@ -15,21 +15,12 @@ Author:
 
 Notes:
 
-extract_subst is inefficient.
-It traverses the same sub-terms many times.
-
-Outline of a presumably better scheme:
-
-1. maintain map FV: term -> bit-set where bitset reprsents set of free variables. Assume the number of variables is bounded.
-   FV is built from initial terms.
-2. maintain parent: term -> term-list of parent occurrences.
-3. repeat
-   pick x = t, such that x not in FV(t)
-        orient x -> t
-        for p in parent*(x):
-            FV(p) := FV(p) u FV(t)
-        if y = s is processed and x in FV(s) order y < x
-        if y = s is processed and x in FV(t) order x < y
+The FV (free variable) scheme from the original comment is now implemented:
+  m_expr_vars caches, for each sub-expression, the set of equation variable IDs
+  reachable in its sub-tree (as a uint_set bitset). This is computed once by
+  compute_expr_vars() in a single post-order DAG pass. extract_subst() then
+  checks safety by iterating over the cached set instead of re-traversing shared
+  sub-expressions, eliminating the previous quadratic behavior.
 
 --*/
 
@@ -80,15 +71,93 @@ namespace euf {
     }
 
     /**
+    * Pre-compute, for each sub-expression reachable from equation terms,
+    * the set of equation variable IDs (m_var2id values) that appear in
+    * its sub-tree. Uses a single iterative post-order DAG traversal so
+    * each node is visited exactly once across all equations.
+    */
+    void solve_eqs::compute_expr_vars() {
+        m_expr_vars.reset();
+
+        // Two-pass post-order: first pass pushes children, second pass computes.
+        // We use m_todo as the DFS stack. A node on the stack with its mark
+        // bit set means "children already pushed, ready to compute."
+        expr_fast_mark1 visited;    // marks nodes whose children have been pushed
+        expr_fast_mark2 computed;   // marks nodes whose uint_set is final
+
+        for (unsigned id = 0; id < m_next.size(); ++id) {
+            for (auto const& eq : m_next[id]) {
+                expr* t = eq.term;
+                if (!computed.is_marked(t))
+                    m_todo.push_back(t);
+
+                while (!m_todo.empty()) {
+                    expr* e = m_todo.back();
+
+                    if (computed.is_marked(e)) {
+                        m_todo.pop_back();
+                        continue;
+                    }
+
+                    if (!visited.is_marked(e)) {
+                        // First visit: push children, mark as "children pushed"
+                        visited.mark(e);
+                        if (is_app(e)) {
+                            for (expr* arg : *to_app(e))
+                                if (!computed.is_marked(arg))
+                                    m_todo.push_back(arg);
+                        }
+                        else if (is_quantifier(e)) {
+                            expr* body = to_quantifier(e)->get_expr();
+                            if (!computed.is_marked(body))
+                                m_todo.push_back(body);
+                        }
+                        continue;
+                    }
+
+                    // Second visit: all children are computed, build our set.
+                    m_todo.pop_back();
+                    uint_set& s = m_expr_vars.insert_if_not_there(e, uint_set());
+
+                    if (is_var(e)) {
+                        s.insert(var2id(e));
+                    }
+
+                    if (is_app(e)) {
+                        for (expr* arg : *to_app(e)) {
+                            auto* ce = m_expr_vars.find_core(arg);
+                            if (ce)
+                                s |= ce->get_data().m_value;
+                        }
+                    }
+                    else if (is_quantifier(e)) {
+                        auto* ce = m_expr_vars.find_core(to_quantifier(e)->get_expr());
+                        if (ce)
+                            s |= ce->get_data().m_value;
+                    }
+
+                    computed.mark(e);
+                }
+            }
+        }
+        m_todo.reset();
+    }
+
+    /**
     * Build a substitution while assigning levels to terms.
     * The substitution is well-formed when variables are replaced with terms whose
-    * Free variables have higher levels.
+    * free variables have higher levels.
+    *
+    * Uses m_expr_vars (populated by compute_expr_vars) to check safety in O(|vars_in_term|)
+    * instead of O(|sub-expressions_in_term|), avoiding quadratic re-traversal of shared DAG nodes.
     */
     void solve_eqs::extract_subst() {
+        compute_expr_vars();
+
         m_id2level.reset();
         m_id2level.resize(m_id2var.size(), UINT_MAX);
         m_subst_ids.reset();
-        m_subst = alloc(expr_substitution, m, true, false);        
+        m_subst = alloc(expr_substitution, m, true, false);
 
         auto is_explored = [&](unsigned id) {
             return m_id2level[id] != UINT_MAX;
@@ -96,7 +165,7 @@ namespace euf {
 
         unsigned init_level = UINT_MAX;
         unsigned_vector todo;
-        
+
         for (unsigned id = 0; id < m_id2var.size(); ++id) {
             if (is_explored(id))
                 continue;
@@ -106,7 +175,7 @@ namespace euf {
             init_level -= m_id2var.size() + 1;
             unsigned curr_level = init_level;
             todo.push_back(id);
-            
+
             while (!todo.empty()) {
                 unsigned j = todo.back();
                 todo.pop_back();
@@ -120,43 +189,28 @@ namespace euf {
                     if (m_fmls.frozen(v))
                         continue;
 
-                    if (!m_config.m_enable_non_ground && has_quantifiers(t)) 
-                        continue;                        
+                    if (!m_config.m_enable_non_ground && has_quantifiers(t))
+                        continue;
 
-                    bool is_safe = true;                    
+                    // Safety check using cached free-variable sets.
+                    // The substitution v -> t is safe when every variable ID in FV(t)
+                    // has level >= curr_level (i.e., not yet assigned or assigned at/above current).
+                    // Unexplored variables in FV(t) are pushed onto the worklist.
+                    bool is_safe = true;
                     unsigned todo_sz = todo.size();
 
-                    // determine if substitution is safe.
-                    // all time-stamps must be at or above current level
-                    // unexplored variables that are part of substitution are appended to work list.
-                    SASSERT(m_todo.empty());
-
-
-                    m_todo.push_back(t);
-                    expr_fast_mark1 visited;
-                    while (!m_todo.empty()) {
-                        expr* e = m_todo.back();
-                        m_todo.pop_back();
-                        if (visited.is_marked(e))
-                            continue;
-                        visited.mark(e, true);
-                        if (is_app(e)) {
-                            for (expr* arg : *to_app(e))
-                                m_todo.push_back(arg);
+                    auto* entry = m_expr_vars.find_core(t);
+                    if (entry) {
+                        uint_set const& fv = entry->get_data().m_value;
+                        for (unsigned vid : fv) {
+                            if (m_id2level[vid] < curr_level) {
+                                is_safe = false;
+                                break;
+                            }
+                            if (!is_explored(vid))
+                                todo.push_back(vid);
                         }
-                        else if (is_quantifier(e))
-                            m_todo.push_back(to_quantifier(e)->get_expr());
-                        if (!is_var(e))
-                            continue;
-                        if (m_id2level[var2id(e)] < curr_level) {
-                            is_safe = false;
-                            break;
-                        }
-                        if (!is_explored(var2id(e)))
-                            todo.push_back(var2id(e));
                     }
-                    m_todo.reset();
-                    visited.reset();
 
                     if (!is_safe) {
                         todo.shrink(todo_sz);
@@ -164,11 +218,13 @@ namespace euf {
                     }
                     SASSERT(!occurs(v, t));
                     m_next[j][0] = eq;
-                    m_subst_ids.push_back(j);                   
+                    m_subst_ids.push_back(j);
                     break;
                 }
-            }                   
+            }
         }
+
+        m_expr_vars.reset();
     }
 
     void solve_eqs::normalize() {
