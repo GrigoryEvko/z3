@@ -39,10 +39,6 @@ namespace datalog {
 
 
     bool mk_subsumption_checker::is_total_rule(const rule * r) {
-        if (r->get_tail_size() != 0) {
-            return false;
-        }
-
         unsigned pt_len = r->get_positive_tail_size();
         if(pt_len != r->get_uninterpreted_tail_size()) {
             // we don't expect rules with negative tails to be total
@@ -57,7 +53,7 @@ namespace datalog {
             }
         }
 
-        unsigned t_len = r->get_positive_tail_size();
+        unsigned t_len = r->get_tail_size();
         for(unsigned i = pt_len; i < t_len; ++i) {
             SASSERT(!r->is_neg_tail(i)); //we assume interpreted tail not to be negated
             if (!m.is_true(r->get_tail(i))) {

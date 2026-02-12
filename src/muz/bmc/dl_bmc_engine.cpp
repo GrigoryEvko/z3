@@ -287,7 +287,7 @@ namespace datalog {
 
                 // extract values for the variables in the rule.
                 for (unsigned j = 0; j < sub.size(); ++j) {
-                    expr_ref vl = eval_q(md, sub[j].get(), i);
+                    expr_ref vl = eval_q(md, sub[j].get(), level);
                     if (vl) {
                         // vl can be 0 if the interpretation does not assign a value to it.
                         sub[j] = vl;

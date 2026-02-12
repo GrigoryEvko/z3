@@ -813,7 +813,7 @@ namespace tb {
             if (str == symbol("weight")) {
                 m_strategy = WEIGHT_SELECT;
             }
-            if (str == symbol("basic-weight")) {
+            else if (str == symbol("basic-weight")) {
                 m_strategy = BASIC_WEIGHT_SELECT;
             }
             else if (str == symbol("first")) {

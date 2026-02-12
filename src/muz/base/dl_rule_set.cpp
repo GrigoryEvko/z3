@@ -457,8 +457,10 @@ namespace datalog {
             }
         }
         bool change = true;
+        ptr_vector<func_decl> to_move;
         while (change) {
             change = false;
+            to_move.reset();
             for (func_decl * f : non_founded) {
                 rule_vector const& rv = get_predicate_rules(f);
                 bool found = false;
@@ -469,12 +471,15 @@ namespace datalog {
                         is_founded = founded.contains(r.get_decl(j));
                     }
                     if (is_founded) {
-                        founded.insert(f);
-                        non_founded.remove(f);
+                        to_move.push_back(f);
                         change = true;
                         found  = true;
                     }
                 }
+            }
+            for (func_decl * f : to_move) {
+                founded.insert(f);
+                non_founded.remove(f);
             }
         }
     }
@@ -669,7 +674,6 @@ namespace datalog {
                             m_components[tgt_comp] = 0;
                         }
                     }
-                    traverse(el);
                 }
             }
             strats_index++;

@@ -857,7 +857,7 @@ namespace datalog {
     };
 
     ddnf::ddnf(context& ctx):
-        datalog::engine_base(ctx.get_manager(),"tabulation"),
+        datalog::engine_base(ctx.get_manager(),"ddnf"),
         m_imp(alloc(imp, ctx)) {        
     }
     ddnf::~ddnf() {

@@ -675,7 +675,7 @@ namespace datalog {
                         one_side_union = src[i].clone();
                         one_side_delta = fresh_delta ? fresh_delta->clone() : nullptr;
                         TRACE(dl, one_side_union->display(tout << "union 2:\n"); tgt[j].display(tout););
-                        do_inner_union(i, j, *one_side_union, tgt[j], one_side_delta.get());
+                        do_inner_union(j, i, *one_side_union, tgt[j], one_side_delta.get());
                         TRACE(dl, one_side_union->display(tout << "union:\n"););
                         do_destructive_intersection(side_result, one_side_union);
                         TRACE(dl, 
@@ -892,9 +892,11 @@ namespace datalog {
                 m_mutators.push_back(r.get_manager().mk_filter_interpreted_fn(r[i], cond));
             }
             for (unsigned i = 0; i < r.size(); ++i) {
+                if (!m_mutators[i]) continue;
                 relation_mutator_fn& m1 = *(m_mutators[i]);
                 for (unsigned j = i + 1; j < r.size(); ++j) {
-                    relation_mutator_fn& m2 = *(m_mutators[j]);  
+                    if (!m_mutators[j]) continue;
+                    relation_mutator_fn& m2 = *(m_mutators[j]);
                     if (m1.supports_attachment(r[j])) {
                         m_attach.push_back(std::make_pair(i,j));
                     }
@@ -914,7 +916,8 @@ namespace datalog {
                 m_mutators[m_attach[i].first]->attach(r[m_attach[i].second]);
             }
             for (unsigned i = 0; i < m_mutators.size(); ++i) {
-                (*m_mutators[i])(r[i]);
+                if (m_mutators[i])
+                    (*m_mutators[i])(r[i]);
             }
             TRACE(dl, _r.display(tout););
         }      

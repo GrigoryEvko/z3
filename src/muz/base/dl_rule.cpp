@@ -707,7 +707,7 @@ namespace datalog {
         collect_rule_vars(r);
         expr_ref_vector subst(m);
         ptr_vector<sort> qsorts;
-        qsorts.resize(q_var_cnt);
+        qsorts.reserve(q_var_cnt);
 
         unsigned q_idx = 0;
         for (unsigned v = 0; v < m_free_vars.size(); ++v) {

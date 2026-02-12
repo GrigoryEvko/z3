@@ -135,9 +135,9 @@ namespace datalog {
         }
     
         model_converter * translate(ast_translation & translator) override {
-            add_invariant_model_converter* mc = alloc(add_invariant_model_converter, m);
+            add_invariant_model_converter* mc = alloc(add_invariant_model_converter, translator.to());
             for (unsigned i = 0; i < m_funcs.size(); ++i) {
-                mc->add(translator(m_funcs[i].get()), m_invs[i].get());
+                mc->add(translator(m_funcs[i].get()), translator(m_invs[i].get()));
             }
             return mc;
         }

@@ -130,7 +130,7 @@ namespace datalog {
             it must exist for the whole lifetime of the \c stratifier object.
         */
         rule_stratifier(const rule_dependencies & deps)
-            : m_deps(deps), m_next_preorder(0)
+            : m_deps(deps), m_next_preorder(0), m_first_preorder(0)
         {
             process();
         }

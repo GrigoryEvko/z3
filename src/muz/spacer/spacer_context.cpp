@@ -3214,7 +3214,7 @@ bool context::check_reachability ()
         // -- remove all closed nodes
         // -- this is necessary because there is no easy way to
         // -- remove nodes from the priority queue.
-        while (m_pob_queue.top ()->is_closed ()) {
+        while (m_pob_queue.top () && m_pob_queue.top ()->is_closed ()) {
             pob_ref n = m_pob_queue.top();
             m_pob_queue.pop();
             IF_VERBOSE (1,
@@ -3223,7 +3223,6 @@ bool context::check_reachability ()
                         << "(" << n->level () << ", " << n->depth () << ")"
                         << " " << n->post ()->get_id () << "\n";);
             if (m_pob_queue.is_root(*n)) {return true;}
-            SASSERT (m_pob_queue.top ());
         }
 
         SASSERT (m_pob_queue.top ());
@@ -3569,8 +3568,8 @@ lbool context::expand_pob(pob& n, pob_ref_buffer &out)
               unsigned gas = n.get_gas();
               SASSERT(gas > 0);
               // dec gas for orig pob to limit number of concretizations
-              new_pob->set_gas(gas--);
-              n.set_gas(gas);
+              new_pob->set_gas(gas - 1);
+              n.set_gas(gas - 1);
               return l_undef;
           }
       }
@@ -3884,7 +3883,8 @@ bool context::propagate(unsigned min_prop_lvl,
         for (auto & kv : m_rels) {
             checkpoint();
             pred_transformer& r = *kv.m_value;
-            all_propagated = r.propagate_to_next_level(lvl) && all_propagated;
+            bool ok = r.propagate_to_next_level(lvl);
+            all_propagated = ok && all_propagated;
         }
         //CASSERT("spacer", check_invariant(lvl));
 
@@ -3901,11 +3901,6 @@ bool context::propagate(unsigned min_prop_lvl,
             }
             break;
         }
-
-        if (all_propagated && lvl == max_prop_lvl) {
-            m_inductive_lvl = lvl;
-            return true;
-        } else if (all_propagated && lvl > max_prop_lvl) { break; }
     }
     if (m_simplify_formulas_post) {
         simplify_formulas();
@@ -4107,8 +4102,9 @@ bool context::create_children(pob& n, datalog::rule const& r,
 
     if (kid->is_may_pob()) {
         SASSERT(n.get_gas() > 0);
-        n.set_gas(n.get_gas() - 1);
-        kid->set_gas(n.get_gas() - 1);
+        unsigned g = n.get_gas();
+        n.set_gas(g - 1);
+        kid->set_gas(g - 1);
     }
     out.push_back(kid);
     m_stats.m_num_queries++;

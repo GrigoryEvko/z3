@@ -480,6 +480,10 @@ namespace datalog {
             if (!b.is_zero()) {
                 sum.push_back(a.mk_numeral(b, true));
             }
+            if (sum.empty()) {
+                // Trivial constraint 0 = 0 or 0 >= 0; skip it.
+                return;
+            }
             lhs = a.mk_add(sum.size(), sum.data());
             if (is_eq) {
                 conj.push_back(m.mk_eq(lhs, zero));
@@ -753,7 +757,7 @@ namespace datalog {
                 row.resize(r.get_signature().size());
                 row[m_col] = rational(1);
                 r.m_ineqs.A.push_back(row);
-                r.m_ineqs.b.push_back(rational(-1));
+                r.m_ineqs.b.push_back(-m_value);
                 r.m_ineqs.eq.push_back(true);
                 r.m_basis_valid = false;
             }

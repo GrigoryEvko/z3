@@ -775,23 +775,26 @@ namespace datalog {
         if (rule_updated(r)) {
             init_vars(r);
             app_ref_vector tail(m);
+            svector<bool> neg_flags;
             app_ref head(m);
             update_predicate(r.get_head(), head);
             for (unsigned i = 0; i < r.get_uninterpreted_tail_size(); ++i) {
                 app_ref t(m);
                 update_predicate(r.get_tail(i), t);
                 tail.push_back(t);
+                neg_flags.push_back(r.is_neg_tail(i));
             }
             expr_ref_vector conjs = get_tail_conjs(r);
-            
+
             m_solved_vars.reset();
 
             for (unsigned i = 0; i < conjs.size(); ++i) {
                 expr* e = conjs[i].get();
-                tail.push_back(to_app(e));                
+                tail.push_back(to_app(e));
+                neg_flags.push_back(false);
             }
-                        
-            new_rule = rm.mk(head.get(), tail.size(), tail.data(), (const bool*) nullptr, r.name());
+
+            new_rule = rm.mk(head.get(), tail.size(), tail.data(), neg_flags.data(), r.name());
 
             rm.fix_unbound_vars(new_rule, false);
 
