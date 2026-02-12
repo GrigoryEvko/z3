@@ -76,6 +76,7 @@ namespace smt {
         row_entry & t = m_entries[idx];
         SASSERT(!t.is_dead());
         t.m_next_free_row_entry_idx = m_first_free_idx;
+        m_first_free_idx            = idx;
         t.m_var = null_theory_var;
         m_size--;
         SASSERT(t.is_dead());

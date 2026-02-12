@@ -184,7 +184,7 @@ namespace euf {
         bool is_true(sat::literal lit);
         bool is_true(sat::literal a, sat::literal b) { return is_true(a) || is_true(b); }
         bool is_true(sat::literal a, sat::literal b, sat::literal c) { return is_true(a) || is_true(b, c); }
-        bool is_true(sat::literal a, sat::literal b, sat::literal c, sat::literal d) { return is_true(a) || is_true(b, c, c); }
+        bool is_true(sat::literal a, sat::literal b, sat::literal c, sat::literal d) { return is_true(a) || is_true(b, c, d); }
 
         sat::literal eq_internalize(expr* a, expr* b);
         sat::literal eq_internalize(enode* a, enode* b) { return eq_internalize(a->get_expr(), b->get_expr()); }

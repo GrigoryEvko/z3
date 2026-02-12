@@ -3095,9 +3095,9 @@ namespace sat {
             if (f > max) max = f;
         }
         for (double f : logits) {
-            lse += log(f - max);
+            lse += exp(f - max);
         }
-        lse = max + exp(lse);
+        lse = max + log(lse);
 
         for (unsigned i = 0; i < vars.size(); ++i) {
             update_activity(vars[i], exp(logits[i] - lse));

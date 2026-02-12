@@ -39,7 +39,6 @@ namespace bv {
         default:
             return check_bv_eval(expr2enode(e));
         }
-        return true;
     }
 
     bool solver::should_bit_blast(app* e) {
@@ -93,7 +92,7 @@ namespace bv {
         auto set_bits = [&](unsigned j, expr_ref_vector& bits) {
             bits.reset();
             for (unsigned i = 0; i < sz; ++i)
-                bits.push_back(bv.mk_bit2bool(e->get_arg(0), j));            
+                bits.push_back(bv.mk_bit2bool(e->get_arg(j), i));
         };
         if (!m_lazymul.find(e, lz)) {
             set_bits(0, args);

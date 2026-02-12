@@ -834,6 +834,7 @@ namespace pb {
     }
 
     void solver::ineq::divide(unsigned c) {
+        SASSERT(c > 0);
         if (c == 1) return;
         for (unsigned i = size(); i-- > 0; ) {
             m_wlits[i].first = (coeff(i) + c - 1) / c;

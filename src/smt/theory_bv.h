@@ -107,8 +107,7 @@ namespace smt {
         trail_stack              m_trail_stack;
         th_union_find            m_find;
         vector<literal_vector>   m_bits;     // per var, the bits of a given variable.
-        ptr_vector<expr>         m_bits_expr;
-        svector<unsigned>        m_wpos;     // per var, watch position for fixed variable detection. 
+        svector<unsigned>        m_wpos;     // per var, watch position for fixed variable detection.
         vector<zero_one_bits>    m_zero_one_bits; // per var, see comment in the struct zero_one_bit
         bool_var2atom            m_bool_var2atom;
         enode_vector             m_bv2int;

@@ -51,14 +51,17 @@ namespace smt {
         bool is_relevant      = ctx.is_relevant(n);
         literal_vector & bits = m_bits[v];
         bits.reset();
-        m_bits_expr.reset();
+        // Use a local vector to avoid reentrancy corruption:
+        // ctx.internalize can recursively call mk_bits for other variables,
+        // which would reset a shared class member mid-use.
+        ptr_vector<expr> bits_expr;
 
-        for (unsigned i = 0; i < bv_size; ++i) 
-            m_bits_expr.push_back(mk_bit2bool(owner, i));
-        ctx.internalize(m_bits_expr.data(), bv_size, true);
+        for (unsigned i = 0; i < bv_size; ++i)
+            bits_expr.push_back(mk_bit2bool(owner, i));
+        ctx.internalize(bits_expr.data(), bv_size, true);
 
         for (unsigned i = 0; i < bv_size; ++i) {
-            bool_var b = ctx.get_bool_var(m_bits_expr[i]);
+            bool_var b = ctx.get_bool_var(bits_expr[i]);
             bits.push_back(literal(b));
             if (is_relevant && !ctx.is_relevant(b)) {
                 ctx.mark_as_relevant(b);
@@ -66,8 +69,8 @@ namespace smt {
         }
 
         TRACE(bv, tout << "v" << v << " #" << owner->get_id() << "\n";
-              for (unsigned i = 0; i < bv_size; ++i) 
-                  tout << mk_bounded_pp(m_bits_expr[i], m) << "\n";
+              for (unsigned i = 0; i < bv_size; ++i)
+                  tout << mk_bounded_pp(bits_expr[i], m) << "\n";
               );
 
     }

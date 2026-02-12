@@ -443,7 +443,7 @@ namespace smt {
 
     void quantifier_manager::add(quantifier * q, unsigned generation) {
         if (m_lazy) {
-            while (m_lazy_scopes-- > 0) m_imp->push();
+            while (m_lazy_scopes > 0) { --m_lazy_scopes; m_imp->push(); }
             m_lazy = false;
         }
         m_imp->add(q, generation);
@@ -477,7 +477,7 @@ namespace smt {
                                           unsigned min_top_generation,
                                           unsigned max_top_generation,
                                           vector<std::tuple<enode *, enode *>> & used_enodes) {
-        return m_imp->add_instance(q, pat, num_bindings, bindings, def, max_generation, min_top_generation, max_generation, used_enodes);
+        return m_imp->add_instance(q, pat, num_bindings, bindings, def, max_generation, min_top_generation, max_top_generation, used_enodes);
     }
 
     bool quantifier_manager::add_instance(quantifier * q, unsigned num_bindings, enode * const * bindings, expr* def, unsigned generation) {

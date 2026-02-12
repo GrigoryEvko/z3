@@ -622,7 +622,8 @@ bool theory_seq::check_extensionality() {
         if (m_util.str.is_nth_u(o1) && n1->is_cgr()) {
             auto* r0 = n1->get_arg(0)->get_root();
             auto* r1 = n1->get_arg(1)->get_root();
-            if (!canonize(r0->get_expr(), dep, e1)) 
+            dep = nullptr;
+            if (!canonize(r0->get_expr(), dep, e1))
                 return false;
             for (auto* p : r1->get_parents()) 
                 if (p != n1 && p->is_cgr() && m_util.str.is_nth_u(p->get_expr()) && 
@@ -634,7 +635,8 @@ bool theory_seq::check_extensionality() {
         if (!m_util.is_seq(o1))
             continue;        
         if (!seqs.empty() && ctx.is_relevant(n1) && ctx.is_shared(n1)) {
-            if (!canonize(o1, dep, e1)) 
+            dep = nullptr;
+            if (!canonize(o1, dep, e1))
                 return false;
             for (theory_var v : seqs) 
                 if (!check_extensionality(e1, n1, get_enode(v))) 
@@ -1132,7 +1134,7 @@ bool theory_seq::reduce_length(unsigned i, unsigned j, bool front, expr_ref_vect
             }
         }
         deps = mk_join(deps, lit);                
-        m_eqs.push_back(depeq(++m_eq_id, lhs, rhs, deps));
+        m_eqs.push_back(depeq(m_eq_id++, lhs, rhs, deps));
         propagate_eq(deps, l, r, true);
         TRACE(seq, tout << "propagate eq\n" << m_eqs.size() << "\nlhs: " << lhs << "\nrhs: " << rhs << "\n";);
         return true;

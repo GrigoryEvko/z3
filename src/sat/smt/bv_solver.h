@@ -71,7 +71,7 @@ namespace bv {
             theory_var m_v2 = euf::null_theory_var;
             sat::literal m_consequent;
             sat::literal m_antecedent;
-            euf::enode* a, *b, *c;
+            euf::enode* a = nullptr, *b = nullptr, *c = nullptr;
                     
             bv_justification(theory_var v1, theory_var v2, sat::literal c, sat::literal a) :
                 m_kind(bv_justification::kind_t::eq2bit), m_v1(v1), m_v2(v2), m_consequent(c), m_antecedent(a) {}

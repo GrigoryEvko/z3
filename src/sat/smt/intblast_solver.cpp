@@ -304,11 +304,15 @@ namespace intblast {
             for (unsigned i = 0; i < es.size(); ++i)
                 e2index.insert(es.get(i), i);
             for (auto e : core) {
-                unsigned idx = e2index[e];
-                if (idx < literals.size())
-                    m_core.push_back(literals[idx]);
-                else
-                    m_core.push_back(ctx.mk_literal(e));
+                unsigned idx;
+                if (e2index.find(e, idx)) {
+                    if (idx < literals.size())
+                        m_core.push_back(literals[idx]);
+                    else
+                        m_core.push_back(ctx.mk_literal(e));
+                }
+                // Skip bound axioms that were asserted separately and
+                // are not part of the assumption set (e.g., 0 <= v, v < 2^n).
             }
         }
         return r;

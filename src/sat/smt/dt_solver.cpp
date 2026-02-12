@@ -282,7 +282,7 @@ namespace dt {
         sort* srt = n->get_sort();
         auto const& constructors = *dt.get_datatype_constructors(srt);
         unsigned sz = constructors.size();
-        int start = s().rand()();
+        unsigned start = s().rand()();
         m_lits.reset();
         sat::literal lit;
         for (unsigned i = 0; i < sz; ++i) {
@@ -512,10 +512,13 @@ namespace dt {
     ptr_vector<euf::enode> const& solver::get_array_args(enode* n) {
         m_nodes.reset();
         array::solver* th = dynamic_cast<array::solver*>(ctx.fid2solver(m_autil.get_family_id()));
-        for (enode* p : th->parent_selects(n))
-            m_nodes.push_back(p);
+        if (th)
+            for (enode* p : th->parent_selects(n))
+                m_nodes.push_back(p);
         app_ref def(m_autil.mk_default(n->get_expr()), m);
-        m_nodes.push_back(ctx.get_enode(def));
+        enode* def_enode = ctx.get_enode(def);
+        if (def_enode)
+            m_nodes.push_back(def_enode);
         return m_nodes;
     }
 
@@ -723,11 +726,11 @@ namespace dt {
 
     sat::check_result solver::check() {
         force_push();
-        int num_vars = get_num_vars();
+        unsigned num_vars = get_num_vars();
         sat::check_result r = sat::check_result::CR_DONE;
         final_check_st _guard(*this);
-        int start = s().rand()();
-        for (int i = 0; i < num_vars; ++i) {
+        unsigned start = s().rand()();
+        for (unsigned i = 0; i < num_vars; ++i) {
             theory_var v = (i + start) % num_vars;
             if (v != static_cast<int>(m_find.find(v)))
                 continue;
@@ -769,6 +772,10 @@ namespace dt {
         v = m_find.find(v);
         SASSERT(v != euf::null_theory_var);
         enode* con = m_var_data[v]->m_constructor;
+        if (!con) {
+            values.set(n->get_root_id(), mdl.get_fresh_value(n->get_sort()));
+            return;
+        }
         func_decl* c_decl = con->get_decl();
         m_args.reset();
         for (enode* arg : euf::enode_args(con))
@@ -780,11 +787,11 @@ namespace dt {
         if (!is_datatype(n->get_expr()))
             return false;
         theory_var v = n->get_th_var(get_id());
-        if (v == euf::null_theory_var) 
+        if (v == euf::null_theory_var)
             return false;
         euf::enode* con = m_var_data[m_find.find(v)]->m_constructor;
         TRACE(dt, display(tout) << ctx.bpp(n) << " con: " << ctx.bpp(con) << "\n";);
-        if (con->num_args() == 0)
+        if (!con || con->num_args() == 0)
             dep.insert(n, nullptr);
         for (enode* arg : euf::enode_args(con))
             dep.add(n, arg->get_root());

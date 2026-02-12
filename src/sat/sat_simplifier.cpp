@@ -1982,8 +1982,6 @@ namespace sat {
               );
         m_elim_counter -= num_pos * num_neg + before_lits;
 
-        m_elim_counter -= num_pos * num_neg + before_lits;
-
         // eliminate variable
         ++s.m_stats.m_elim_var_res;
         VERIFY(!is_external(v));

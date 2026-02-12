@@ -304,7 +304,7 @@ namespace q {
             return nullptr;
 
         unsigned n = c.num_decls();
-        unsigned sz = sizeof(binding) + sizeof(euf::enode* const*) * n;
+        unsigned sz = sizeof(binding) + sizeof(euf::enode*) * n;
         void* mem = ctx.get_region().allocate(sz);
         b = new (mem) binding(c, pat, max_generation, min_top, max_top);
         b->init(b);
@@ -317,7 +317,7 @@ namespace q {
     }
 
     euf::enode* const* ematch::copy_nodes(clause& c, euf::enode* const* nodes) {
-        unsigned sz = sizeof(euf::enode* const*) * c.num_decls();
+        unsigned sz = sizeof(euf::enode*) * c.num_decls();
         euf::enode** new_nodes = (euf::enode**)ctx.get_region().allocate(sz);
         for (unsigned i = 0; i < c.num_decls(); ++i)
             new_nodes[i] = nodes[i];

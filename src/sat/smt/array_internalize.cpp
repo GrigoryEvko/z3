@@ -217,7 +217,7 @@ namespace array {
             }
             else if (a.is_select(p)) {
                 set_array(parent->get_arg(0));
-                for (unsigned i = 1; i < num_args - 1; ++i)
+                for (unsigned i = 1; i < num_args; ++i)
                     set_index(parent->get_arg(i));
             }
             else if (a.is_const(p)) {

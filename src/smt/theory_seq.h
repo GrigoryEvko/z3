@@ -76,30 +76,30 @@ namespace smt {
             void insert(expr_dep const& r) { 
                 m_trail.push_back(r.v); 
                 m_trail.push_back(r.e);
-                m_map.reserve(2*r.v->get_id() + 1);
+                m_map.reserve(r.v->get_id() + 1);
                 m_map[r.v->get_id()] = r;
             }
             void reset() { m_map.reset(); m_trail.reset(); }
         };
-        
-        // map from variables to representatives 
+
+        // map from variables to representatives
         // + a cache for normalization.
         class solution_map {
             enum map_update { INS, DEL };
             ast_manager&           m;
             dependency_manager&    m_dm;
-            eqdep_map_t            m_map;            
+            eqdep_map_t            m_map;
             eval_cache             m_cache;
             expr_ref_vector        m_lhs, m_rhs;
             ptr_vector<dependency> m_deps;
             svector<map_update>    m_updates;
             unsigned_vector        m_limit;
 
-            bool find(expr* v, expr_dep& r) const { 
-                return v->get_id() < m_map.size() && m_map[v->get_id()].e && (r = m_map[v->get_id()], true); 
+            bool find(expr* v, expr_dep& r) const {
+                return v->get_id() < m_map.size() && m_map[v->get_id()].e && (r = m_map[v->get_id()], true);
             }
-            void insert(expr_dep const& r) { 
-                m_map.reserve(2*r.v->get_id() + 1);                
+            void insert(expr_dep const& r) {
+                m_map.reserve(r.v->get_id() + 1);                
                 m_map[r.v->get_id()] = r;
             }
             void add_trail(map_update op, expr* l, expr* r, dependency* d);
@@ -169,7 +169,7 @@ namespace smt {
                 m_util.str.get_concat_units(e, ls);
             for (expr* e : r)
                 m_util.str.get_concat_units(e, rs);
-            return depeq(++m_eq_id, ls, rs, dep);
+            return depeq(m_eq_id++, ls, rs, dep);
         }        
 
         // equalities that are decomposed by conacatenations

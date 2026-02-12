@@ -612,7 +612,7 @@ namespace smt {
         m_stats.m_num_select_const_axiom++;   
         ptr_buffer<expr> sel_args;
         sel_args.push_back(cnst->get_expr());
-        for (unsigned short i = 1; i < num_args; ++i) {
+        for (unsigned i = 1; i < num_args; ++i) {
             sel_args.push_back(select->get_expr()->get_arg(i));
         }
         expr * sel = mk_select(sel_args.size(), sel_args.data());
@@ -646,7 +646,7 @@ namespace smt {
         m_stats.m_num_select_as_array_axiom++;   
         ptr_buffer<expr> sel_args;
         sel_args.push_back(arr->get_expr());
-        for (unsigned short i = 1; i < num_args; ++i) {
+        for (unsigned i = 1; i < num_args; ++i) {
             sel_args.push_back(select->get_expr()->get_arg(i));
         }
         expr * sel = mk_select(sel_args.size(), sel_args.data());

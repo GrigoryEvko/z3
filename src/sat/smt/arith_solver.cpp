@@ -411,10 +411,10 @@ namespace arith {
         if (is_infeasible()) 
             return;
         lp::lconstraint_kind k = bound2constraint_kind(b.is_int(), b.get_bound_kind(), is_true);
-        if (k == lp::LT || k == lp::LE) 
-            ++m_stats.m_assert_lower;
-        else 
+        if (k == lp::LT || k == lp::LE)
             ++m_stats.m_assert_upper;
+        else
+            ++m_stats.m_assert_lower;
         inf_rational value = b.get_value(is_true);
         if (propagate_eqs() && value.is_rational()) 
             propagate_eqs(b.column_index(), ci, k, b, value.get_rational());

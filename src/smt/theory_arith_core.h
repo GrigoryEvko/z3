@@ -48,14 +48,10 @@ namespace smt {
             e = m_util.mk_idiv0(n->get_arg(0), n->get_arg(1));
         }
         else if (m_util.is_rem(n)) {
-            expr* z = m_util.mk_int(0);
-            e = m_util.mk_rem0(n->get_arg(0), z);
-            n = m_util.mk_rem(n->get_arg(0), z);
+            e = m_util.mk_rem0(n->get_arg(0), n->get_arg(1));
         }
         else if (m_util.is_mod(n)) {
-            expr* z = m_util.mk_int(0);
-            e = m_util.mk_mod0(n->get_arg(0), z);
-            n = m_util.mk_mod(n->get_arg(0), z);
+            e = m_util.mk_mod0(n->get_arg(0), n->get_arg(1));
         }
         else if (m_util.is_power(n)) {                
             e = m_util.mk_power0(n->get_arg(0), n->get_arg(1));
@@ -275,7 +271,7 @@ namespace smt {
         if (m_util.is_mul(m, arg1, arg2) && m_util.is_numeral(arg1, _val1) && is_app(arg1) && is_app(arg2)) {
             SASSERT(m->get_num_args() == 2);
             if (m_util.is_numeral(arg2, _val2)) {
-                numeral val(_val1 + _val2);
+                numeral val(_val1 * _val2);
                 if (reflection_enabled()) {
                     internalize_term_core(to_app(arg1));
                     internalize_term_core(to_app(arg2));
