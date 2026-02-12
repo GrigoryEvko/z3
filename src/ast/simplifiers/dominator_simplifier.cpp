@@ -262,7 +262,7 @@ void dominator_simplifier::reduce() {
             change |= r != f;
             CTRACE(simplify, r != f, tout << r << " " << mk_pp(f, m) << "\n";);
             proof_ref new_pr(m);
-            if (r) {
+            if (p) {
                 new_pr = m.mk_rewrite(f, r);
                 new_pr = m.mk_modus_ponens(p, new_pr);
             }

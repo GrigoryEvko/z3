@@ -443,7 +443,7 @@ namespace euf {
                 toggle_cgc_enabled(p.r1, true);
                 break;
             case update_record::tag_t::is_toggle_merge_tf:
-                p.r1->set_merge_tf(!p.r1->merge_tf());
+                p.r1->set_merge_tf(!p.r1->m_merge_tf_enabled);
                 break;
             case update_record::tag_t::is_set_parent:
                 undo_eq(p.r1, p.n1, p.r2_num_parents);
@@ -883,6 +883,11 @@ namespace euf {
             explain_eq(justifications, cc, b, rb);
             return sat::null_bool_var;
         }
+        if (ra->get_sort() != rb->get_sort()) {
+            explain_eq(justifications, cc, a, ra);
+            explain_eq(justifications, cc, b, rb);
+            return sat::null_bool_var;
+        }
         enode* r = tmp_eq(ra, rb);
         SASSERT(r && r->get_root()->value() == l_false);
         explain_eq(justifications, cc, r, r->get_root());
@@ -1014,7 +1019,7 @@ namespace euf {
             enode* n1 = src.m_nodes[i];
             enode* n1t = n1->m_target;      
             enode* n2 = m_nodes[i];
-            enode* n2t = n1t ? old_expr2new_enode[n1->get_expr_id()] : nullptr;
+            enode* n2t = n1t ? old_expr2new_enode[n1t->get_expr_id()] : nullptr;
             SASSERT(!n1t || n2t);
             SASSERT(!n1t || n1->get_sort() == n1t->get_sort());
             SASSERT(!n1t || n2->get_sort() == n2t->get_sort());

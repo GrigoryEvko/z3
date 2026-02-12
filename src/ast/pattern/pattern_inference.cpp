@@ -671,12 +671,10 @@ bool pattern_inference_cfg::reduce_quantifier(
     mk_patterns(q->get_num_decls(), new_body, num_no_patterns, new_no_patterns, new_patterns);
 
     if (new_patterns.empty() && num_no_patterns > 0) {
-        if (new_patterns.empty()) {
-            mk_patterns(q->get_num_decls(), new_body, 0, nullptr, new_patterns);
-            if (m_params.m_pi_warnings && !new_patterns.empty()) {
-                auto str = q->get_qid().str();
-                warning_msg("ignoring nopats annotation because Z3 couldn't find any other pattern (quantifier id: %s)", str.c_str());
-            }
+        mk_patterns(q->get_num_decls(), new_body, 0, nullptr, new_patterns);
+        if (m_params.m_pi_warnings && !new_patterns.empty()) {
+            auto str = q->get_qid().str();
+            warning_msg("ignoring nopats annotation because Z3 couldn't find any other pattern (quantifier id: %s)", str.c_str());
         }
     }
 
@@ -697,18 +695,15 @@ bool pattern_inference_cfg::reduce_quantifier(
     }
 
     if (m_params.m_pi_arith != AP_NO && new_patterns.empty()) {
-        if (new_patterns.empty()) {
-            flet<bool> l1(m_nested_arith_only, false); // try to find a non-nested arith pattern
-            flet<bool> l2(m_block_loop_patterns, false); // allow looping patterns
-            mk_patterns(q->get_num_decls(), new_body, num_no_patterns, new_no_patterns, new_patterns);
-            if (!new_patterns.empty()) {
-                weight = std::max(weight, static_cast<int>(m_params.m_pi_non_nested_arith_weight));
-                if (m_params.m_pi_warnings) {
-                    auto str = q->get_qid().str();
-                    warning_msg("using non nested arith. pattern (quantifier id: %s), the weight was increased to %d (this value can be modified using PI_NON_NESTED_ARITH_WEIGHT=<val>).",
-                                str.c_str(), weight);
-                }
-                // verbose_stream() << mk_pp(q, m) << "\n";
+        flet<bool> l1(m_nested_arith_only, false); // try to find a non-nested arith pattern
+        flet<bool> l2(m_block_loop_patterns, false); // allow looping patterns
+        mk_patterns(q->get_num_decls(), new_body, num_no_patterns, new_no_patterns, new_patterns);
+        if (!new_patterns.empty()) {
+            weight = std::max(weight, static_cast<int>(m_params.m_pi_non_nested_arith_weight));
+            if (m_params.m_pi_warnings) {
+                auto str = q->get_qid().str();
+                warning_msg("using non nested arith. pattern (quantifier id: %s), the weight was increased to %d (this value can be modified using PI_NON_NESTED_ARITH_WEIGHT=<val>).",
+                            str.c_str(), weight);
             }
         }
     }

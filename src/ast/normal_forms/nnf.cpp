@@ -248,7 +248,7 @@ struct nnf::imp {
 
     // proof generation goodness ----
     proof_ref_vector       m_result_pr_stack;
-    cache *                m_cache_pr[4];
+    cache *                m_cache_pr[4] = {nullptr, nullptr, nullptr, nullptr};
     // ------------------------------
 
     skolemizer             m_skolemizer;

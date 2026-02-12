@@ -281,7 +281,7 @@ bool arith_rewriter::is_non_negative(expr* e) {
             continue;
         if (is_power_of_positive(arg))
             continue;
-        if (seq().str.is_length(e))
+        if (seq().str.is_length(arg))
             continue;
         if (m_util.is_numeral(arg, r)) {
             if (r.is_neg()) 
@@ -334,23 +334,23 @@ br_status arith_rewriter::is_separated(expr* arg1, expr* arg2, op_kind kind, exp
     if (!has_bound)
         return BR_FAILED;
 
-    if (kind == LE && r1 < r2)
+    if (kind == LE && bound < r2)
         return BR_FAILED;
-    if (kind == GE && r1 > r2)
+    if (kind == GE && bound > r2)
         return BR_FAILED;
-    if (kind == LE && r1 > r2) { 
+    if (kind == LE && bound > r2) {
         result = m.mk_false();
         return BR_DONE;
     }
-    if (kind == GE && r1 < r2) { 
+    if (kind == GE && bound < r2) {
         result = m.mk_false();
         return BR_DONE;
     }
 
-    SASSERT(r1 == r2);
+    SASSERT(bound == r2);
     expr_ref zero(m_util.mk_numeral(rational(0), arg1->get_sort()), m);
 
-    if (r1.is_zero() && m_util.is_mul(arg1)) {
+    if (bound.is_zero() && m_util.is_mul(arg1)) {
         expr_ref_buffer eqs(m);
         ptr_buffer<expr> args;
         flat_mul(arg1, args);
@@ -1581,13 +1581,13 @@ br_status arith_rewriter::mk_ashr_core(unsigned sz, expr* arg1, expr* arg2, expr
             if (y >= sz)
                 result = m_util.mk_int(N-1);
             else
-                result = m_util.mk_int(d);
+                result = m_util.mk_int(mod(d - rational::power_of_two(sz - y.get_unsigned()), N));
         }
         else {
-            if (y >= sz) 
+            if (y >= sz)
                 result = m_util.mk_int(0);
-            else 
-                result = m_util.mk_int(mod(d - rational::power_of_two(sz - y.get_unsigned()), N));
+            else
+                result = m_util.mk_int(d);
         }
         return BR_DONE;
     }

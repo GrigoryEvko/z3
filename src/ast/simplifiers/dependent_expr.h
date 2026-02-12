@@ -107,7 +107,7 @@ public:
     }
 
     std::ostream& display(std::ostream& out) const {
-        return out << mk_pp(m_fml, m);
+        out << mk_pp(m_fml, m);
         if (m_dep) {
             out << "\n <- ";
             ptr_vector<expr> deps;            

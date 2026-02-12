@@ -127,8 +127,8 @@ struct pull_quant::imp {
                                 num_decls - nested_q->get_num_decls(), // shift1  (shift by this amount if var idx >= bound)
                                 shift_amount,                          // shift2  (shift by this amount if var idx < bound)
                                 adjusted_child);
-                        TRACE(pull_quant, tout << "shifted  bound: " << nested_q->get_num_decls() << " shift1: " << shift_amount <<
-                              " shift2: " << (num_decls - nested_q->get_num_decls()) << "\n" << mk_pp(nested_q->get_expr(), m) << 
+                        TRACE(pull_quant, tout << "shifted  bound: " << nested_q->get_num_decls() << " shift1: " << (num_decls - nested_q->get_num_decls()) <<
+                              " shift2: " << shift_amount << "\n" << mk_pp(nested_q->get_expr(), m) <<
                               "\n---->\n" << mk_pp(adjusted_child, m) << "\n";);
                         shift_amount += nested_q->get_num_decls();
                     }

@@ -18,6 +18,8 @@ Revision History:
 --*/
 #pragma once
 
+#include <algorithm>
+#include <cstdint>
 #include "ast/ast.h"
 #include "util/vector.h"
 
@@ -61,7 +63,11 @@ public:
 
     void reserve(unsigned num_offsets, unsigned num_vars) {
         if (num_offsets > m_num_offsets || num_vars > m_num_vars) {
-            unsigned sz = num_offsets * num_vars;
+            num_offsets = std::max(num_offsets, m_num_offsets);
+            num_vars    = std::max(num_vars, m_num_vars);
+            uint64_t sz64 = static_cast<uint64_t>(num_offsets) * num_vars;
+            SASSERT(sz64 <= UINT_MAX);
+            unsigned sz = static_cast<unsigned>(sz64);
             m_map.resize(sz);
             m_num_vars    = num_vars;
             m_num_offsets = num_offsets;

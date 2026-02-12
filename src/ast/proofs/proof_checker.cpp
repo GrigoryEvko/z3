@@ -468,6 +468,7 @@ bool proof_checker::check1_basic(proof* p, expr_ref_vector& side_conditions) {
                     return false;
                 }
             }
+            return true;
         }
         UNREACHABLE();
         return false;

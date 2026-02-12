@@ -314,15 +314,19 @@ bool bv_rewriter::are_eq_upto_num(expr * _a, expr * _b,
         }
     }
     if (!aadd && badd) {
-        if (!is_app(_a) || to_app(_a)->get_num_args() != 2 || !has_num_a || to_app(_a)->get_arg(0) != _b)
+        if (to_app(_b)->get_num_args() != 2 || !has_num_b || to_app(_b)->get_arg(1) != _a)
             return false;
-        common = _b;
+        unsigned b0_sz = m_util.get_bv_size(_b);
+        is_numeral(to_app(_b)->get_arg(0), b0_val, b0_sz);
+        common = _a;
         return true;
     }
     if (aadd && !badd) {
-        if (!is_app(_b) || to_app(_b)->get_num_args() != 2 || !has_num_b || to_app(_b)->get_arg(0) != _a)
+        if (to_app(_a)->get_num_args() != 2 || !has_num_a || to_app(_a)->get_arg(1) != _b)
             return false;
-        common = _a;
+        unsigned a0_sz = m_util.get_bv_size(_a);
+        is_numeral(to_app(_a)->get_arg(0), a0_val, a0_sz);
+        common = _b;
         return true;
     }
     SASSERT(aadd && badd);
@@ -759,9 +763,9 @@ br_status bv_rewriter::mk_extract(unsigned high, unsigned low, expr * arg, expr_
 
     numeral v;
     if (is_numeral(arg, v, sz)) {
-        sz = high - low + 1;
         if (v.is_neg())
             mod(v, rational::power_of_two(sz), v);
+        sz = high - low + 1;
         if (v.is_uint64()) {
             uint64_t u  = v.get_uint64();
             uint64_t e  = shift_right(u, low) & (shift_left(1ull, sz) - 1ull);

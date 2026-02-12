@@ -424,8 +424,7 @@ namespace sls {
             SASSERT(e->get_num_args() >= 2);
             auto const& a = wval(e->get_arg(0));
             auto const& b = wval(e->get_arg(1));
-            for (unsigned i = 0; i < a.nw; ++i)
-                val.set_add(val.eval, a.bits(), b.bits());
+            val.set_add(val.eval, a.bits(), b.bits());
             for (unsigned j = 2; j < e->get_num_args(); ++j) {
                 auto const& c = wval(e->get_arg(j));
                 val.set_add(val.eval, val.eval, c.bits());
@@ -893,8 +892,11 @@ namespace sls {
             return try_repair_urem(assign_value(e), wval(e, 0), wval(e, 1), i);
         case OP_ROTATE_LEFT:
             return try_repair_rotate_left(assign_value(e), wval(e, 0), e->get_parameter(0).get_int());
-        case OP_ROTATE_RIGHT:
-            return try_repair_rotate_left(assign_value(e), wval(e, 0), wval(e).bw - e->get_parameter(0).get_int());
+        case OP_ROTATE_RIGHT: {
+            unsigned bw = wval(e).bw;
+            unsigned n = e->get_parameter(0).get_int() % bw;
+            return try_repair_rotate_left(assign_value(e), wval(e, 0), bw - n);
+        }
         case OP_EXT_ROTATE_LEFT:
             return try_repair_rotate_left(assign_value(e), wval(e, 0), wval(e, 1), i);
         case OP_EXT_ROTATE_RIGHT:
@@ -1111,13 +1113,13 @@ namespace sls {
 
     bool bv_eval::try_repair_sub(bvect const& e, bvval& a, bvval & b, unsigned i) {
         if (m_rand(20) != 0) {
-            if (i == 0) 
+            if (i == 0)
                 // e = a - b -> a := e + b
-                a.set_add(m_tmp, e, b.bits());        
-            else 
+                a.set_add(m_tmp, e, b.bits());
+            else
                 // b := a - e
-                b.set_sub(m_tmp, a.bits(), e);       
-            if (a.try_set(m_tmp))
+                b.set_sub(m_tmp, a.bits(), e);
+            if (i == 0 ? a.try_set(m_tmp) : b.try_set(m_tmp))
                 return true;
         }
         // fall back to a random value
@@ -1566,13 +1568,16 @@ namespace sls {
         unsigned msb = a.msb(e);
         if (msb > a.msb(t)) {
             unsigned num_flex = 0;
-            for (unsigned i = e.bw; i-- >= msb;) 
+            for (unsigned i = e.bw; i > msb; ) {
+                --i;
                 if (!a.fixed().get(i))
                     ++num_flex;
+            }
             if (num_flex == 0)
                 return false;
             unsigned n = m_rand(num_flex);
-            for (unsigned i = e.bw; i-- >= msb;) {
+            for (unsigned i = e.bw; i > msb; ) {
+                --i;
                 if (!a.fixed().get(i)) {
                     if (n == 0) {
                         t.set(i, true);
@@ -2059,7 +2064,9 @@ namespace sls {
                 quot[i] = ~0;
                 rem[i] = 0;
             }
-            quot[nw - 1] = (1 << (bw % (8 * sizeof(digit_t)))) - 1;            
+            digit_t mask = (1 << (bw % (8 * sizeof(digit_t)))) - 1;
+            if (mask == 0) mask = ~(digit_t)0;
+            quot[nw - 1] = mask;
         }
         else {            
             for (unsigned i = 0; i < nw; ++i) 

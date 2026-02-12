@@ -254,8 +254,10 @@ bool func_decl_info::operator==(func_decl_info const & info) const {
         m_chainable == info.m_chainable &&
         m_pairwise == info.m_pairwise &&
         m_injective == info.m_injective &&
+        m_idempotent == info.m_idempotent &&
         m_skolem == info.m_skolem &&
-        m_lambda == info.m_lambda;
+        m_lambda == info.m_lambda &&
+        m_polymorphic == info.m_polymorphic;
 }
 
 std::ostream & operator<<(std::ostream & out, func_decl_info const & info) {
@@ -2746,7 +2748,7 @@ proof * ast_manager::mk_proof(family_id fid, decl_kind k, expr * arg1, expr * ar
 
 proof * ast_manager::mk_proof(family_id fid, decl_kind k, expr * arg1, expr * arg2, expr * arg3) {
     expr * args[3] = { arg1, arg2, arg3 };
-    return mk_proof(fid, k, 2, args);
+    return mk_proof(fid, k, 3, args);
 }
 
 proof * ast_manager::mk_true_proof() {

@@ -37,7 +37,7 @@ namespace euf {
             p = alloc(ac_plugin, g, f);
             m_decl2plugin.insert(f, p);
             m_plugins.push_back(p);
-            std::function<void(void)> undo_op = [&]() { m_undo.push_back(p); };
+            std::function<void(void)> undo_op = [this, p]() { m_undo.push_back(p); };
             p->set_undo(undo_op);
         }
     }

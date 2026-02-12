@@ -182,6 +182,7 @@ void ast_translation::mk_func_decl(func_decl * f, frame & fr) {
         new_fi.set_skolem(fi->is_skolem()); 
         new_fi.set_idempotent(fi->is_idempotent());
         new_fi.set_lambda(fi->is_lambda());
+        new_fi.set_polymorphic(fi->is_polymorphic());
 
         new_f = m_to_manager.mk_func_decl(f->get_name(),
                                           f->get_arity(),

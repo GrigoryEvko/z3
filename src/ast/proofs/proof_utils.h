@@ -143,7 +143,7 @@ public:
             expr *a;
 
             p = todo.back();
-            if (cache.find(pr, r)) {
+            if (cache.find(p, r)) {
                 todo.pop_back();
                 continue;
             }

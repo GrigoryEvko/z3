@@ -120,7 +120,7 @@ public:
                 break;
             }
             case OP_ITE: {
-                SASSERT(n_args = 3);
+                SASSERT(n_args == 3);
                 if (m_mpz_manager.is_one(m_tracker.get_value(args[0])))
                     m_mpz_manager.set(result, m_tracker.get_value(args[1]));
                 else

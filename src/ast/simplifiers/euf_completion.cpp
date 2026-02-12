@@ -112,7 +112,7 @@ namespace euf {
                 bool change = true;
                 while (change) {
                     change = false;
-                    for (unsigned i = 1; i < binding.size();) {
+                    for (unsigned i = 1; i < binding.size(); ++i) {
                         var_subst sub(m);
                         auto r = sub(binding.get(i), binding);
                         change |= r != binding.get(i);
@@ -125,7 +125,7 @@ namespace euf {
                 binding.reverse();
             }
             else {
-                for (unsigned i = 0; i < binding.size();) {
+                for (unsigned i = 0; i < binding.size(); ++i) {
                     expr_ref r(binding.get(i), m);
                     m_rewriter(r);
                     binding[i] = r;

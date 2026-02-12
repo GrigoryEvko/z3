@@ -165,7 +165,8 @@ namespace sls {
                 continue;            
             if (is_shared_arg(r))
                 shared.push_back(r);
-            r->mark1();            
+            r->mark1();
+            to_unmark.push_back(r);
         }
         for (auto* r : to_unmark)
             r->unmark1();

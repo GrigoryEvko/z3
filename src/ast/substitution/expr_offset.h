@@ -43,7 +43,7 @@ public:
     bool operator!=(expr_offset const & other) const { return !operator==(other); }
 
     unsigned hash() const {
-        unsigned a = m_expr->get_id();
+        unsigned a = m_expr ? m_expr->get_id() : 0;
         unsigned b = m_offset;
         unsigned c = 17;
         mix(a, b, c);
