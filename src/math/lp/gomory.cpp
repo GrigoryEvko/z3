@@ -305,10 +305,9 @@ public:
                     m_fj = fractional_part(-p.coeff());
                     m_one_minus_fj = 1 - m_fj;
                     int_case_in_gomory_cut(j);
+                    if (m_polarity != row_polarity::MIXED)
+                        set_polarity_for_int(p.coeff(), j);
                 }
-                if (m_polarity != row_polarity::MIXED) 
-                    set_polarity_for_int(p.coeff(), j);
-                
             }
 
             if (m_found_big) {

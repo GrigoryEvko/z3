@@ -62,8 +62,9 @@ public:
         if (e.m_vector.empty()) {
             for (constraint_index j : e.m_set)
                 push_back(j);
-        } 
+        }
         else {
+            SASSERT(m_set.empty());
             for (const auto & p : e.m_vector) {
                 add_pair(p.first, p.second);
             }
