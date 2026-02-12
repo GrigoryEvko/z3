@@ -2828,7 +2828,7 @@ namespace smt {
                 // A clause is deleted if it has low activity and the number of unknowns is greater than a threshold.
                 // The activity threshold depends on how old the clause is.
                 unsigned act_threshold = m_fparams.m_old_clause_activity -
-                    (m_fparams.m_old_clause_activity - m_fparams.m_new_clause_activity) * ((i - start_at) / real_sz);
+                    static_cast<unsigned>(static_cast<uint64_t>(m_fparams.m_old_clause_activity - m_fparams.m_new_clause_activity) * (i - start_at) / real_sz);
                 if (cls->get_activity() < act_threshold) {
                     unsigned rel_threshold = (i >= new_first_idx ? m_fparams.m_new_clause_relevancy : m_fparams.m_old_clause_relevancy);
                     if (more_than_k_unassigned_literals(cls, rel_threshold)) {

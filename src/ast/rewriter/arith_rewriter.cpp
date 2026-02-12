@@ -1687,6 +1687,8 @@ br_status arith_rewriter::mk_power_core(expr * arg1, expr * arg2, expr_ref & res
         }
 
         if (x.is_zero()) {
+            if (y.is_neg())
+                return BR_FAILED;
             result = m_util.mk_numeral(x, false);
             return BR_DONE;
         }

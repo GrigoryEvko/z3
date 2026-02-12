@@ -307,17 +307,26 @@ namespace arith {
 
     void solver::add_equality(lpvar j, rational const& k, lp::explanation const& exp) {
         TRACE(arith, tout << "equality " << j << " " << k << "\n");
-        theory_var v;
-        if (k == 1)
-            v = m_one_var;
-        else if (k == 0)
-            v = m_zero_var;
-        else if (!m_value2var.find(k, v))
-            return;
+        lpvar i;
+        if (k == 1) {
+            if (m_one_var == UINT_MAX)
+                return;
+            i = m_one_var;
+        }
+        else if (k == 0) {
+            if (m_zero_var == UINT_MAX)
+                return;
+            i = m_zero_var;
+        }
+        else {
+            theory_var v;
+            if (!m_value2var.find(k, v))
+                return;
+            i = register_theory_var_in_lar_solver(v);
+        }
         theory_var w = lp().local_to_external(j);
         if (w < 0)
             return;
-        lpvar i = register_theory_var_in_lar_solver(v);
         add_eq(i, j, exp, true);
     }
 

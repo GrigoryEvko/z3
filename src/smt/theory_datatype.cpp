@@ -952,10 +952,13 @@ namespace smt {
     ptr_vector<enode> const& theory_datatype::get_array_args(enode* n) {
         m_args.reset();
         theory_array* th = dynamic_cast<theory_array*>(ctx.get_theory(m_autil.get_family_id()));
-        for (enode* p : th->parent_selects(n)) 
-            m_args.push_back(p);            
+        if (th)
+            for (enode* p : th->parent_selects(n))
+                m_args.push_back(p);
         app_ref def(m_autil.mk_default(n->get_expr()), m);
-        m_args.push_back(ctx.get_enode(def));
+        enode* def_enode = ctx.get_enode(def);
+        if (def_enode)
+            m_args.push_back(def_enode);
         return m_args;
     }
 

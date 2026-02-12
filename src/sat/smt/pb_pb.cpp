@@ -96,6 +96,7 @@ namespace pb {
             unsigned w = wl.first;
             switch (s.value(l)) {
             case l_true:  if (k <= w) return 0;
+                Z3_fallthrough;
             case l_undef:
                 if (do_add) to_add += occs(l);
                 ++undefs;

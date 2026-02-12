@@ -87,7 +87,7 @@ namespace sat {
         void mark_used() { m_used = true; }
         void unmark_used() { m_used = false; }
         bool was_used() const { return m_used; }
-        void inc_inact_rounds() { m_inact_rounds++; }
+        void inc_inact_rounds() { if (m_inact_rounds < 255) m_inact_rounds++; }
         void reset_inact_rounds() { m_inact_rounds = 0; }
         unsigned inact_rounds() const { return m_inact_rounds; }
         bool frozen() const { return m_frozen; }

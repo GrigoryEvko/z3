@@ -174,7 +174,20 @@ namespace opt {
         for (expr* e : m_scoped_state.m_hard) {
             result->add_hard_constraint(translator(e));
         }
-        
+
+        // Translate assumptions from scoped state
+        for (expr* e : m_scoped_state.m_asms) {
+            result->m_scoped_state.m_asms.push_back(translator(e));
+        }
+
+        // Translate variable initialization values
+        for (auto const& [var, value] : m_scoped_state.m_values) {
+            result->m_scoped_state.m_values.push_back({
+                expr_ref(translator(var.get()), target_m),
+                expr_ref(translator(value.get()), target_m)
+            });
+        }
+
         // Translate objectives
         for (auto const& obj : m_scoped_state.m_objectives) {
             if (obj.m_type == O_MAXIMIZE || obj.m_type == O_MINIMIZE) {

@@ -1014,6 +1014,7 @@ bool expr_inverter::mk_diff(expr* t, expr_ref& r) {
 }
 
 void expr_inverter::set_is_var(std::function<bool(expr*)>& is_var) {
+    m_is_var = is_var;
     for (auto* p : m_inverters)
         if (p)
             p->set_is_var(is_var);

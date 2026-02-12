@@ -221,6 +221,9 @@ void horn_subsume_model_converter::operator()(model_ref& mr) {
 
 model_converter* horn_subsume_model_converter::translate(ast_translation & translator) {
     horn_subsume_model_converter* mc = alloc(horn_subsume_model_converter, translator.to());
+    for (unsigned i = 0; i < m_delay_head.size(); ++i) {
+        mc->insert(translator(m_delay_head.get(i)), translator(m_delay_body.get(i)));
+    }
     for (unsigned i = 0; i < m_funcs.size(); ++i) {
         mc->insert(translator(m_funcs[i].get()), translator(m_bodies[i].get()));
     }
