@@ -61,8 +61,8 @@ std::ostream& theory_diff_logic<Ext>::atom::display(theory_diff_logic const& th,
     lbool asgn = ctx.get_assignment(m_bvar);
     //SASSERT(asgn == l_undef || ((asgn == l_true) == m_true));
     bool sign = (l_undef == asgn) || m_true;
-    return out << literal(m_bvar, sign) 
-               << " " << mk_pp(ctx.bool_var2expr(m_bvar), th.get_manager()) << " "; 
+    out << literal(m_bvar, sign)
+        << " " << mk_pp(ctx.bool_var2expr(m_bvar), th.get_manager()) << " ";
     if (l_undef == asgn) {
         out << "unassigned\n";
     }

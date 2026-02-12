@@ -228,7 +228,7 @@ class dl_graph {
         for (dl_var id = 0; id < n; ++id) {
             const edge_id_vector & e_ids = m_out_edges[id];
             for (edge_id e_id : e_ids) {
-                SASSERT(static_cast<unsigned>(e_id) <= m_edges.size());
+                SASSERT(static_cast<unsigned>(e_id) < m_edges.size());
                 const edge & e = m_edges[e_id];
                 SASSERT(e.get_source() == id);
             }
@@ -236,7 +236,7 @@ class dl_graph {
         for (dl_var id = 0; id < n; ++id) {
             const edge_id_vector & e_ids = m_in_edges[id];
             for (edge_id e_id : e_ids) {
-                SASSERT(static_cast<unsigned>(e_id) <= m_edges.size());
+                SASSERT(static_cast<unsigned>(e_id) < m_edges.size());
                 const edge & e = m_edges[e_id];
                 SASSERT(e.get_target() == id);
             }
@@ -501,6 +501,7 @@ public:
         edge_id new_id = m_edges.size();
         m_edges.push_back(edge(source, target, weight, m_timestamp, ex));
         m_activity.push_back(0);
+        m_freq_hybrid.push_back(0);
         TRACE(dl_bug, tout << "creating edge:\n"; display_edge(tout, m_edges.back()););
         m_out_edges[source].push_back(new_id);
         m_in_edges[target].push_back(new_id);
@@ -567,9 +568,6 @@ public:
     // 
     template<typename Functor>
     void traverse_neg_cycle2(bool try_relax, Functor & f) {
-        static unsigned num_conflicts = 0;
-        ++num_conflicts;
-        (void)num_conflicts;
         SASSERT(!is_feasible(m_edges[m_last_enabled_edge]));
         vector<numeral>  potentials;
         svector<edge_id> edges;
@@ -632,8 +630,7 @@ public:
         }
         while (e_id != last_id);
         
-        TRACE(diff_logic_traverse, {   
-                tout << "Num conflicts: " << num_conflicts << "\n";
+        TRACE(diff_logic_traverse, {
                 tout << "Resulting path:\n";
                 for (unsigned i = 0; i < edges.size(); ++i) {
                     display_edge(tout << "potential: " << potentials[i] << " ", m_edges[edges[i]]);
@@ -689,8 +686,9 @@ public:
 private:
     svector<int> m_freq_hybrid;
     int m_total_count = 0;
-    int m_run_counter = -1;
-    svector<int> m_hybrid_visited, m_hybrid_parent;
+    unsigned m_run_counter = 0;
+    svector<unsigned> m_hybrid_visited;
+    svector<int> m_hybrid_parent;
 
     bool is_connected(numeral const& gamma, bool zero_edge, edge const& e, unsigned timestamp) const {
         return (gamma.is_zero() || (!zero_edge && gamma.is_neg())) && e.get_timestamp() < timestamp;
@@ -1186,6 +1184,7 @@ public:
         m_heap              .reset();
         m_enabled_edges     .reset();
         m_activity          .reset();
+        m_freq_hybrid       .reset();
     }
 
     // Compute strongly connected components connected by (normalized) zero edges.

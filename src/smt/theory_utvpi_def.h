@@ -84,8 +84,8 @@ namespace smt {
     std::ostream& theory_utvpi<Ext>::atom::display(theory_utvpi const& th, std::ostream& out) const { 
         context& ctx = th.get_context();
         lbool asgn = ctx.get_assignment(m_bvar);
-        bool sign = (l_undef == l_false);
-        return out << literal(m_bvar, sign) << " " << mk_pp(ctx.bool_var2expr(m_bvar), th.get_manager()) << " ";         
+        bool sign = (l_undef == asgn) || m_true;
+        out << literal(m_bvar, sign) << " " << mk_pp(ctx.bool_var2expr(m_bvar), th.get_manager()) << " ";
         if (l_undef == asgn) {
             out << "unassigned\n";
         }

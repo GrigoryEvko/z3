@@ -101,7 +101,7 @@ namespace smt {
         TRACE(mk_arith_var, tout << mk_pp(n->get_expr(), m) << " is_int: " << is_int << "\n";);
         m_columns          .push_back(column());
         m_data             .push_back(var_data(is_int));
-        if (random_initial_value()) {
+        if (random_initial_value() && random_upper() > random_lower()) {
             unsigned val = (m_random()%(random_upper() - random_lower())) + random_lower();
             m_value        .push_back(inf_numeral(val));
         }
@@ -2455,6 +2455,7 @@ namespace smt {
         case QUASI_BASE:
             quasi_base_row2base_row(get_var_row(v));
             SASSERT(get_var_kind(v) == BASE);
+            [[fallthrough]];
         case BASE:
             if (!m_to_patch.contains(v) && get_value(v) < k) {
                 TRACE(to_patch_bug, tout << "need to be patched (assert_lower): "; display_var(tout, v););
@@ -2503,6 +2504,7 @@ namespace smt {
         case QUASI_BASE:
             quasi_base_row2base_row(get_var_row(v));
             SASSERT(get_var_kind(v) == BASE);
+            [[fallthrough]];
         case BASE:
             if (!m_to_patch.contains(v) && get_value(v) > k) {
                 TRACE(to_patch_bug, tout << "need to be patched (assert upper): "; display_var(tout, v););

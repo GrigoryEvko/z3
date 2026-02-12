@@ -99,11 +99,11 @@ namespace smt {
         };
         
         struct cell_trail {
-            unsigned short m_source;
-            unsigned short m_target;
+            unsigned       m_source;
+            unsigned       m_target;
             edge_id        m_old_edge_id;
             numeral        m_old_distance;
-            cell_trail(unsigned short s, unsigned short t, edge_id old_edge_id, numeral const & old_distance):
+            cell_trail(unsigned s, unsigned t, edge_id old_edge_id, numeral const & old_distance):
                 m_source(s), m_target(t), m_old_edge_id(old_edge_id), m_old_distance(old_distance) {}
         };
         

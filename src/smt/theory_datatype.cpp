@@ -811,7 +811,7 @@ namespace smt {
             }
             sort* se = nullptr;
             if (m_sutil.is_seq(s, se) && m_util.is_datatype(se)) {
-                enode* sibling;
+                enode* sibling = nullptr;
                 for (enode* aarg : get_seq_args(arg, sibling)) {
                     if (aarg->get_root() == child->get_root()) {
                         if (aarg != child) 

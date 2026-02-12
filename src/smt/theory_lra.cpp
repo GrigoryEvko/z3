@@ -197,11 +197,11 @@ class theory_lra::imp {
     struct var_value_hash {
         imp & m_th;
         var_value_hash(imp & th):m_th(th) {}
-        unsigned operator()(theory_var v) const { 
-            if (m_th.use_nra_model()) 
+        unsigned operator()(theory_var v) const {
+            if (m_th.use_nra_model())
                 return m_th.is_int(v);
-            else 
-                return (unsigned)std::hash<lp::impq>()(m_th.get_ivalue(v)); 
+            else
+                return (unsigned)std::hash<lp::impq>()(m_th.get_ivalue(v));
         }
     };
     int_hashtable<var_value_hash, var_value_eq>   m_model_eqs;
@@ -2389,16 +2389,16 @@ public:
             return;
         literal bound = null_literal;
         switch (be.kind()) {
-        case lp::LE: 
+        case lp::LE:
             if (is_int(v) && (lp().column_has_lower_bound(vi) || !lp().column_has_upper_bound(vi)))
-                bound = mk_literal(a.mk_le(w, a.mk_numeral(floor(be.m_bound), a.is_int(w)))); 
-            if (is_real(v) && !lp().column_has_upper_bound(vi))
-                bound = mk_literal(a.mk_le(w, a.mk_numeral(be.m_bound, a.is_int(w))));                 
+                bound = mk_literal(a.mk_le(w, a.mk_numeral(floor(be.m_bound), a.is_int(w))));
+            else if (is_real(v) && !lp().column_has_upper_bound(vi))
+                bound = mk_literal(a.mk_le(w, a.mk_numeral(be.m_bound, a.is_int(w))));
             break;
-        case lp::GE: 
+        case lp::GE:
             if (is_int(v) && (lp().column_has_upper_bound(vi) || !lp().column_has_lower_bound(vi)))
-                bound = mk_literal(a.mk_ge(w, a.mk_numeral(ceil(be.m_bound), a.is_int(w)))); 
-            if (is_real(v) && !lp().column_has_lower_bound(vi))
+                bound = mk_literal(a.mk_ge(w, a.mk_numeral(ceil(be.m_bound), a.is_int(w))));
+            else if (is_real(v) && !lp().column_has_lower_bound(vi))
                 bound = mk_literal(a.mk_ge(w, a.mk_numeral(be.m_bound, a.is_int(w))));                 
             break;
         default: 
@@ -3159,7 +3159,7 @@ public:
         if (is_infeasible()) 
             return false;
         lp::lconstraint_kind k = bound2constraint_kind(b.is_int(), b.get_bound_kind(), is_true);
-        if (k == lp::LT || k == lp::LE) {
+        if (k == lp::GE || k == lp::GT) {
             ++m_stats.m_assert_lower;
         }
         else {
@@ -3863,7 +3863,7 @@ public:
     }
 
     bool validate_eq(enode* x, enode* y) {
-        static bool s_validating = false;
+        static thread_local bool s_validating = false;
         if (s_validating)
             return true;
         flet<bool> _svalid(s_validating, true);

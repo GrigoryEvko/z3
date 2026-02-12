@@ -900,7 +900,7 @@ namespace smt {
         objective_term const& objective = m_objectives[v];   
         inf_eps r = inf_eps(m_objective_consts[v]);
         for (unsigned i = 0; i < objective.size(); ++i) {
-            numeral n = m_assignment[v];
+            numeral n = m_assignment[objective[i].first];
             rational r1 = n.get_rational().to_rational();
             rational r2 = n.get_infinitesimal().to_rational();
             r += objective[i].second * inf_eps(rational(0), inf_rational(r1, r2));
