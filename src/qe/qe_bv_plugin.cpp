@@ -42,6 +42,13 @@ namespace qe {
 
         bool get_num_branches(contains_app& x, expr* fml, rational& nb) override {
             unsigned sz = m_bv.get_bv_size(x.x());
+            // For wide bitvectors, enumeration is exponential (2^n branches).
+            // Refuse to enumerate beyond 16 bits (65536 values) to avoid
+            // combinatorial blowup. The variable will be left as free,
+            // which is sound (the quantifier is not eliminated, but we
+            // don't hang).
+            if (sz > 16)
+                return false;
             nb = power(rational(2), sz);
             return true;
         }
@@ -66,7 +73,10 @@ namespace qe {
         }
 
         unsigned get_weight(contains_app& contains_x, expr* fml) override {
-            return 2;
+            // Scale weight by bitvector width so narrow BVs are preferred
+            // for elimination (fewer branches) over wide ones.
+            unsigned sz = m_bv.get_bv_size(contains_x.x());
+            return 2 + sz;
         }
 
         bool solve(conj_enum& conjs, expr* fml) override { return false; }
