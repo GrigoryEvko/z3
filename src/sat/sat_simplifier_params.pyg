@@ -29,4 +29,6 @@ def_module_params(module_name='sat',
                           ('probing_cache_limit', UINT, 1024, 'cache binaries unless overall memory usage exceeds cache limit'),
                           ('probing_binary', BOOL, True, 'probe binary clauses'),
                           ('subsumption', BOOL, True, 'eliminate subsumed clauses'),
-                          ('subsumption.limit', UINT, 100000000, 'approx. maximum number of literals visited during subsumption (and subsumption resolution)')))
+                          ('subsumption.limit', UINT, 100000000, 'approx. maximum number of literals visited during subsumption (and subsumption resolution)'),
+                          ('bva', BOOL, False, 'bounded variable addition to reduce literal occurrences'),
+                          ('bva.limit', UINT, 100000000, 'approx. maximum number of literals visited during bounded variable addition')))

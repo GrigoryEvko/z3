@@ -105,6 +105,8 @@ namespace sat {
         bool                   m_elim_vars;
         bool                   m_elim_vars_bdd;
         unsigned               m_elim_vars_bdd_delay;
+        bool                   m_bva;           // bounded variable addition
+        unsigned               m_bva_limit;     // max literal visits during BVA
 
         // stats
         unsigned               m_num_bce;
@@ -117,6 +119,7 @@ namespace sat {
         unsigned               m_num_elim_vars;
         unsigned               m_num_sub_res;
         unsigned               m_num_elim_lits;
+        unsigned               m_num_bva;       // clauses eliminated by BVA
 
         bool                   m_learned_in_use_lists;
         unsigned               m_old_num_elim_vars;
@@ -192,6 +195,11 @@ namespace sat {
         bool bca_enabled()  const;
         bool elim_vars_bdd_enabled() const;
         bool elim_vars_enabled() const;
+        bool bva_enabled() const;
+
+        struct bva_report;
+        void bva();
+        bool try_bva(literal l, int & counter);
 
         unsigned num_nonlearned_bin(literal l) const;
         unsigned get_to_elim_cost(bool_var v) const;

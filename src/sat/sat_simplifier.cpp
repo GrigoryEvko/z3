@@ -114,8 +114,12 @@ namespace sat {
     bool simplifier::cce_enabled()  const { return bce_enabled_base() && (m_cce || m_acce); }
     bool simplifier::abce_enabled() const { return bce_enabled_base() && m_abce; }
     bool simplifier::bca_enabled()  const { return bce_enabled_base() && m_bca; }
-    bool simplifier::elim_vars_enabled() const { 
-        return !m_incremental_mode && !s.tracking_assumptions() && m_elim_vars && single_threaded(); 
+    bool simplifier::elim_vars_enabled() const {
+        return !m_incremental_mode && !s.tracking_assumptions() && m_elim_vars && single_threaded();
+    }
+
+    bool simplifier::bva_enabled() const {
+        return !m_incremental_mode && !s.tracking_assumptions() && m_bva && single_threaded();
     }    
 
     void simplifier::register_clauses(clause_vector & cs) {
@@ -192,7 +196,7 @@ namespace sat {
 
         if (s.inconsistent())
             return;
-        if (!m_subsumption && !bce_enabled() && !bca_enabled() && !elim_vars_enabled())
+        if (!m_subsumption && !bce_enabled() && !bca_enabled() && !elim_vars_enabled() && !bva_enabled())
             return;
        
         initialize();
@@ -244,6 +248,11 @@ namespace sat {
             ++count;
         }
         while (!m_sub_todo.empty() && count < 20);
+
+        if (!learned && bva_enabled() && !s.inconsistent()) {
+            bva();
+        }
+
         bool vars_eliminated = m_num_elim_vars > m_old_num_elim_vars;
 
         if (m_need_cleanup || vars_eliminated) {
@@ -2092,6 +2101,393 @@ namespace sat {
         m_new_cls.finalize();
     }
 
+    // -------------------------------------------------------
+    // Bounded Variable Addition (BVA)
+    //
+    // BVA introduces fresh variables to reduce the total number
+    // of literal occurrences in the clause database.
+    //
+    // Given N clauses that share literal l and a common "tail" S:
+    //   C_i = {a_i} U S  for i = 1..N
+    // where l is in S and the a_i are distinct differing literals,
+    // we introduce a fresh variable x and replace the N clauses with:
+    //   {x} U S           (the shared clause, with x standing for the disjunction)
+    //   {~x, a_i}         for i = 1..N   (definition clauses)
+    //
+    // Cost analysis (literal occurrences):
+    //   Before: N * (|S| + 1) literals
+    //   After:  (|S| + 1) + 2*N literals
+    //   Saving: (N-1)*(|S|+1) - 2*N = (N-1)*|S| - (N+1)
+    //   Profitable when (N-1)*|S| > N+1
+    //
+    // For model reconstruction, x is an internal variable that gets
+    // eliminated via the standard ELIM_VAR model converter mechanism.
+    // We record all original clauses so the model converter can
+    // reconstruct proper assignments.
+    // -------------------------------------------------------
+
+    struct simplifier::bva_report {
+        simplifier & m_simplifier;
+        stopwatch    m_watch;
+        unsigned     m_num_bva;
+        bva_report(simplifier & s):
+            m_simplifier(s),
+            m_num_bva(s.m_num_bva) {
+            m_watch.start();
+        }
+
+        ~bva_report() {
+            m_watch.stop();
+            IF_VERBOSE(SAT_VB_LVL,
+                       verbose_stream() << " (sat-bva :eliminated "
+                       << (m_simplifier.m_num_bva - m_num_bva)
+                       << mem_stat()
+                       << " :time " << std::fixed << std::setprecision(2) << m_watch.get_seconds() << ")\n";);
+        }
+    };
+
+    /**
+       \brief Try BVA for a specific literal l.
+       Look for groups of clauses containing l that share a common "tail"
+       (all literals except l and one differing literal).
+       Returns true if any transformation was applied.
+
+       counter is decremented by the work done; caller should stop when it goes negative.
+    */
+    bool simplifier::try_bva(literal l, int & counter) {
+        if (s.inconsistent())
+            return false;
+        if (value(l) != l_undef)
+            return false;
+
+        // Phase 1: collect all non-learned clauses containing l.
+        // Each clause is stored as a sorted literal vector, plus a pointer
+        // to the original clause object (nullptr for binary clauses).
+
+        struct bva_clause {
+            literal_vector lits;    // sorted literals (includes l)
+            clause*        cls;     // nullptr for binary clauses
+            literal        bin_lit; // other literal for binary, null_literal otherwise
+        };
+
+        vector<bva_clause> clauses;
+
+        // Collect from use_list (clauses of size >= 3)
+        clause_use_list const & occs = m_use_list.get(l);
+        for (auto it = occs.mk_iterator(); !it.at_end(); it.next()) {
+            clause & c = it.curr();
+            if (c.is_learned() || c.was_removed())
+                continue;
+            bva_clause bc;
+            bc.cls = &c;
+            bc.bin_lit = null_literal;
+            for (literal lit : c)
+                bc.lits.push_back(lit);
+            std::sort(bc.lits.begin(), bc.lits.end());
+            clauses.push_back(std::move(bc));
+            counter -= static_cast<int>(c.size());
+        }
+
+        // Collect binary clauses containing l
+        watch_list const & bwlist = get_bin_wlist(~l);
+        for (auto const & w : bwlist) {
+            if (w.is_binary_non_learned_clause()) {
+                literal l2 = w.get_literal();
+                bva_clause bc;
+                bc.cls = nullptr;
+                bc.bin_lit = l2;
+                if (l.index() < l2.index()) {
+                    bc.lits.push_back(l);
+                    bc.lits.push_back(l2);
+                } else {
+                    bc.lits.push_back(l2);
+                    bc.lits.push_back(l);
+                }
+                clauses.push_back(std::move(bc));
+                counter -= 2;
+            }
+        }
+
+        if (clauses.size() < 2)
+            return false;
+
+        // Bound the work: skip literals with too many occurrences.
+        if (clauses.size() > 1000)
+            return false;
+
+        // Phase 2: For each clause C and each literal a in C (a != l),
+        // form tail = C \ {l, a}, hash the tail, and group entries by (tail_size, tail_hash).
+        // Later we verify exact tail equality within each bucket.
+
+        typedef unsigned tail_hash_t;
+
+        struct tail_entry {
+            unsigned clause_idx;
+            literal  diff_lit;
+        };
+
+        // Use a simple vector-of-vectors approach keyed by (tail_sz, hash).
+        // Since Z3's map doesn't support range-for with structured bindings well,
+        // we use a two-level approach: collect all entries into a flat list, sort,
+        // then process groups.
+
+        struct keyed_entry {
+            unsigned    tail_sz;
+            tail_hash_t tail_hash;
+            unsigned    clause_idx;
+            literal     diff_lit;
+        };
+
+        svector<keyed_entry> all_entries;
+
+        for (unsigned ci = 0; ci < clauses.size(); ++ci) {
+            literal_vector const & lits = clauses[ci].lits;
+            unsigned sz = lits.size();
+            if (sz < 2) continue;
+
+            // Compute additive hash of all literals
+            tail_hash_t full_hash = 0;
+            for (literal lit : lits)
+                full_hash += lit.index() * 1000003u;
+
+            tail_hash_t l_contrib = l.index() * 1000003u;
+            for (unsigned i = 0; i < sz; ++i) {
+                literal a = lits[i];
+                if (a == l) continue;
+                tail_hash_t a_contrib = a.index() * 1000003u;
+                tail_hash_t th = full_hash - l_contrib - a_contrib;
+                unsigned tail_sz = sz - 2;
+                keyed_entry ke;
+                ke.tail_sz = tail_sz;
+                ke.tail_hash = th;
+                ke.clause_idx = ci;
+                ke.diff_lit = a;
+                all_entries.push_back(ke);
+                counter -= static_cast<int>(sz);
+            }
+        }
+
+        // Sort entries by (tail_sz, tail_hash) to group potential matches together.
+        std::sort(all_entries.begin(), all_entries.end(),
+                  [](keyed_entry const & a, keyed_entry const & b) {
+                      if (a.tail_sz != b.tail_sz) return a.tail_sz < b.tail_sz;
+                      return a.tail_hash < b.tail_hash;
+                  });
+
+        // Phase 3: process each group of entries with the same (tail_sz, tail_hash).
+        bool did_something = false;
+        bool_vector consumed(clauses.size(), false);
+
+        unsigned gi = 0;
+        while (gi < all_entries.size()) {
+            if (counter < 0) break;
+
+            // Find the end of this group
+            unsigned gj = gi + 1;
+            while (gj < all_entries.size() &&
+                   all_entries[gj].tail_sz == all_entries[gi].tail_sz &&
+                   all_entries[gj].tail_hash == all_entries[gi].tail_hash)
+                ++gj;
+
+            unsigned group_sz = gj - gi;
+            unsigned tail_sz = all_entries[gi].tail_sz;
+
+            if (group_sz < 2) {
+                gi = gj;
+                continue;
+            }
+
+            // Within this group, sub-group by exact tail match.
+            // Pick the first non-consumed entry, extract its tail,
+            // then find all others with the same exact tail.
+            for (unsigned si = gi; si < gj; ++si) {
+                if (consumed[all_entries[si].clause_idx]) continue;
+                unsigned ci0 = all_entries[si].clause_idx;
+
+                // Extract the reference tail
+                literal_vector tail;
+                literal_vector const & lits0 = clauses[ci0].lits;
+                literal a0 = all_entries[si].diff_lit;
+                for (literal lit : lits0) {
+                    if (lit != l && lit != a0)
+                        tail.push_back(lit);
+                }
+                SASSERT(tail.size() == tail_sz);
+
+                // Mark tail literals for fast membership test
+                for (literal lit : tail) mark_visited(lit);
+
+                // Collect matching entries
+                svector<unsigned> matching; // indices into all_entries
+                matching.push_back(si);
+                for (unsigned sj = si + 1; sj < gj; ++sj) {
+                    if (consumed[all_entries[sj].clause_idx]) continue;
+                    unsigned cj = all_entries[sj].clause_idx;
+                    literal_vector const & litsj = clauses[cj].lits;
+                    literal aj = all_entries[sj].diff_lit;
+
+                    // Verify exact tail match: every lit in litsj except l and aj must be marked
+                    bool match = true;
+                    unsigned matched_count = 0;
+                    for (literal lit : litsj) {
+                        if (lit == l || lit == aj) continue;
+                        if (!is_marked(lit)) { match = false; break; }
+                        matched_count++;
+                    }
+                    if (match && matched_count == tail_sz && !is_marked(aj)) {
+                        matching.push_back(sj);
+                    }
+                    counter -= static_cast<int>(litsj.size());
+                }
+
+                for (literal lit : tail) unmark_visited(lit);
+
+                unsigned N = matching.size();
+
+                // Profitability check: saving = (N-1)*tail_sz - 2 > 0
+                if (N < 2 || static_cast<int>(N - 1) * static_cast<int>(tail_sz) <= 2)
+                    continue;
+
+                // Verify all diff_lits are distinct
+                literal_vector diff_lits;
+                bool all_distinct = true;
+                for (unsigned mi = 0; mi < matching.size(); ++mi) {
+                    literal a = all_entries[matching[mi]].diff_lit;
+                    if (is_marked(a)) {
+                        all_distinct = false;
+                        break;
+                    }
+                    mark_visited(a);
+                    diff_lits.push_back(a);
+                }
+                for (literal a : diff_lits) unmark_visited(a);
+
+                if (!all_distinct) continue;
+
+                // All checks passed. Apply BVA transformation.
+
+                // 1. Create fresh internal variable x
+                bool_var x = s.mk_var(false, true);
+                literal pos_x(x, false);
+                literal neg_x(x, true);
+
+                // Ensure visited array and use_list are large enough for the new variable
+                if (m_visited.size() <= 2 * x + 1)
+                    m_visited.resize(2 * (x + 1), false);
+                m_use_list.reserve(s.num_vars());
+
+                TRACE(sat_simplifier, tout << "BVA: literal " << l << ", tail_sz=" << tail_sz
+                      << ", N=" << N << ", saving=" << ((N-1)*tail_sz - 2) << "\n";
+                      tout << "  tail:";
+                      for (literal t : tail) tout << " " << t;
+                      tout << "\n  diff_lits:";
+                      for (literal a : diff_lits) tout << " " << a;
+                      tout << "\n";);
+
+                // 2. No model converter entry needed for x.
+                //    x is a fresh variable that lives in the simplified formula.
+                //    The solver assigns it during search. If x is later eliminated
+                //    by variable elimination, that code records the needed clauses.
+                //    The BVA transformation is equisatisfiable: any model of the
+                //    new clauses automatically satisfies the original clauses.
+
+                // 3. Remove original clauses
+                for (unsigned mi = 0; mi < matching.size(); ++mi) {
+                    unsigned ci = all_entries[matching[mi]].clause_idx;
+                    bva_clause & bc = clauses[ci];
+                    if (bc.cls != nullptr) {
+                        remove_clause(*bc.cls, true);
+                    } else {
+                        // Binary clause: mark as learned in both watch directions
+                        set_learned(l, bc.bin_lit);
+                        watch_list & wl1 = get_bin_wlist(~l);
+                        for (watched & w : wl1) {
+                            if (w.is_binary_non_learned_clause() && w.get_literal() == bc.bin_lit) {
+                                w.set_learned(true);
+                                break;
+                            }
+                        }
+                        watch_list & wl2 = get_bin_wlist(~bc.bin_lit);
+                        for (watched & w : wl2) {
+                            if (w.is_binary_non_learned_clause() && w.get_literal() == l) {
+                                w.set_learned(true);
+                                break;
+                            }
+                        }
+                    }
+                    consumed[ci] = true;
+                }
+
+                // 4. Add replacement clauses
+                // Shared clause: {x, l, tail...}
+                literal_vector shared_cls;
+                shared_cls.push_back(pos_x);
+                shared_cls.push_back(l);
+                for (literal t : tail)
+                    shared_cls.push_back(t);
+
+                if (shared_cls.size() == 2) {
+                    s.mk_bin_clause(shared_cls[0], shared_cls[1], false);
+                } else {
+                    clause * new_c = s.alloc_clause(shared_cls.size(), shared_cls.data(), false);
+                    if (s.m_config.m_drat) s.m_drat.add(*new_c, status::redundant());
+                    s.m_clauses.push_back(new_c);
+                    m_use_list.insert(*new_c);
+                    m_sub_todo.insert(*new_c);
+                }
+
+                // Definition clauses: {~x, a_i}
+                for (literal a : diff_lits) {
+                    s.mk_bin_clause(neg_x, a, false);
+                }
+
+                m_num_bva += N;
+                did_something = true;
+
+                insert_elim_todo(x);
+                for (literal t : tail)
+                    insert_elim_todo(t.var());
+                insert_elim_todo(l.var());
+                for (literal a : diff_lits)
+                    insert_elim_todo(a.var());
+            }
+
+            gi = gj;
+        }
+
+        return did_something;
+    }
+
+    void simplifier::bva() {
+        if (!bva_enabled())
+            return;
+
+        bva_report rpt(*this);
+        int counter = m_bva_limit;
+
+        // Iterate over all literals, trying BVA for each.
+        // Process literals with more occurrences first (more opportunity for sharing).
+        unsigned num_vars = s.num_vars();
+        for (bool_var v = 0; v < num_vars && counter >= 0; ++v) {
+            checkpoint();
+            if (s.inconsistent())
+                return;
+            if (was_eliminated(v))
+                continue;
+            if (value(v) != l_undef)
+                continue;
+            if (is_external(v))
+                continue;
+
+            literal pos_l(v, false);
+            literal neg_l(v, true);
+
+            try_bva(pos_l, counter);
+            if (counter < 0) break;
+            try_bva(neg_l, counter);
+        }
+    }
+
     void simplifier::updt_params(params_ref const & _p) {
         sat_simplifier_params p(_p);
         m_cce                     = p.cce();
@@ -2117,6 +2513,8 @@ namespace sat {
         m_subsumption             = p.subsumption();
         m_subsumption_limit       = p.subsumption_limit();
         m_elim_vars               = p.elim_vars();
+        m_bva                     = p.bva();
+        m_bva_limit               = p.bva_limit();
         m_incremental_mode        = s.get_config().m_incremental && !p.override_incremental();
     }
 
@@ -2134,6 +2532,7 @@ namespace sat {
         st.update("sat abce", m_num_abce);
         st.update("sat bca",  m_num_bca);
         st.update("sat ate",  m_num_ate);
+        st.update("sat bva",  m_num_bva);
     }
 
     void simplifier::reset_statistics() {
@@ -2147,5 +2546,6 @@ namespace sat {
         m_num_elim_vars = 0;
         m_num_bca = 0;
         m_num_ate = 0;
+        m_num_bva = 0;
     }
 };
