@@ -734,15 +734,50 @@ struct evaluator_cfg : public default_rewriter_cfg {
 
 struct model_evaluator::imp : public rewriter_tpl<mev::evaluator_cfg> {
     mev::evaluator_cfg m_cfg;
+    // Dual caches: one for model_completion=true, one for false.
+    // Avoids nuking the entire rewriter cache when toggling completion mode.
+    // The rewriter_core owns m_cache_stack[0]; we allocate a second cache
+    // and swap it in/out of that slot as completion mode changes.
+    act_cache*         m_alt_cache;   // the inactive cache (for the other mode)
+    bool               m_alt_is_completion; // which mode m_alt_cache corresponds to
+
     imp(model_core & md, params_ref const & p):
         rewriter_tpl<mev::evaluator_cfg>(md.get_manager(),
                                     false, // no proofs for evaluator
                                     m_cfg),
         m_cfg(md.get_manager(), md, p) {
+        // m_cache_stack[0] is the active cache, currently for the initial mode.
+        // Allocate a second cache for the opposite mode.
+        m_alt_cache = alloc(act_cache, md.get_manager());
+        m_alt_is_completion = !m_cfg.m_model_completion;
     }
+
+    ~imp() {
+        dealloc(m_alt_cache);
+    }
+
     void expand_stores(expr_ref &val) {m_cfg.expand_stores(val);}
+
+    // Swap the base-level rewriter cache to match the desired completion mode.
+    // No cache contents are destroyed.
+    void swap_cache_for_completion(bool new_completion) {
+        if (new_completion == m_alt_is_completion) {
+            // The alt cache is for the mode we want. Swap it in.
+            act_cache* cur = m_cache_stack[0];
+            m_cache_stack[0] = m_alt_cache;
+            m_alt_cache = cur;
+            m_alt_is_completion = !new_completion;
+            // Update the live pointer if we're at base scope level.
+            if (m_scopes.empty())
+                m_cache = m_cache_stack[0];
+        }
+        // else: already using the right cache, nothing to do
+    }
+
     void reset() {
         rewriter_tpl<mev::evaluator_cfg>::reset();
+        // Also reset the alt cache
+        m_alt_cache->reset();
         m_cfg.reset();
         m_cfg.m_def_cache.reset();
     }
@@ -770,7 +805,7 @@ void model_evaluator::get_param_descrs(param_descrs & r) {
 
 void model_evaluator::set_model_completion(bool f) {
     if (m_imp->cfg().m_model_completion != f) {
-        reset();
+        m_imp->swap_cache_for_completion(f);
         m_imp->cfg().m_model_completion = f;
     }
 }
