@@ -19,16 +19,10 @@ namespace lp {
         struct undo_add_column;
         struct term_hasher {
             std::size_t operator()(const lar_term& t) const {
-                using std::hash;
-                using std::size_t;
-                using std::string;
-                size_t seed = 0;
-                int i = 0;
+                std::size_t seed = 0;
                 for (const auto p : t) {
                     hash_combine(seed, (unsigned)p.j());
                     hash_combine(seed, p.coeff());
-                    if (i++ > 10)
-                        break;
                 }
                 return seed;
             }

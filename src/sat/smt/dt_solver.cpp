@@ -743,7 +743,6 @@ namespace dt {
                 continue;
             if (m_var_data[v]->m_constructor)
                 continue;
-            clear_mark();
             mk_split(v, true);
             r = sat::check_result::CR_CONTINUE;
         }

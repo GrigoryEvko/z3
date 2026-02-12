@@ -215,11 +215,8 @@ ast * ast_translation::process(ast const * _n) {
     SASSERT(m_frame_stack.empty());
     SASSERT(m_extra_children_stack.empty());
     
-    ++m_num_process;
-    if (m_num_process > (1 << 14)) {
-        reset_cache();
-        m_num_process = 0;
-    }
+    // Cache persists for the lifetime of this ast_translation object.
+    // The destructor handles cleanup via reset_cache().
     if (!visit(const_cast<ast*>(_n))) {
         while (!m_frame_stack.empty()) {
         loop:

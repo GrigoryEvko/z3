@@ -651,7 +651,7 @@ namespace sls {
         num_t a(0), b(0);
         if (!ineq)
             return false;
-        if (!ineq->m_is_linear) {
+        if (ineq->m_is_linear) {
             for (auto const& [coeff, x] : ineq->m_args) {
                 if (is_fixed(x))
                     continue;

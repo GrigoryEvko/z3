@@ -788,15 +788,19 @@ namespace nlsat {
             if (x != null_var) {
                 auto & w = m_watches[x];
                 auto it = std::find(w.begin(), w.end(), &cls);
-                if (it != w.end())
-                    w.erase(it);
+                if (it != w.end()) {
+                    *it = w.back();
+                    w.pop_back();
+                }
             }
             else {
                 bool_var b = max_bvar(cls);
                 auto & bw = m_bwatches[b];
                 auto it = std::find(bw.begin(), bw.end(), &cls);
-                if (it != bw.end())
-                    bw.erase(it);
+                if (it != bw.end()) {
+                    *it = bw.back();
+                    bw.pop_back();
+                }
             }
         }
 
