@@ -109,8 +109,8 @@ static unsigned parse_opt(std::istream& in, opt_format f) {
     }
     try {
         cancel_eh<reslimit> eh(m.limit());
-        unsigned timeout = std::stoul(gparams::get_value("timeout"));
-        unsigned rlimit = std::stoi(gparams::get_value("rlimit"));
+        unsigned timeout = gparams::get_ref().get_uint("timeout", 0);
+        unsigned rlimit = gparams::get_ref().get_uint("rlimit", 0);
         scoped_timer timer(timeout, &eh);
         scoped_rlimit _rlimit(m.limit(), rlimit);
         expr_ref_vector asms(m);

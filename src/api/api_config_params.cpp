@@ -27,7 +27,7 @@ Revision History:
 
 extern "C" {
     void Z3_API Z3_global_param_set(Z3_string param_id, Z3_string param_value) {
-        memory::initialize(UINT_MAX);
+        memory::initialize(SIZE_MAX);
         LOG_Z3_global_param_set(param_id, param_value);
         try { 
             gparams::set(param_id, param_value);
@@ -41,14 +41,14 @@ extern "C" {
     }
 
     void Z3_API Z3_global_param_reset_all(void) {
-        memory::initialize(UINT_MAX);
+        memory::initialize(SIZE_MAX);
         LOG_Z3_global_param_reset_all();
         gparams::reset();
         env_params::updt_params();
     }
     
     bool Z3_API Z3_global_param_get(Z3_string param_id, Z3_string_ptr param_value) {
-        memory::initialize(UINT_MAX);
+        memory::initialize(SIZE_MAX);
         LOG_Z3_global_param_get(param_id, param_value);
         *param_value = nullptr;
         try {
@@ -77,7 +77,7 @@ extern "C" {
 
     Z3_config Z3_API Z3_mk_config(void) {
         try {
-            memory::initialize(UINT_MAX);
+            memory::initialize(SIZE_MAX);
             LOG_Z3_mk_config();
             Z3_config r = reinterpret_cast<Z3_config>(alloc(ast_context_params));
             RETURN_Z3(r);

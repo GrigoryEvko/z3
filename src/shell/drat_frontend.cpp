@@ -12,6 +12,7 @@ Copyright (c) 2020 Microsoft Corporation
 #include "sat/dimacs.h"
 #include "sat/sat_solver.h"
 #include "sat/sat_drat.h"
+#include "util/error_codes.h"
 #include "shell/drat_frontend.h"
 
 
@@ -65,9 +66,17 @@ public:
 };
 
 unsigned read_drat(char const* drat_file) {
+    if (!drat_file) {
+        std::cerr << "(error \"DRAT input file not specified\")" << std::endl;
+        return ERR_OPEN_FILE;
+    }
     ast_manager m;
     reg_decl_plugins(m);
     std::ifstream ins(drat_file);
+    if (ins.bad() || ins.fail()) {
+        std::cerr << "(error \"failed to open file '" << drat_file << "'\")" << std::endl;
+        return ERR_OPEN_FILE;
+    }
     dimacs::drat_parser drat(ins, std::cerr);
     
     std::function<int(char const* r)> read_theory = [&](char const* r) {

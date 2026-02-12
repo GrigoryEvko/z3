@@ -374,7 +374,7 @@ extern "C" {
     Z3_context Z3_API Z3_mk_context(Z3_config c) {
         Z3_TRY;
         LOG_Z3_mk_context(c);
-        memory::initialize(UINT_MAX);
+        memory::initialize(SIZE_MAX);
         Z3_context r = reinterpret_cast<Z3_context>(alloc(api::context, reinterpret_cast<ast_context_params*>(c), false));
         RETURN_Z3(r);
         Z3_CATCH_RETURN_NO_HANDLE(nullptr);
@@ -383,7 +383,7 @@ extern "C" {
     Z3_context Z3_API Z3_mk_context_rc(Z3_config c) {
         Z3_TRY;
         LOG_Z3_mk_context_rc(c);
-        memory::initialize(UINT_MAX);
+        memory::initialize(SIZE_MAX);
         set_default_exit_action(exit_action::throw_exception);
         Z3_context r = reinterpret_cast<Z3_context>(alloc(api::context, reinterpret_cast<ast_context_params*>(c), true));
         RETURN_Z3(r);
@@ -461,7 +461,7 @@ extern "C" {
     }
 
     void Z3_API Z3_enable_trace(Z3_string tag) {
-        memory::initialize(UINT_MAX);
+        memory::initialize(SIZE_MAX);
         LOG_Z3_enable_trace(tag);
         // Tag is a string that was probably not allocated by Z3. Create a copy using symbol.
         symbol tag_sym(tag);

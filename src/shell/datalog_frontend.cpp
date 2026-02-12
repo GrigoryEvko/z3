@@ -58,7 +58,7 @@ static void display_statistics(
 {
     lock_guard lock(*display_stats_mux);
     g_piece_timer.stop();
-    unsigned t_other = static_cast<int>(g_piece_timer.get_seconds()*1000);
+    unsigned t_other = static_cast<unsigned>(g_piece_timer.get_seconds()*1000);
     g_overall_time.stop();
 
     code.process_all_costs();
@@ -156,7 +156,7 @@ unsigned read_datalog(char const * file) {
     }
 
     g_piece_timer.stop();
-    t_parsing = static_cast<int>(g_piece_timer.get_seconds()*1000);
+    t_parsing = static_cast<unsigned>(g_piece_timer.get_seconds()*1000);
     IF_VERBOSE(1, verbose_stream() << "parsing finished\n";);
     IF_VERBOSE(1, verbose_stream() << "running saturation...\n";);
     g_piece_timer.reset();

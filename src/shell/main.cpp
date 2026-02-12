@@ -98,7 +98,7 @@ void display_usage() {
     std::cout << "  -pp:name    display Z3 parameter description, if 'name' is not provided, then all module names are listed.\n";
     std::cout << "  -tactics[:name]  display built-in tactics or if argument is given, display detailed information on tactic.\n";
     std::cout << "  -simplifiers[:name]  display built-in simplifiers or if argument is given, display detailed information on simplifier.\n";
-    std::cout << "  -probes     display avilable probes.\n";
+    std::cout << "  -probes     display available probes.\n";
     std::cout << "  --"      << "          all remaining arguments are assumed to be part of the input file name. This option allows Z3 to read files with strange names such as: -foo.smt2.\n";
     std::cout << "\nResources:\n";
     // timeout and memout are now available on Linux and macOS too.
@@ -125,6 +125,7 @@ void display_usage() {
 }
 
 static bool validate_is_ulong(char const* s) {
+    if (!*s) return false;
     for (; *s; ++s)
         if (*s < '0' || *s > '9')
             return false;
@@ -205,7 +206,7 @@ static void parse_cmd_line_args(std::string& input_file, int argc, char ** argv)
             else if (strcmp(opt_name, "wcnf") == 0) {
                 g_input_kind = IN_WCNF;
             }
-            else if (strcmp(opt_name, "pbo") == 0) {
+            else if (strcmp(opt_name, "opb") == 0 || strcmp(opt_name, "pbo") == 0) {
                 g_input_kind = IN_OPB;
             }
             else if (strcmp(opt_name, "lp") == 0) {
@@ -358,7 +359,7 @@ int STD_CALL main(int argc, char ** argv) {
         if (g_input_file && g_standard_input) {
             error("using standard input to read formula.");
         }
-        if (!g_input_file && !g_standard_input) {
+        if (!g_input_file && !g_standard_input && g_input_kind != IN_DRAT) {
             error("input file was not specified.");
         }
         

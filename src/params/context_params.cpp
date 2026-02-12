@@ -42,13 +42,13 @@ void context_params::set_bool(bool & opt, char const * param, char const * value
 void context_params::set_uint(unsigned & opt, char const * param, char const * value) {
     char *endptr;
     long val = strtol(value, &endptr, 10);
-    opt = static_cast<unsigned>(val);
 
     if (!*value || *endptr) {
         std::stringstream strm;
         strm << "invalid value '" << value << "' for unsigned int parameter '" << param << "'";
         throw default_exception(strm.str());
     }
+    opt = static_cast<unsigned>(val);
 }
 
 static void lower_case(std::string& p) {
@@ -159,7 +159,7 @@ void context_params::collect_param_descrs(param_descrs & d) {
     insert_timeout(d);
     insert_ctrl_c(d);
     d.insert("well_sorted_check", CPK_BOOL, "type checker", "false");
-    d.insert("type_check", CPK_BOOL, "type checker (alias for well_sorted_check)", "true");
+    d.insert("type_check", CPK_BOOL, "type checker (alias for well_sorted_check)", "false");
     d.insert("auto_config", CPK_BOOL, "use heuristics to automatically select solver and configure it", "true");
     d.insert("model_validate", CPK_BOOL, "validate models produced by solvers", "false");
     d.insert("dump_models", CPK_BOOL, "dump models whenever check-sat returns sat", "false");
