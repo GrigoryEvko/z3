@@ -98,7 +98,7 @@ void grobner::push_scope() {
 }
 
 void grobner::pop_scope(unsigned num_scopes) {
-    SASSERT(num_scopes >= get_scope_level());
+    SASSERT(num_scopes <= get_scope_level());
     unsigned new_lvl = get_scope_level() - num_scopes;
     scope & s        = m_scopes[new_lvl];
     unfreeze_equations(s.m_equations_to_unfreeze_lim);
@@ -480,9 +480,11 @@ void grobner::normalize_coeff(ptr_vector<monomial> & monomials) {
     if (c.bitsize() > 1000)
         return;
         
-    for (unsigned i = 0; i < sz && m_manager.inc(); ++i) {
+    for (unsigned i = 0; i < sz; ++i) {
         if (monomials[i]->m_coeff.bitsize() > 1000)
-            continue;
+            return;
+    }
+    for (unsigned i = 0; i < sz && m_manager.inc(); ++i) {
         monomials[i]->m_coeff /= c;
     }
 }
@@ -763,7 +765,6 @@ bool grobner::simplify_processed(equation * eq) {
                 to_remove.push_back(curr);
                 if (m_changed_leading_term) {
                     m_to_process.insert(new_curr);
-                    to_remove.push_back(curr);
                 }
                 else {
                     to_insert.push_back(new_curr);

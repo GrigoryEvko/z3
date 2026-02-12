@@ -67,7 +67,7 @@ namespace upolynomial {
         m_degrees.push_back(degree);
         p.swap(m_factors.back());
         m_total_factors += degree;
-        m_total_degree += m_upm.degree(p)*degree;
+        m_total_degree += m_upm.degree(m_factors.back())*degree;
     }
 
     void core_manager::factors::multiply(numeral_vector & out) const {
@@ -352,8 +352,8 @@ namespace upolynomial {
             return;
         }
         buffer.reserve(sz - 1);
+        scoped_numeral d(m());
         for (unsigned i = 1; i < sz; ++i) {
-            numeral d;
             m().set(d, i);
             m().mul(p[i], d, buffer[i-1]);
         }
@@ -1495,9 +1495,9 @@ namespace upolynomial {
         unsigned n = sz - 1;
         for (unsigned i = 1; i <= n; ++i) {
             checkpoint();
-            for (unsigned k = n-i; k <= n-1; ++k) {
-                m().mul2k(p[k+1], k, aux);
-                m().add(p[k], aux, p[k]);
+            for (unsigned j = n-i; j <= n-1; ++j) {
+                m().mul2k(p[j+1], k, aux);
+                m().add(p[j], aux, p[j]);
             }
         }
     }

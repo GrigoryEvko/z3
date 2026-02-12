@@ -1369,6 +1369,7 @@ void interval_manager<C>::power(interval const & a, unsigned n, interval & b) {
             reset_lower(b);
         }
         else {
+            round_to_minus_inf();
             m().power(lower(a), n, lower(b));
             set_lower_is_inf(b, false);
             set_lower_is_open(b, lower_is_open(a));
@@ -1378,6 +1379,7 @@ void interval_manager<C>::power(interval const & a, unsigned n, interval & b) {
             reset_upper(b);
         }
         else {
+            round_to_plus_inf();
             m().power(upper(a), n, upper(b));
             set_upper_is_inf(b, false);
             set_upper_is_open(b, upper_is_open(a));

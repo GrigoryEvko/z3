@@ -1283,7 +1283,7 @@ namespace algebraic_numbers {
                     // a or b became basic
                     SASSERT(a.is_basic() || b.is_basic());
                     saved_a.restore_if_too_small();
-                    saved_a.restore_if_too_small();
+                    saved_b.restore_if_too_small();
                     return mk_basic(a, b, c);
                 }
             }

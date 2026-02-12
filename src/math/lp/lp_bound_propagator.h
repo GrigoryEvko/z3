@@ -395,7 +395,7 @@ public:
             SASSERT(y_sign == 1 || y_sign == -1);
             auto& table = y_sign == 1 ? m_row2index_pos : m_row2index_neg;
             const auto& v = val(x);
-            unsigned found_i;;
+            unsigned found_i;
             
             if (!table.find(v, found_i)) {
                 table.insert(v, i);

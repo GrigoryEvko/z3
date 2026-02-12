@@ -88,9 +88,9 @@ namespace opt {
     }
     void model_based_opt::def::dec_ref() {
         SASSERT(m_ref_count > 0);
-        ++m_ref_count;
-        if (m_ref_count == 0) 
-            dealloc(this);            
+        --m_ref_count;
+        if (m_ref_count == 0)
+            dealloc(this);
     }
 
     model_based_opt::def* model_based_opt::def::operator+(def& other) {

@@ -96,9 +96,9 @@ public:
 
         TRACE(polynomial_factorization__bughunt, tout << "polynomial::berlekamp_matrix("; m_upm.display(tout, f); tout << ", " << p << ")" << endl;);
 
-        // the first row is always the vector [1, 0, ..., 0], since x^0 = 0 (modulo f)        
+        // the first row is always the vector [1, 0, ..., 0], since x^0 = 1 (modulo f)
         m_matrix.push_back(1);
-        for (unsigned j = 0; j < m_size; ++ j) {
+        for (unsigned j = 1; j < m_size; ++ j) {
             m_matrix.push_back(0);
         }
 

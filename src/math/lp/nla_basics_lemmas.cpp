@@ -204,15 +204,17 @@ void basics::negate_strict_sign(lemma_builder& lemma, lpvar j) {
     if (!val(j).is_zero()) {
         int sign = nla::rat_sign(val(j));
         lemma |= ineq(j, (sign == 1? llc::LE : llc::GE), 0);
-    } 
+    }
     else {  // val(j).is_zero()
         if (c().has_lower_bound(j) && c().get_lower_bound(j) >= rational(0)) {
             lemma.explain_existing_lower_bound(j);
             lemma |= ineq(j, llc::GT, 0);
-        } else {
-            SASSERT(c().has_upper_bound(j) && c().get_upper_bound(j) <= rational(0));
+        } else if (c().has_upper_bound(j) && c().get_upper_bound(j) <= rational(0)) {
             lemma.explain_existing_upper_bound(j);
             lemma |= ineq(j, llc::LT, 0);
+        } else {
+            // Free variable with value zero: add disjunction that it is non-zero
+            lemma |= ineq(j, llc::NE, 0);
         }
     }
 }
@@ -541,7 +543,7 @@ bool basics::basic_lemma_for_mon_neutral_monic_to_factor_model_based(const monic
     for (auto fc : f) {
         lpvar j = var(fc);
         all_int &= c().var_is_int(j);        
-        if (j == null_lpvar && abs(val(fc)) == abs_mv) 
+        if (u == null_lpvar && abs(val(fc)) == abs_mv)
             u = j;
         else if (abs(val(fc)) != rational(1)) 
             v = j;

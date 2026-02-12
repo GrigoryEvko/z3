@@ -150,7 +150,7 @@ lp_primal_core_solver<T, X>::get_bound_on_variable_and_update_leaving_precisely(
             leavings.clear();
             leavings.push_back(j);
         }
-        else if (tt == t || m == abs_of_d_of_leaving) {
+        else if (tt == t) {
             leavings.push_back(j);
         }
     } else if (m < 0){
@@ -169,7 +169,7 @@ lp_primal_core_solver<T, X>::get_bound_on_variable_and_update_leaving_precisely(
             abs_of_d_of_leaving = - m;
             leavings.clear();
             leavings.push_back(j);
-        } else if (tt == t || m == abs_of_d_of_leaving) {
+        } else if (tt == t) {
             leavings.push_back(j);
         }
     }

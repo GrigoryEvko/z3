@@ -1063,7 +1063,9 @@ namespace dd {
     }
 
     bddv bdd_manager::mk_usub(bddv const& a) {
-        bddv result(this);        
+        bddv result(this);
+        if (a.size() == 0)
+            return result;
         bdd carry = mk_false();
         result.push_back(a[0]);
         for (unsigned i = 1; i < a.size(); ++i) {

@@ -145,7 +145,7 @@ namespace dd {
 
         struct eq_entry {
             bool operator()(op_entry * a, op_entry * b) const { 
-                return a->m_pdd1 == b->m_pdd2 && a->m_pdd2 == b->m_pdd2 && a->m_op == b->m_op;
+                return a->m_pdd1 == b->m_pdd1 && a->m_pdd2 == b->m_pdd2 && a->m_op == b->m_op;
             }
         };
 

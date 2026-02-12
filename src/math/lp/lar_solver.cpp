@@ -2415,6 +2415,7 @@ namespace lp {
             } 
             case GT:
                 y_of_bound = 1;
+                Z3_fallthrough;
             case GE: {
                 auto low = numeric_pair<mpq>(right_side, y_of_bound);
                 if (low < get_lower_bound(j)) {
@@ -2422,7 +2423,7 @@ namespace lp {
                 }
                 set_lower_bound_witness(j, dep, low);
                 break;
-            } 
+            }
             case EQ: {
                 auto v = numeric_pair<mpq>(right_side, zero_of_type<mpq>());
                 if (v < get_lower_bound(j)) {
