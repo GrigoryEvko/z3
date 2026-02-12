@@ -112,6 +112,8 @@ namespace sls {
     void solver::init_search() {
         if (m_smt_plugin)
             finalize();
+        if (!parallel_mode())
+            return;
         m_smt_plugin = alloc(sls::smt_plugin, *this);
         m_checking = false;
     }
