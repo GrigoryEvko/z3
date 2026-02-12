@@ -50,6 +50,7 @@ namespace sat {
         unsigned           m_used:1;
         unsigned           m_frozen:1;
         unsigned           m_reinit_stack:1;
+        unsigned           m_tier:2;         // clause tier: 0=TIER2, 1=TIER1, 2=CORE
         unsigned           m_inact_rounds:8;
         unsigned           m_glue:8;
         unsigned           m_psm:8;  // transient field used during gc
@@ -99,7 +100,19 @@ namespace sat {
         void set_psm(unsigned psm) { m_psm = psm > 255 ? 255 : psm; }
         unsigned psm() const { return m_psm; }
         clause_offset get_new_offset() const;
-        void set_new_offset(clause_offset off); 
+        void set_new_offset(clause_offset off);
+
+        // 3-tier clause management (CaDiCaL-style):
+        //   TIER2 (0): aggressively GC'd
+        //   TIER1 (1): protected, deleted only under memory pressure
+        //   CORE  (2): never deleted
+        enum clause_tier : unsigned { TIER2 = 0, TIER1 = 1, CORE = 2 };
+        clause_tier tier() const { return static_cast<clause_tier>(m_tier); }
+        void set_tier(clause_tier t) { m_tier = static_cast<unsigned>(t); }
+        bool is_core() const { return m_tier == CORE; }
+        bool is_tier1() const { return m_tier == TIER1; }
+        bool is_tier2() const { return m_tier == TIER2; }
+        void promote_tier() { if (m_tier < CORE) m_tier++; }
 
         bool on_reinit_stack() const { return m_reinit_stack; }
         void set_reinit_stack(bool f) { m_reinit_stack = f; }

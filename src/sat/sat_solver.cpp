@@ -79,7 +79,7 @@ namespace sat {
         m_searching(false),
         m_conflict(justification(0)),
         m_num_frozen(0),
-        m_activity_inc(128),
+        m_activity_inc(1.0),
         m_case_split_queue(m_activity),
         m_qhead(0),
         m_scope_lvl(0),
@@ -244,6 +244,7 @@ namespace sat {
                         ++num_learned;
                         c1->set_glue(c->glue());
                         c1->set_psm(c->psm());
+                        c1->set_tier(c->tier());
                     }
                 }
             }
@@ -283,7 +284,7 @@ namespace sat {
         m_external[v] = ext;
         m_var_scope[v] = scope_lvl();
         m_touched[v] = 0;
-        m_activity[v] = 0;
+        m_activity[v] = 0.0;
         m_mark[v] = false;
         m_lit_mark[2*v] = false;
         m_lit_mark[2*v+1] = false;
@@ -326,7 +327,7 @@ namespace sat {
         m_external.push_back(ext);
         m_var_scope.push_back(scope_lvl());
         m_touched.push_back(0);
-        m_activity.push_back(0); 
+        m_activity.push_back(0.0);
         m_mark.push_back(false);
         m_lit_mark.push_back(false);
         m_lit_mark.push_back(false);
@@ -671,8 +672,8 @@ namespace sat {
     }
 
     struct solver::cmp_activity {
-        solver& s;
-        cmp_activity(solver& s):s(s) {}
+        solver const& s;
+        cmp_activity(solver const& s):s(s) {}
         bool operator()(bool_var v1, bool_var v2) const {
             return s.m_activity[v1] > s.m_activity[v2];
         }
@@ -938,8 +939,7 @@ namespace sat {
             uint64_t age = m_stats.m_conflict - m_canceled[v];
             if (age > 0) {
                 double decay = decay_pow095(age);
-                set_activity(v, static_cast<unsigned>(m_activity[v] * decay));
-                // NB. MapleSAT does not update canceled.
+                set_activity(v, m_activity[v] * decay);
                 m_canceled[v] = m_stats.m_conflict;
             }
         }
@@ -1029,8 +1029,14 @@ namespace sat {
             m_stats.m_propagate++;          
             c.mark_used();                                          
             assign_core(c[0], justification(assign_level, cls_off)); 
-            if (update && c.is_learned() && c.glue() > 2 && num_diff_levels_below(c.size(), c.begin(), c.glue() - 1, glue)) 
+            if (update && c.is_learned() && c.glue() > 2 && num_diff_levels_below(c.size(), c.begin(), c.glue() - 1, glue)) {
                 c.set_glue(glue);
+                // Promote tier when glue improves
+                if (glue <= 2 && !c.is_core())
+                    c.set_tier(clause::CORE);
+                else if (glue <= 6 && c.is_tier2())
+                    c.set_tier(clause::TIER1);
+            }
     }
 
     void solver::set_watch(clause& c, unsigned idx, clause_offset cls_off) {
@@ -1084,6 +1090,17 @@ namespace sat {
                 wlist.set_end(it2);             \
             }
         for (; it != end; ++it) {
+            // Prefetch the clause data for the next watch entry.
+            // While we process the current entry, the memory fetch for
+            // the next clause is issued to hide DRAM latency.
+            if (it + 1 < end && (it + 1)->is_clause()) {
+                const char* next_cls = reinterpret_cast<const char*>((it + 1)->get_clause_offset());
+#if defined(__GNUC__) || defined(__clang__)
+                __builtin_prefetch(next_cls, 0, 1);
+#elif !defined(_M_ARM) && !defined(_M_ARM64)
+                _mm_prefetch(next_cls, _MM_HINT_T1);
+#endif
+            }
             switch (it->get_kind()) {
             case watched::BINARY:
                 // Binary watches should not appear in m_watches; skip gracefully.
@@ -1729,7 +1746,7 @@ namespace sat {
                 next = m_case_split_queue.min_var();
                 auto age = m_stats.m_conflict - m_canceled[next];
                 while (age > 0) {
-                    set_activity(next, static_cast<unsigned>(m_activity[next] * decay_pow095(age)));
+                    set_activity(next, m_activity[next] * decay_pow095(age));
                     m_canceled[next] = m_stats.m_conflict;
                     next = m_case_split_queue.min_var();
                     age = m_stats.m_conflict - m_canceled[next];                    
@@ -2007,9 +2024,9 @@ namespace sat {
         return tracking_assumptions() && (m_assumption_set.contains(l) || m_ext_assumption_set.contains(l));
     }
 
-    void solver::set_activity(bool_var v, unsigned new_act) {
-        unsigned old_act = m_activity[v];
-        m_activity[v] = new_act; 
+    void solver::set_activity(bool_var v, double new_act) {
+        double old_act = m_activity[v];
+        m_activity[v] = new_act;
         if (!was_eliminated(v) && value(v) == l_undef && new_act != old_act) {
             m_case_split_queue.activity_changed_eh(v, new_act > old_act);
         }
@@ -2437,7 +2454,7 @@ namespace sat {
     }
 
     void solver::update_activity(bool_var v, double p) {
-        unsigned new_act = (unsigned) (num_vars() * m_config.m_activity_scale *  p);
+        double new_act = num_vars() * m_config.m_activity_scale * p;
         set_activity(v, new_act);
     }
 
@@ -2574,6 +2591,11 @@ namespace sat {
                 break;
             case justification::CLAUSE: {
                 clause & c = get_clause(js);
+                // Promote clause tier when used as reason in conflict analysis.
+                // TIER2 clauses that participate in conflicts are promoted to TIER1,
+                // TIER1 clauses are promoted to CORE.
+                if (c.is_learned() && !c.is_core())
+                    c.promote_tier();
                 unsigned i = 0;
                 if (consequent != null_literal) {
                     SASSERT(c[0] == consequent || c[1] == consequent);
@@ -2697,6 +2719,16 @@ namespace sat {
         clause * lemma = mk_clause_core(m_lemma.size(), m_lemma.data(), sat::status::redundant());
         if (lemma) {
             lemma->set_glue(glue);
+            // Assign tier based on glue (LBD):
+            //   glue <= 2 => CORE (never deleted)
+            //   glue <= 6 => TIER1 (protected from routine GC)
+            //   else      => TIER2 (aggressively GC'd)
+            if (glue <= 2)
+                lemma->set_tier(clause::CORE);
+            else if (glue <= 6)
+                lemma->set_tier(clause::TIER1);
+            else
+                lemma->set_tier(clause::TIER2);
         }
         if (m_par && lemma) {
             m_par->share_clause(*this, *lemma);
@@ -3080,7 +3112,7 @@ namespace sat {
 
     void solver::do_reorder() {
         IF_VERBOSE(1, verbose_stream() << "(reorder)\n");
-        m_activity_inc = 128;
+        m_activity_inc = 1.0;
         svector<bool_var> vars;
         for (bool_var v = num_vars(); v-- > 0; ) {
             if (!was_eliminated(v) && value(v) == l_undef) {            
@@ -3849,10 +3881,11 @@ namespace sat {
 
     void solver::rescale_activity() {
         SASSERT(m_config.m_branching_heuristic == BH_VSIDS);
-        for (unsigned& act : m_activity) {
-            act >>= 14;
+        double inv = 1e-100;
+        for (double& act : m_activity) {
+            act *= inv;
         }
-        m_activity_inc >>= 14;
+        m_activity_inc *= inv;
     }
 
     void solver::update_chb_activity(bool is_sat, unsigned qhead) {
@@ -3863,8 +3896,8 @@ namespace sat {
             auto d = m_stats.m_conflict - m_last_conflict[v] + 1;
             if (d == 0) d = 1;
             auto reward = multiplier / d;            
-            auto activity = m_activity[v];
-            set_activity(v, static_cast<unsigned>(m_step_size * reward + ((1.0 - m_step_size) * activity)));
+            double activity = m_activity[v];
+            set_activity(v, m_step_size * reward + (1.0 - m_step_size) * activity);
         }
     }
 
@@ -3874,8 +3907,8 @@ namespace sat {
         if (m_case_split_queue.empty())
             return;
         bool_var next = m_case_split_queue.min_var();
-        auto next_act = m_activity[next];
-        set_activity(b, next_act + 1);
+        double next_act = m_activity[next];
+        set_activity(b, next_act + m_activity_inc);
     }
 
     // -----------------------

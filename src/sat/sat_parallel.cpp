@@ -220,7 +220,7 @@ namespace sat {
         
         for (bool_var v = 0; v < m_priorities.size(); ++v) 
             s.update_activity(v, m_priorities[v]);
-        s.m_activity_inc = 128;
+        s.m_activity_inc = 1.0;
 #endif
     }
 

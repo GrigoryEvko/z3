@@ -136,8 +136,8 @@ namespace sat {
         unsigned                m_touch_index;
         literal_vector          m_replay_assign;
         // branch variable selection:
-        svector<unsigned>       m_activity;
-        unsigned                m_activity_inc;
+        svector<double>         m_activity;
+        double                  m_activity_inc;
         svector<uint64_t>       m_last_conflict;
         svector<uint64_t>       m_last_propagation;
         svector<uint64_t>       m_participated;
@@ -162,7 +162,7 @@ namespace sat {
         unsigned                m_rephase_inc;
         backoff                 m_rephase;
         backoff                 m_reorder;
-        var_queue<unsigned_vector> m_case_split_queue;
+        var_queue<svector<double>> m_case_split_queue;
         unsigned                m_qhead;
         unsigned                m_scope_lvl;
         unsigned                m_search_lvl;
@@ -524,7 +524,7 @@ namespace sat {
         char const* get_reason_unknown() const { return m_reason_unknown.c_str(); }
         bool check_clauses(model const& m) const;
         bool is_assumption(bool_var v) const;
-        void set_activity(bool_var v, unsigned act);
+        void set_activity(bool_var v, double act);
 
         lbool  cube(bool_var_vector& vars, literal_vector& lits, unsigned backtrack_level);
         
@@ -613,6 +613,8 @@ namespace sat {
         void gc_psm_glue();
         void save_psm();
         void gc_half(char const * st_name);
+        void gc_tier2(char const * st_name, unsigned tier2_start);
+        unsigned partition_tier2();
         void gc_dyn_psm();
         bool activate_frozen_clause(clause & c);
         unsigned psm(clause const & c) const;
@@ -800,16 +802,15 @@ namespace sat {
         // -----------------------
     public:
         void inc_activity(bool_var v) {
-            unsigned & act = m_activity[v];
+            double& act = m_activity[v];
             act += m_activity_inc;
             m_case_split_queue.activity_increased_eh(v);
-            if (act > (1 << 24))
+            if (act > 1e100)
                 rescale_activity();
         }
 
         void decay_activity() {
-            m_activity_inc *= m_config.m_variable_decay;
-            m_activity_inc /= 100;
+            m_activity_inc *= (m_config.m_variable_decay * 0.01);
         }
 
     private:

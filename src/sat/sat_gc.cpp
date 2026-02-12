@@ -122,31 +122,55 @@ namespace sat {
         }
     };
 
+    /**
+       \brief Partition m_learned so CORE/TIER1 clauses are at front, TIER2 at back.
+       Returns the index where TIER2 clauses start.
+    */
+    unsigned solver::partition_tier2() {
+        unsigned j = 0;
+        unsigned sz = m_learned.size();
+        for (unsigned i = 0; i < sz; ++i) {
+            if (!m_learned[i]->is_tier2()) {
+                std::swap(m_learned[i], m_learned[j]);
+                j++;
+            }
+        }
+        return j;
+    }
+
     void solver::gc_glue() {
-        if (m_learned.size() >= 2)
-            std::nth_element(m_learned.begin(), m_learned.begin() + m_learned.size()/2, m_learned.end(), glue_lt());
-        gc_half("glue");
+        unsigned tier2_start = partition_tier2();
+        unsigned tier2_sz = m_learned.size() - tier2_start;
+        if (tier2_sz >= 2)
+            std::nth_element(m_learned.begin() + tier2_start, m_learned.begin() + tier2_start + tier2_sz/2, m_learned.end(), glue_lt());
+        gc_tier2("glue", tier2_start);
     }
 
     void solver::gc_psm() {
         save_psm();
-        if (m_learned.size() >= 2)
-            std::nth_element(m_learned.begin(), m_learned.begin() + m_learned.size()/2, m_learned.end(), psm_lt());
-        gc_half("psm");
+        unsigned tier2_start = partition_tier2();
+        unsigned tier2_sz = m_learned.size() - tier2_start;
+        if (tier2_sz >= 2)
+            std::nth_element(m_learned.begin() + tier2_start, m_learned.begin() + tier2_start + tier2_sz/2, m_learned.end(), psm_lt());
+        gc_tier2("psm", tier2_start);
     }
 
     void solver::gc_glue_psm() {
         save_psm();
-        if (m_learned.size() >= 2)
-            std::nth_element(m_learned.begin(), m_learned.begin() + m_learned.size()/2, m_learned.end(), glue_psm_lt());
-        gc_half("glue-psm");
+        unsigned tier2_start = partition_tier2();
+        unsigned tier2_sz = m_learned.size() - tier2_start;
+        if (tier2_sz >= 2)
+            std::nth_element(m_learned.begin() + tier2_start, m_learned.begin() + tier2_start + tier2_sz/2, m_learned.end(), glue_psm_lt());
+        gc_tier2("glue-psm", tier2_start);
     }
 
     void solver::gc_psm_glue() {
         save_psm();
-        if (m_learned.size() >= 2)
-            std::nth_element(m_learned.begin(), m_learned.begin() + m_learned.size()/2, m_learned.end(), psm_glue_lt());
-        gc_half("psm-glue");
+        unsigned tier2_start = partition_tier2();
+        unsigned tier2_sz = m_learned.size() - tier2_start;
+        if (tier2_sz >= 2)
+            std::nth_element(m_learned.begin() + tier2_start, m_learned.begin() + tier2_start + tier2_sz/2, m_learned.end(), psm_glue_lt());
+        gc_tier2("psm-glue", tier2_start);
     }
 
     /**
@@ -159,12 +183,41 @@ namespace sat {
     }
 
     /**
-       \brief GC (the second) half of the clauses in the database.
+       \brief GC the worse half of TIER2 clauses.
+       CORE and TIER1 clauses (indices [0, tier2_start)) are never touched.
+       Of the TIER2 portion [tier2_start, end), the better half (lower indices
+       after nth_element) is kept, and the worse half is deleted if can_delete.
     */
+    void solver::gc_tier2(char const * st_name, unsigned tier2_start) {
+        TRACE(sat, tout << "gc tier2\n";);
+        unsigned sz     = m_learned.size();
+        unsigned tier2_sz = sz - tier2_start;
+        unsigned keep   = tier2_start + tier2_sz / 2;
+        unsigned j      = keep;
+        for (unsigned i = keep; i < sz; ++i) {
+            clause & c = *(m_learned[i]);
+            if (can_delete(c)) {
+                detach_clause(c);
+                del_clause(c);
+            }
+            else {
+                m_learned[j] = &c;
+                j++;
+            }
+        }
+        unsigned deleted = sz - j;
+        m_stats.m_gc_clause += deleted;
+        m_learned.shrink(j);
+        IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat-gc :strategy " << st_name
+                   << " :tier2 " << tier2_sz << " :protected " << tier2_start
+                   << " :deleted " << deleted << ")\n";);
+    }
+
+    // Keep gc_half for backward compatibility with gc_dyn_psm path
     void solver::gc_half(char const * st_name) {
         TRACE(sat, tout << "gc\n";);
         unsigned sz     = m_learned.size();
-        unsigned new_sz = sz/2; // std::min(sz/2, m_clauses.size()*2);
+        unsigned new_sz = sz/2;
         unsigned j      = new_sz;
         for (unsigned i = new_sz; i < sz; ++i) {
             clause & c = *(m_learned[i]);
@@ -184,6 +237,9 @@ namespace sat {
     }
 
     bool solver::can_delete(clause const & c) const {
+        // CORE clauses are never deleted
+        if (c.is_core())
+            return false;
         if (c.on_reinit_stack())
             return false;
         // Check both watched literals: either c[0] or c[1] could be the
@@ -235,9 +291,12 @@ namespace sat {
         for (; it != end; ++it) {
             clause & c = *(*it);
             if (!c.frozen()) {
-                // Active clause
-                if (c.glue() > m_config.m_gc_small_lbd) {
-                    // I never delete clauses with small lbd
+                // Active clause: CORE clauses are never deleted or frozen
+                if (c.is_core()) {
+                    // keep as-is
+                }
+                else if (c.glue() > m_config.m_gc_small_lbd && c.is_tier2()) {
+                    // TIER2 clauses: aggressively managed
                     if (c.was_used()) {
                         c.reset_inact_rounds();
                     }
@@ -262,9 +321,17 @@ namespace sat {
                         frozen++;
                     }
                 }
+                else if (c.is_tier1()) {
+                    // TIER1 clauses: only reset/track inactivity, do not delete in normal GC
+                    if (c.was_used())
+                        c.reset_inact_rounds();
+                    else
+                        c.inc_inact_rounds();
+                    c.unmark_used();
+                }
             }
             else {
-                // frozen clause
+                // frozen clause (only TIER2 can be frozen)
                 clause & c = *(*it);
                 if (psm(c) <= static_cast<unsigned>(c.size() * m_min_d_tk)) {
                     c.unfreeze();

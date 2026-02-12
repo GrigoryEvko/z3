@@ -32,6 +32,7 @@ namespace sat {
         m_used(false),
         m_frozen(false),
         m_reinit_stack(false),
+        m_tier(TIER2),
         m_inact_rounds(0),
         m_glue(255),
         m_psm(255) {
@@ -191,6 +192,7 @@ namespace sat {
         cls->m_glue   = other.glue();
         cls->m_psm    = other.psm();
         cls->m_frozen = other.frozen();
+        cls->m_tier   = other.m_tier;
         cls->m_approx = other.approx();
         return cls;
     }

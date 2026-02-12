@@ -71,6 +71,7 @@ namespace sat {
         enum kind { ELIM_VAR = 0, BCE, CCE, ACCE, ABCE, ATE };
         class entry {
             friend class model_converter;
+            friend class simplifier;
             bool_var                m_var;
             kind                    m_kind;
             literal_vector          m_clauses; // the different clauses are separated by null_literal
