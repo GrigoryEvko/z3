@@ -46,7 +46,7 @@ struct qi_params {
 
     bool               m_mbqi = true;
     unsigned           m_mbqi_max_cexs = 1;
-    unsigned           m_mbqi_max_cexs_incr = 1;
+    unsigned           m_mbqi_max_cexs_incr = 0;
     unsigned           m_mbqi_max_iterations = 1000;
     bool               m_mbqi_trace = false;
     unsigned           m_mbqi_force_template = 10;

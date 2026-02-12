@@ -95,7 +95,7 @@ struct smt_params : public preprocessor_params,
     unsigned         m_clause_decay = 1;
     initial_activity m_random_initial_activity = initial_activity::IA_RANDOM_WHEN_SEARCHING;
     phase_selection  m_phase_selection = phase_selection::PS_CACHING_CONSERVATIVE;
-    unsigned         m_phase_caching_on = 700;
+    unsigned         m_phase_caching_on = 400;
     unsigned         m_phase_caching_off = 100;
     bool             m_minimize_lemmas = true;
     unsigned         m_max_conflicts = UINT_MAX;

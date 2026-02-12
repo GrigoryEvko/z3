@@ -22,9 +22,9 @@ struct theory_seq_params {
     /*
      * Enable splitting guided by length constraints
      */
-    bool m_split_w_len = false;
+    bool m_split_w_len = true;
     bool m_seq_validate = false;
-    unsigned m_seq_max_unfolding = UINT_MAX/4;
+    unsigned m_seq_max_unfolding = 1000000000;
     unsigned m_seq_min_unfolding = 1;
 
     theory_seq_params(params_ref const & p = params_ref()) {
