@@ -205,7 +205,8 @@ void horn_subsume_model_converter::operator()(model_ref& mr) {
             func_interp* f = mr->get_func_interp(h);
             if (f) {
                 expr* e = f->get_else();
-                body = m.mk_or(e, body);
+                if (e)
+                    body = m.mk_or(e, body);
             }
             else {
                 f = alloc(func_interp, m, arity);

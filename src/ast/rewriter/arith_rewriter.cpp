@@ -1284,13 +1284,14 @@ bool arith_rewriter::get_divides(expr* num, expr* den, expr_ref& result) {
         mark.mark(arg); 
         if (m_util.is_numeral(arg, num_r)) num_e = arg; 
     } 
-    for (expr* arg : args2) { 
-        // don't remove divisor on (div (* -1 x) (* -1 y)) because rewriting would diverge. 
-        if (mark.is_marked(arg) && (!m_util.is_numeral(arg, num_r) || !num_r.is_minus_one())) { 
-            result = remove_divisor(arg, num, den); 
-            return true; 
-        } 
-        if (m_util.is_numeral(arg, den_r)) den_e = arg; 
+    for (expr* arg : args2) {
+        // don't remove divisor on (div (* -1 x) (* -1 y)) because rewriting would diverge.
+        rational tmp_r;
+        if (mark.is_marked(arg) && (!m_util.is_numeral(arg, tmp_r) || !tmp_r.is_minus_one())) {
+            result = remove_divisor(arg, num, den);
+            return true;
+        }
+        if (m_util.is_numeral(arg, den_r)) den_e = arg;
     } 
     rational g = gcd(num_r, den_r); 
     if (!g.is_one()) { 

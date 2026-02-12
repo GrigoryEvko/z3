@@ -76,7 +76,7 @@ proof_ref replace_proof_converter::operator()(ast_manager & m, unsigned num_sour
 }
 
 proof_converter * replace_proof_converter::translate(ast_translation & translator) {
-    replace_proof_converter* rp = alloc(replace_proof_converter, m);
+    replace_proof_converter* rp = alloc(replace_proof_converter, translator.to());
     for (proof* p : m_proofs) rp->insert(translator(p));
     return rp;
 }

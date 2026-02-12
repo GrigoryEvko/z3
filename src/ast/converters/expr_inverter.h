@@ -38,7 +38,7 @@ public:
     virtual ~iexpr_inverter() = default;
     virtual void set_is_var(std::function<bool(expr*)>& is_var) { m_is_var = is_var; }
     virtual void set_model_converter(generic_model_converter* mc) { m_mc = mc; }
-    virtual void set_produce_proofs(bool p) { m_produce_proofs = true; }
+    virtual void set_produce_proofs(bool p) { m_produce_proofs = p; }
     
     virtual bool operator()(func_decl* f, unsigned n, expr* const* args, expr_ref& new_expr) = 0;
     virtual bool mk_diff(expr* t, expr_ref& r) = 0;

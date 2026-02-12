@@ -814,6 +814,8 @@ void rewriter_tpl<Config>::operator()(expr * t, expr_ref & result, proof_ref & r
         result_stack().reset();
         result_pr_stack().reset();
         m_scopes.reset();
+        m_bindings.reset();
+        m_shifts.reset();
         reset_cache();
     }
 

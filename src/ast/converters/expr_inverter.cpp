@@ -900,8 +900,8 @@ public:
             }
             return false;
         default:
-            verbose_stream() << mk_pp(f, m) << "\n";
-            return false;                
+            TRACE(expr_inverter, tout << mk_pp(f, m) << "\n";);
+            return false;
             
         }
     }

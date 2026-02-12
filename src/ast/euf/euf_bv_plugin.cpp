@@ -342,7 +342,7 @@ namespace euf {
     }
 
     enode* bv_plugin::mk_extract(enode* n, unsigned lo, unsigned hi) { 
-        SASSERT(lo <= hi && width(n) > hi - lo);
+        SASSERT(lo <= hi && hi < width(n));
         unsigned lo1, hi1;
         while (is_extract(n, lo1, hi1)) {
             lo += lo1;

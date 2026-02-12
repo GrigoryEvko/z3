@@ -582,12 +582,13 @@ bool bool_rewriter::local_ctx_simp(unsigned num_args, expr * const * args, expr_
         }
 
         m_local_ctx_cost += 2*num_args;
-#if 0
-        static unsigned counter = 0;
-        counter++;
-        if (counter % 10000 == 0)
-            verbose_stream() << "local-ctx-cost: " << m_local_ctx_cost << " " << num_args << "\n";
-#endif
+        if (m_local_ctx_cost > m_local_ctx_limit) {
+            if (simp) {
+                result = mk_or_app(num_args, args);
+                return true;
+            }
+            return false;
+        }
 
         if (forward) {
             for (unsigned i = 0; i < num_args; ++i) {
