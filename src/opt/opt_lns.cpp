@@ -151,20 +151,23 @@ namespace opt {
         lns& m_lns;
         bool m_cores_are_valid { true };
 
+        bool m_pushed { false };
+
         scoped_bounding(lns& l):m_lns(l) {
-            if (!m_lns.m_enable_scoped_bounding) 
+            if (!m_lns.m_enable_scoped_bounding)
                 return;
             if (m_lns.m_best_bound == 0)
                 return;
             m_cores_are_valid = m_lns.m_cores_are_valid;
             m_lns.m_cores_are_valid = false;
             m_lns.s.push();
+            m_pushed = true;
             pb_util pb(m_lns.m);
             expr_ref bound(pb.mk_at_most_k(m_lns.ctx.soft(), m_lns.m_best_bound - 1), m_lns.m);
             m_lns.s.assert_expr(bound);
         }
         ~scoped_bounding() {
-            if (!m_lns.m_enable_scoped_bounding)
+            if (!m_pushed)
                 return;
             m_lns.m_cores_are_valid = m_cores_are_valid;
             m_lns.s.pop(1);

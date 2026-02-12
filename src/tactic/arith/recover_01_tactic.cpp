@@ -239,7 +239,7 @@ class recover_01_tactic : public tactic {
         
         bool process(func_decl * x, ptr_vector<app> & clauses) {
             unsigned cls_size = clauses.back()->get_num_args();
-            unsigned expected_num_clauses = 1 << (cls_size - 1);
+            unsigned expected_num_clauses = 1u << (cls_size - 1);
             if (clauses.size() < expected_num_clauses) // using < instead of != because we tolerate duplicates
                 return false;
             app * zero_cls = find_zero_cls(x, clauses);

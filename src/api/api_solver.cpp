@@ -16,6 +16,7 @@ Author:
 Revision History:
 
 --*/
+#include<atomic>
 #include<thread>
 #include "util/scoped_ctrl_c.h"
 #include "util/cancel_eh.h"
@@ -165,12 +166,12 @@ extern "C" {
 
     static void init_solver_log(Z3_context c, Z3_solver s) {
         static std::thread::id g_thread_id = std::this_thread::get_id();
-        static bool g_is_threaded = false;
+        static std::atomic<bool> g_is_threaded{false};
         solver_params sp(to_solver(s)->m_params);
         symbol smt2log = sp.smtlib2_log();
         if (smt2log.is_non_empty_string() && !to_solver(s)->m_pp) {
-            if (g_is_threaded || g_thread_id != std::this_thread::get_id()) {
-                g_is_threaded = true;
+            if (g_is_threaded.load(std::memory_order_relaxed) || g_thread_id != std::this_thread::get_id()) {
+                g_is_threaded.store(true, std::memory_order_relaxed);
                 std::ostringstream strm;
                 strm << smt2log << '-' << std::this_thread::get_id();
                 smt2log = symbol(std::move(strm).str());
@@ -358,7 +359,7 @@ extern "C" {
     // DIMACS files start with "p cnf" and number of variables/clauses.
     // This is not legal SMT syntax, so use the DIMACS parser.
     static bool is_dimacs_string(Z3_string c_str) {
-        return c_str[0] == 'p' && c_str[1] == ' ' && c_str[2] == 'c';
+        return c_str && c_str[0] == 'p' && c_str[1] == ' ' && c_str[2] == 'c';
     }
 
     void Z3_API Z3_solver_from_string(Z3_context c, Z3_solver s, Z3_string c_str) {
@@ -815,7 +816,7 @@ extern "C" {
 
     Z3_string Z3_API Z3_solver_to_dimacs_string(Z3_context c, Z3_solver s, bool include_names) {
         Z3_TRY;
-        LOG_Z3_solver_to_string(c, s);
+        LOG_Z3_solver_to_dimacs_string(c, s, include_names);
         RESET_ERROR_CODE();
         init_solver(c, s);
         std::ostringstream buffer;
@@ -908,6 +909,8 @@ extern "C" {
     Z3_ast_vector Z3_API Z3_solver_cube(Z3_context c, Z3_solver s, Z3_ast_vector vs, unsigned cutoff) {
         Z3_TRY;
         LOG_Z3_solver_cube(c, s, vs, cutoff);
+        RESET_ERROR_CODE();
+        init_solver(c, s);
         ast_manager& m = mk_c(c)->m();
         expr_ref_vector result(m), vars(m);
         for (ast* a : to_ast_vector_ref(vs)) {
@@ -1153,24 +1156,24 @@ extern "C" {
     void Z3_API Z3_solver_propagate_created(Z3_context c, Z3_solver s, Z3_created_eh created_eh) {
         Z3_TRY;
         RESET_ERROR_CODE();
-        user_propagator::created_eh_t c = (void(*)(void*, user_propagator::callback*, expr*))created_eh;
-        to_solver_ref(s)->user_propagate_register_created(c);
+        user_propagator::created_eh_t _created = (void(*)(void*, user_propagator::callback*, expr*))created_eh;
+        to_solver_ref(s)->user_propagate_register_created(_created);
         Z3_CATCH;
     }
 
     void Z3_API Z3_solver_propagate_decide(Z3_context c, Z3_solver s, Z3_decide_eh decide_eh) {
         Z3_TRY;
         RESET_ERROR_CODE();
-        user_propagator::decide_eh_t c = (void(*)(void*, user_propagator::callback*, expr*, unsigned, bool))decide_eh;
-        to_solver_ref(s)->user_propagate_register_decide(c);
+        user_propagator::decide_eh_t _decide = (void(*)(void*, user_propagator::callback*, expr*, unsigned, bool))decide_eh;
+        to_solver_ref(s)->user_propagate_register_decide(_decide);
         Z3_CATCH;
     }
 
     void Z3_API Z3_solver_propagate_on_binding(Z3_context c, Z3_solver s, Z3_on_binding_eh binding_eh) {
         Z3_TRY;
         RESET_ERROR_CODE();
-        user_propagator::binding_eh_t c = (bool(*)(void*, user_propagator::callback*, expr*, expr*))binding_eh;
-        to_solver_ref(s)->user_propagate_register_on_binding(c);
+        user_propagator::binding_eh_t _binding = (bool(*)(void*, user_propagator::callback*, expr*, expr*))binding_eh;
+        to_solver_ref(s)->user_propagate_register_on_binding(_binding);
         Z3_CATCH;
     }
 

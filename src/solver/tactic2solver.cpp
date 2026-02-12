@@ -40,7 +40,7 @@ namespace {
 class tactic2solver : public solver_na2as {
     expr_ref_vector              m_assertions;
     expr_ref_vector              m_last_assertions;
-    unsigned                     m_last_assertions_valid;
+    bool                         m_last_assertions_valid;
     unsigned_vector              m_scopes;
     ref<simple_check_sat_result> m_result;
     tactic_ref                   m_tactic;
@@ -276,7 +276,7 @@ lbool tactic2solver::check_sat_core2(unsigned num_assumptions, expr * const * as
     catch (z3_error & ex) {
         TRACE(tactic2solver, tout << "exception: " << ex.what() << "\n";);
         m_result->m_proof = pr;
-        throw ex;
+        throw;
     }
     catch (z3_exception & ex) {
         TRACE(tactic2solver, tout << "exception: " << ex.what() << "\n";);

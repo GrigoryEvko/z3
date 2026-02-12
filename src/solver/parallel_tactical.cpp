@@ -691,7 +691,7 @@ private:
         }
         else {
             return false;
-        }        
+        }
     }
 
     bool memory_pressure() { 
@@ -822,7 +822,7 @@ public:
             if (m_core) {
                 ast_translation tr(m_core->get_manager(), m);
                 expr_ref_vector core(tr(*m_core));
-                for (expr * c : core)                 
+                for (expr * c : core)
                     lcore = m.mk_join(lcore, m.mk_leaf(bool2dep.find(c)));
             }
             g->assert_expr(m.mk_false(), pr, lcore);            

@@ -95,11 +95,11 @@ class add_bounds_tactic : public tactic {
             void operator()(app * t) {
                 if (is_uninterp_const(t) &&  (m_util.is_int(t) || m_util.is_real(t))) {
                     if (!m_bm.has_lower(t)) {
-                        m_goal.assert_expr(m_util.mk_le(t, m_util.mk_numeral(m_upper, m_util.is_int(t))));
+                        m_goal.assert_expr(m_util.mk_ge(t, m_util.mk_numeral(m_lower, m_util.is_int(t))));
                         m_num_bounds++;
                     }
                     if (!m_bm.has_upper(t)) {
-                        m_goal.assert_expr(m_util.mk_ge(t, m_util.mk_numeral(m_lower, m_util.is_int(t))));
+                        m_goal.assert_expr(m_util.mk_le(t, m_util.mk_numeral(m_upper, m_util.is_int(t))));
                         m_num_bounds++;
                     }
                 }

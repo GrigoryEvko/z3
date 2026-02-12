@@ -837,7 +837,7 @@ public:
     }
 
     tactic * translate(ast_manager & m) override {
-        return translate_core<and_then_tactical>(m);
+        return translate_core<par_and_then_tactical>(m);
     }
 
 };

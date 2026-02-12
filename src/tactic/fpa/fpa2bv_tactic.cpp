@@ -78,9 +78,9 @@ class fpa2bv_tactic : public tactic {
                         // has a value to propagate.
                         expr_ref sgn(m), sig(m), exp(m);
                         m_conv.split_fp(new_curr, sgn, exp, sig);
-                        result.back()->assert_expr(m.mk_eq(sgn, m_conv.bu().mk_numeral(0, 1)));
-                        result.back()->assert_expr(m.mk_eq(exp, m_conv.bu().mk_bv_neg(m_conv.bu().mk_numeral(1, m_conv.bu().get_bv_size(exp)))));
-                        result.back()->assert_expr(m.mk_eq(sig, m_conv.bu().mk_numeral(1, m_conv.bu().get_bv_size(sig))));
+                        g->assert_expr(m.mk_eq(sgn, m_conv.bu().mk_numeral(0, 1)));
+                        g->assert_expr(m.mk_eq(exp, m_conv.bu().mk_bv_neg(m_conv.bu().mk_numeral(1, m_conv.bu().get_bv_size(exp)))));
+                        g->assert_expr(m.mk_eq(sig, m_conv.bu().mk_numeral(1, m_conv.bu().get_bv_size(sig))));
                     }
                 }
             }

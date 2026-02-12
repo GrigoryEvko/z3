@@ -1439,7 +1439,6 @@ extern "C" {
             case OP_FPA_TO_IEEE_BV: return Z3_OP_FPA_TO_IEEE_BV;
             case OP_FPA_BVWRAP: return Z3_OP_FPA_BVWRAP;
             case OP_FPA_BV2RM: return Z3_OP_FPA_BV2RM;
-                return Z3_OP_UNINTERPRETED;
             default:
                 return Z3_OP_INTERNAL;
             }

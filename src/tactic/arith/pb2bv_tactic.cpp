@@ -536,7 +536,7 @@ private:
             it  = m_p.begin();
             numeral a_sum;
             for (; it != end; ++it) {
-                a_sum += m_c;
+                a_sum += it->m_a;
                 if (a_sum >= m_c)
                     break;
             }

@@ -1134,8 +1134,8 @@ namespace qe {
                          find_variable(e1, num_vars, vars, vars_ptr, k)) {
                     // ok
                 }
-                else if (find_variable(p, num_vars, vars, vars_ptr, k)) {
-                    // ok
+                else if (find_variable(p, num_vars, vars, vars_ptr, numeral(1))) {
+                    // ok -- bare variable has coefficient 1
                 }
                 else if (m_arith.is_numeral(p, k)) {
                     values[0] += k;
@@ -1437,13 +1437,13 @@ public:
                 out << mk_pp(lt()[i], m) << " < 0\n";
             }
             for (unsigned i = 0; i < le_size(); ++i) {
-                out << mk_pp(le()[i], m) << " < 0\n";
+                out << mk_pp(le()[i], m) << " <= 0\n";
             }
             for (unsigned i = 0; i < gt_size(); ++i) {
-                out << mk_pp(gt()[i], m) << " < 0\n";
+                out << mk_pp(gt()[i], m) << " > 0\n";
             }
             for (unsigned i = 0; i < ge_size(); ++i) {
-                out << mk_pp(ge()[i], m) << " < 0\n";
+                out << mk_pp(ge()[i], m) << " >= 0\n";
             }
         }
     };

@@ -225,9 +225,10 @@ namespace api {
             e = m_bv_util.mk_numeral(n, s);
         }
         else if (fid == get_datalog_fid() && n.is_uint64()) {
-            if (auto size_opt = m_datalog_util.try_get_size(s); 
+            if (auto size_opt = m_datalog_util.try_get_size(s);
                 size_opt.has_value() && *size_opt <= n.get_uint64()) {
                 invoke_error_handler(Z3_INVALID_ARG);
+                return nullptr;
             }
             e = m_datalog_util.mk_numeral(n.get_uint64(), s);
         }
@@ -238,9 +239,10 @@ namespace api {
         }
         else {
             invoke_error_handler(Z3_INVALID_ARG);
+            return nullptr;
         }
         save_ast_trail(e);
-        return e;    
+        return e;
     }
         
     expr * context::mk_and(unsigned num_exprs, expr * const * exprs) {
@@ -419,8 +421,10 @@ extern "C" {
         Z3_TRY;
         LOG_Z3_inc_ref(c, a);
         RESET_ERROR_CODE();
-        mk_c(c)->flush_objects();
-        mk_c(c)->m().inc_ref(to_ast(a));
+        if (a) {
+            mk_c(c)->flush_objects();
+            mk_c(c)->m().inc_ref(to_ast(a));
+        }
         Z3_CATCH;
     }
 
@@ -440,15 +444,15 @@ extern "C" {
     }
 
 
-    void Z3_API Z3_get_version(unsigned * major, 
-                               unsigned * minor, 
-                               unsigned * build_number, 
+    void Z3_API Z3_get_version(unsigned * major,
+                               unsigned * minor,
+                               unsigned * build_number,
                                unsigned * revision_number) {
         LOG_Z3_get_version(major, minor, build_number, revision_number);
-        *major           = Z3_MAJOR_VERSION;
-        *minor           = Z3_MINOR_VERSION;
-        *build_number    = Z3_BUILD_NUMBER;
-        *revision_number = Z3_REVISION_NUMBER;
+        if (major)           *major           = Z3_MAJOR_VERSION;
+        if (minor)           *minor           = Z3_MINOR_VERSION;
+        if (build_number)    *build_number    = Z3_BUILD_NUMBER;
+        if (revision_number) *revision_number = Z3_REVISION_NUMBER;
     }
 
     Z3_string Z3_API Z3_get_full_version(void) {

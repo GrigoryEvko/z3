@@ -272,7 +272,7 @@ public:
             return args[0];
         }
         if (sz == 1 && weights[0].is_one() && w.is_zero()) {
-            return m.mk_not(args[0]);
+            return m.mk_true();
         }
         if (w.is_neg()) {
             DEBUG_CODE(for (unsigned i = 0; i < sz; ++i) SASSERT(weights[i].is_nonneg()); );

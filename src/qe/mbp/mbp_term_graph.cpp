@@ -600,11 +600,9 @@ void term_graph::internalize_eq(expr *a1, expr *a2) {
 
 void term_graph::internalize_distinct(expr *d) {
     app *a = to_app(d);
-    ptr_vector<term> ts(a->get_decl()->get_arity());
-    auto tsit = ts.begin();
+    ptr_vector<term> ts;
     for (auto arg : *a) {
-        *tsit = internalize_term(arg);
-        tsit++;
+        ts.push_back(internalize_term(arg));
     }
     m_add_deq(ts);
     m_deq_distinct.push_back(ts);
@@ -1007,7 +1005,7 @@ void term_graph::to_lits(expr_ref_vector &lits, bool all_equalities,
     }
 
     for (auto t : m_deq_distinct) {
-        ptr_vector<expr> args(t.size());
+        ptr_vector<expr> args;
         for (auto c : t) args.push_back(mk_app(c->get_expr()));
         lits.push_back(m.mk_distinct(args.size(), args.data()));
     }
@@ -1400,7 +1398,7 @@ class term_graph::projector {
         unsigned i = 0;
         unsigned sz = reps.size();
         while (i < sz) {
-            sort *last_sort = res.get(i)->get_sort();
+            sort *last_sort = reps.get(i)->get_sort();
             unsigned j = i + 1;
             while (j < sz && last_sort == reps.get(j)->get_sort()) { ++j; }
             if (j - i == 2) {
@@ -1779,7 +1777,7 @@ expr_ref_vector term_graph::dcert(model &mdl, expr_ref_vector const &lits) {
                     for (unsigned i = 0; i < sz; ++i) {
                         expr *arg1 = to_app(t1)->get_arg(i);
                         expr *arg2 = to_app(t2)->get_arg(i);
-                        if (mdl(arg1) == mdl(t2)) { continue; }
+                        if (mdl(arg1) == mdl(arg2)) { continue; }
                         if (in_table(arg1, arg2)) {
                             found = true;
                             break;

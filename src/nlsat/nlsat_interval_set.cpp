@@ -231,10 +231,10 @@ namespace nlsat {
         return false;
     }
 
-    inline void push_back(anum_manager & am, interval_buffer & buf, 
-                          bool lower_open, bool lower_inf, anum const & lower, 
+    inline void push_back(anum_manager & am, interval_buffer & buf,
+                          bool lower_open, bool lower_inf, anum const & lower,
                           bool upper_open, bool upper_inf, anum const & upper,
-                          literal justification) {
+                          literal justification, clause const* cls = nullptr) {
         buf.push_back(interval());
         interval & i = buf.back();
         i.m_lower_open = lower_open;
@@ -244,6 +244,7 @@ namespace nlsat {
         i.m_upper_inf  = upper_inf;
         am.set(i.m_upper, upper);
         i.m_justification = justification;
+        i.m_clause = cls;
         SASSERT(check_interval(am, i));
     }
 
@@ -251,7 +252,7 @@ namespace nlsat {
         push_back(am, buf,
                   i.m_lower_open, i.m_lower_inf, i.m_lower,
                   i.m_upper_open, i.m_upper_inf, i.m_upper,
-                  i.m_justification);
+                  i.m_justification, i.m_clause);
     }
 
     inline interval_set * mk_interval(small_object_allocator & allocator, interval_buffer & buf, bool full) {
@@ -494,6 +495,7 @@ namespace nlsat {
                     next_curr.m_upper_open = next.m_upper_open;
                     m_am.swap(next_curr.m_upper, next.m_upper);
                     next_curr.m_justification = next.m_justification;
+                    next_curr.m_clause = next.m_clause;
                 }
             }
         }

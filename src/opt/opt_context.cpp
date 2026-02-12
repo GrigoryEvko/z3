@@ -35,7 +35,6 @@ Notes:
 #include "tactic/core/solve_eqs_tactic.h"
 #include "tactic/core/simplify_tactic.h"
 #include "tactic/core/propagate_values_tactic.h"
-#include "tactic/core/solve_eqs_tactic.h"
 #include "tactic/core/elim_uncnstr_tactic.h"
 #include "tactic/tactical.h"
 #include "tactic/arith/card2bv_tactic.h"
@@ -287,10 +286,10 @@ namespace opt {
         switch (o.m_type) {
         case O_MAXSMT:
             zero = m_arith.mk_numeral(rational(0), false);
-            for (unsigned i = 0; i < o.m_terms.size(); ++i) {
-                args.push_back(m.mk_ite(o.m_terms[i], zero, m_arith.mk_numeral(o.m_weights[i], false)));
+            for (unsigned j = 0; j < o.m_terms.size(); ++j) {
+                args.push_back(m.mk_ite(o.m_terms[j], zero, m_arith.mk_numeral(o.m_weights[j], false)));
             }
-            result = m_arith.mk_add(args.size(), args.data());
+            result = args.empty() ? zero : m_arith.mk_add(args.size(), args.data());
             break;
         case O_MAXIMIZE:
             result = o.m_term;
@@ -481,11 +480,13 @@ namespace opt {
         }
         if (m_on_model_eh && m) {
             model_ref md = m->copy();
-            if (!m_model_fixed.contains(md.get()))
+            bool already_fixed = m_model_fixed.contains(md.get());
+            if (!already_fixed)
                 fix_model(md);
             flet<bool> _calling(m_calling_on_model, true);
             m_on_model_eh(m_on_model_ctx, md);
-            m_model_fixed.pop_back();
+            if (!already_fixed)
+                m_model_fixed.pop_back();
         }
     }
 
@@ -650,6 +651,7 @@ namespace opt {
         switch (obj.m_type) {
         case O_MINIMIZE:
             is_ge = !is_ge;
+            [[fallthrough]];
         case O_MAXIMIZE:
             val = (*mdl)(obj.m_term);
             if (is_numeral(val, k)) {
@@ -1100,8 +1102,8 @@ namespace opt {
                 return false;
             if (!is_zo && !all_of(*to_app(y), is_zero_one))
                 return false;
-            cardinalities.push_back(x);
-            max_cardinality = std::max(max_cardinality, is_zo ? 1 : to_app(x)->get_num_args());
+            cardinalities.push_back(y);
+            max_cardinality = std::max(max_cardinality, is_zo ? 1 : to_app(y)->get_num_args());
             min_cardinality = std::min(min_cardinality, is_zo ? 1 : to_app(y)->get_num_args());
             return true;
         };
@@ -1954,9 +1956,9 @@ namespace opt {
                 break;
             case O_MAXSMT: {
                 rational value(0);
-                for (unsigned i = 0; i < obj.m_terms.size(); ++i) {
-                    if (!m_model->is_true(obj.m_terms[i])) {
-                        value += obj.m_weights[i];
+                for (unsigned j = 0; j < obj.m_terms.size(); ++j) {
+                    if (!m_model->is_true(obj.m_terms[j])) {
+                        value += obj.m_weights[j];
                     }
                     // TBD: check that optimal was not changed.
                 }
@@ -1966,8 +1968,8 @@ namespace opt {
                 // TBD SASSERT(value0 == value);
                 break;
             }
-            }       
-        } 
+            }
+        }
     }
 
     bool context::is_qsat_opt() {

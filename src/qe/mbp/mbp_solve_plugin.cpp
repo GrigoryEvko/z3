@@ -68,7 +68,7 @@ namespace mbp {
          * \brief return true if lhs = rhs can be solved as v = t, where v is a variable.
          */
         bool solve(expr* lhs, expr* rhs, expr_ref& v, expr_ref& t) {
-            if (!a.is_int(lhs) && !a.is_real(rhs)) {
+            if (!a.is_int(lhs) && !a.is_real(lhs)) {
                 return false;
             }
             rational a_val;

@@ -241,7 +241,10 @@ public:
                         throw;
                     }
                 }
-                if ((r != l_undef || !use_solver1_when_undef()) && !eh.m_canceled) {
+                if (r == l_true || r == l_false) {
+                    return r;
+                }
+                if (r != l_undef || !use_solver1_when_undef()) {
                     return r;
                 }
             }
@@ -267,7 +270,7 @@ public:
     }
 
     unsigned get_num_assumptions() const override {
-        return m_solver1->get_num_assumptions() + m_solver2->get_num_assumptions();
+        return m_solver2->get_num_assumptions();
     }
 
     expr_ref_vector cube(expr_ref_vector& vars, unsigned backtrack_level) override {
@@ -281,9 +284,7 @@ public:
 
 
     expr * get_assumption(unsigned idx) const override {
-        unsigned c1 = m_solver1->get_num_assumptions();
-        if (idx < c1) return m_solver1->get_assumption(idx);
-        return m_solver2->get_assumption(idx - c1);
+        return m_solver2->get_assumption(idx);
     }
 
     std::ostream& display(std::ostream & out, unsigned n, expr* const* es) const override {

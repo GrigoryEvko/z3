@@ -1153,7 +1153,7 @@ namespace mbp {
             if (a.is_store(s)) {
                 unsigned n = s->get_num_args()-2;
                 indices idx(m, model, n, s->get_args()+1);
-                for (unsigned i = 1; i < n; ++i) {
+                for (unsigned i = 1; i <= n; ++i) {
                     if (contains_x(s->get_arg(i))) {
                         return false;
                     }

@@ -702,7 +702,7 @@ namespace nlsat {
             unsigned n = degree(f, x);
             auto c = polynomial_ref(this->m_pm);
             for (unsigned j = 0; j <= n; ++j) {
-                c = m_pm.coeff(s, x, j);
+                c = m_pm.coeff(f, x, j);
                 SASSERT(sign(c) == 0);
                 ensure_sign(c);
             }

@@ -287,8 +287,6 @@ func_decl * func_decls::find(ast_manager& m, unsigned arity, sort * const * doma
 }
 
 func_decl * func_decls::find(ast_manager & m, unsigned num_args, expr * const * args, sort * range) {
-    if (!more_than_one())
-        first();
     ptr_buffer<sort> sorts;
     for (unsigned i = 0; i < num_args; ++i) {
         if (!args[i])

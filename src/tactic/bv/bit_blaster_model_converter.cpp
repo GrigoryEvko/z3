@@ -226,8 +226,9 @@ struct bit_blaster_model_converter : public model_converter {
                     var2value.push_back({ expr_ref(arg, m()), bit_k });
                     ++k;
                 }
-                var2value[i] = var2value.back();
-                var2value.pop_back();                
+                var2value[j] = var2value.back();
+                var2value.pop_back();
+                break;                
             }
         }
     }

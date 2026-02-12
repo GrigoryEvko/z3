@@ -1130,9 +1130,9 @@ class fm_tactic : public tactic {
         bool register_constraint(constraint * c) {
             normalize_coeffs(*c);
             if (is_false(*c)) {
+                TRACE(add_constraint_bug, tout << "is false "; display(tout, *c); tout << "\n";);
                 del_constraint(c);
                 m_inconsistent = true;
-                TRACE(add_constraint_bug, tout << "is false "; display(tout, *c); tout << "\n";);
                 return false;
             }
             
@@ -1185,7 +1185,7 @@ class fm_tactic : public tactic {
         typedef std::pair<var, unsigned> x_cost;
     
         struct x_cost_lt {
-            char_vector const m_is_int;
+            char_vector const& m_is_int;
             x_cost_lt(char_vector & is_int):m_is_int(is_int) {}
             bool operator()(x_cost const & p1, x_cost const & p2) const { 
                 // Integer variables with cost 0 can be eliminated even if they depend on real variables.

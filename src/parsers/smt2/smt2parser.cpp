@@ -478,7 +478,7 @@ namespace smt2 {
                     m_ctx.diagnostic_stream() << std::endl;
             }
             else {
-                m_ctx.regular_stream() << "(error : " << escaped(msg, true) << "\")" << std::endl;
+                m_ctx.regular_stream() << "(error \"" << escaped(msg, true) << "\")" << std::endl;
             }
         }
 
@@ -680,7 +680,7 @@ namespace smt2 {
             unsigned num_frames = 0;
             do {
                 if (curr_is_identifier()) {
-                    psort_stack().push_back(parse_psort_name(false));
+                    psort_stack().push_back(parse_psort_name(ignore_unknown_sort));
                 }
                 else if (curr_is_rparen()) {
                     if (num_frames == 0)
@@ -2368,6 +2368,7 @@ namespace smt2 {
 
         void parse_model_del() {
             next();
+            check_identifier("invalid model-del, symbol expected");
             symbol id = curr_id();
             func_decl * f = m_ctx.find_func_decl(id);
             m_ctx.model_del(f);
@@ -3150,6 +3151,7 @@ namespace smt2 {
             m_sexpr_stack     = nullptr;
 			m_bv_util = nullptr;
 			m_arith_util = nullptr;
+			m_datatype_util = nullptr;
 			m_seq_util = nullptr;
 			m_pattern_validator = nullptr;
 			m_var_shifter = nullptr;
@@ -3257,7 +3259,7 @@ namespace smt2 {
                 if (m_curr_cmd)
                     m_curr_cmd->failure_cleanup(m_ctx);
                 reset();
-                found_errors = true;
+                found_errors++;
                 if (!sync_after_error())
                     return false;
                 TRACE(parser_error, tout << "after sync: " << curr() << "\n";);

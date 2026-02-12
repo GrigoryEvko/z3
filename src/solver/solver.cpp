@@ -258,12 +258,16 @@ expr_ref_vector solver::get_units() {
     obj_map<expr, bool> units;
     for (expr* f : fmls) {
         if (m.is_not(f, f) && is_literal(m, f)) {
-            m.inc_ref(f);
-            units.insert(f, false);
+            if (!units.contains(f)) {
+                m.inc_ref(f);
+                units.insert(f, false);
+            }
         }
         else if (is_literal(m, f)) {
-            m.inc_ref(f);
-            units.insert(f, true);
+            if (!units.contains(f)) {
+                m.inc_ref(f);
+                units.insert(f, true);
+            }
         }
     }
     model_converter_ref mc = get_model_converter();

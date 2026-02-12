@@ -258,22 +258,6 @@ namespace mbp {
                 rational c0 = add_def(t1, mul1, coeffs);
                 tids.insert(t, mbo.add_div(coeffs, c0, mul1));
             }
-            else if (a.is_mod(t, t1, t2) && is_numeral(t2, mul1) && mul1 > 0) {
-                rational r;
-                val = eval(t);
-                if (!a.is_numeral(val, r)) {
-                    IF_VERBOSE(1, verbose_stream() << "mbp failed on " << mk_pp(t, m) << " := " << val << "\n");
-                    throw default_exception("mbp evaluation didn't produce an integer");
-                }
-                c += mul * r;
-
-                rational c0(-r), mul0(1);
-                obj_map<expr, rational> ts0;
-                linearize(mbo, eval, mul0, t1, c0, fmls, ts0, tids);
-                vars coeffs;
-                extract_coefficients(mbo, eval, ts0, tids, coeffs);
-                mbo.add_divides(coeffs, c0, mul1);
-            }
             else {
                 TRACE(qe, tout << "insert mul " << mk_pp(t, m) << "\n");
                 insert_mul(t, mul, ts);

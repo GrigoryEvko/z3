@@ -318,9 +318,9 @@ private:
         SASSERT(!k.is_neg());
         SASSERT(k.is_int());
         rational two(2);
-        rational bound(1);
+        rational bound(2);
         unsigned num_bits = 1;
-        while (bound <= k) {
+        while (bound < k) {
             ++num_bits;
             bound *= two;
         }

@@ -54,10 +54,11 @@ class normalize_bounds_tactic : public tactic {
         
         bool is_target(expr * var, rational & val) {
             bool strict;
-            return 
-                is_uninterp_const(var) && 
-                (!m_normalize_int_only || m_util.is_int(var)) && 
-                m_bm.has_lower(var, val, strict) && 
+            return
+                is_uninterp_const(var) &&
+                (!m_normalize_int_only || m_util.is_int(var)) &&
+                m_bm.has_lower(var, val, strict) &&
+                !strict &&
                 !val.is_zero();
         }
         

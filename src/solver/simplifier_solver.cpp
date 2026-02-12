@@ -222,11 +222,11 @@ public:
         m_preprocess_state.pop(n);
     }
 
-    lbool check_sat_core(unsigned num_assumptions, expr* const* assumptions) override { 
+    lbool check_sat_core(unsigned num_assumptions, expr* const* assumptions) override {
         expr_ref_vector _assumptions(m, num_assumptions, assumptions);
         flush(_assumptions);
         TRACE(simplifier, tout << _assumptions);
-        return s->check_sat_core(num_assumptions, _assumptions.data()); 
+        return s->check_sat_core(_assumptions.size(), _assumptions.data());
     }
 
     void collect_statistics(statistics& st) const override { 
