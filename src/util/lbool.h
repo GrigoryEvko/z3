@@ -20,7 +20,11 @@ Revision History:
 
 #include "util/util.h"
 
-typedef enum { l_false = -1, l_undef, l_true } lbool;
+#include <cstdint>
+
+// Pack as 1 byte (int8_t) for cache-friendly assignment arrays.
+// Values: l_false=-1, l_undef=0, l_true=1 fit in a signed byte.
+typedef enum : int8_t { l_false = -1, l_undef, l_true } lbool;
 
 inline lbool operator~(lbool lb) {
     return static_cast<lbool>(-static_cast<int>(lb));
