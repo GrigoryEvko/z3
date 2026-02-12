@@ -578,8 +578,8 @@ namespace arith {
         TRACE(artih, tout << mk_bounded_pp(e.eq()->get_expr(), m) << "\n");
         ensure_column(e.v1());
         ensure_column(e.v2());
-        m_delayed_eqs.push_back(std::make_pair(e, false));
         ctx.push(push_back_vector<svector<std::pair<euf::th_eq, bool>>>(m_delayed_eqs));
+        m_delayed_eqs.push_back(std::make_pair(e, false));
     }
 
     void solver::mk_diseq_axiom(theory_var v1, theory_var v2) {
@@ -608,10 +608,7 @@ namespace arith {
             if (a.is_numeral(diff)) {
                 if (!a.is_zero(diff))
                     return;
-                if (a.is_zero(diff))
-                    add_unit(eq);
-                else 
-                    add_unit(~eq);
+                add_unit(eq);
                 return;
             }
             le = mk_literal(a.mk_le(diff, zero));

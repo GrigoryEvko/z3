@@ -200,7 +200,13 @@ namespace user_solver {
     }
 
     void solver::propagate_new_fixed(prop_info const& prop) {
-        new_fixed_eh(prop.m_var, prop.m_conseq, prop.m_lits.size(), prop.m_lits.data());
+        // Extract all fields before calling new_fixed_eh, since the user callback
+        // inside new_fixed_eh can call propagate_cb -> m_prop.push_back() which
+        // may reallocate m_prop and invalidate the prop reference.
+        euf::theory_var var = prop.m_var;
+        expr* conseq = prop.m_conseq;
+        sat::literal_vector lits(prop.m_lits);
+        new_fixed_eh(var, conseq, lits.size(), lits.data());
     }
 
     bool solver::unit_propagate() {
@@ -318,6 +324,18 @@ namespace user_solver {
 
     euf::th_solver* solver::clone(euf::solver& dst_ctx) {
         auto* result = alloc(solver, dst_ctx);
+        if (m_fresh_eh) {
+            user_propagator::context_obj* api_ctx = nullptr;
+            void* new_ctx = m_fresh_eh(m_user_context, dst_ctx.get_manager(), api_ctx);
+            result->add(new_ctx, m_push_eh, m_pop_eh, m_fresh_eh);
+            result->m_api_context = api_ctx;
+            if (m_final_eh)   result->register_final(m_final_eh);
+            if (m_fixed_eh)   result->register_fixed(m_fixed_eh);
+            if (m_eq_eh)      result->register_eq(m_eq_eh);
+            if (m_diseq_eh)   result->register_diseq(m_diseq_eh);
+            if (m_created_eh) result->register_created(m_created_eh);
+            if (m_decide_eh)  result->register_decide(m_decide_eh);
+        }
         for (unsigned i = 0; i < get_num_vars(); ++i)
             result->add_expr(ctx.copy(dst_ctx, var2enode(i))->get_expr());
         return result;

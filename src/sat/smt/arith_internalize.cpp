@@ -269,8 +269,8 @@ namespace arith {
                     st.to_ensure_var().push_back(n2);
                 }
                 else if (a.is_band(n) || a.is_shl(n) || a.is_ashr(n) || a.is_lshr(n)) {
-                    m_bv_terms.push_back(to_app(n));
                     ctx.push(push_back_vector(m_bv_terms));
+                    m_bv_terms.push_back(to_app(n));
                     mk_bv_axiom(to_app(n));
                     ensure_arg_vars(to_app(n));
                 }

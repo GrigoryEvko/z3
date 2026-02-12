@@ -603,30 +603,15 @@ namespace pb {
                 s().reset_mark(v);
                 --m_num_marks;
             }
-            if (idx == 0 && !_debug_conflict && m_num_marks > 0) {
-                _debug_conflict = true;
-                _debug_var2position.reserve(s().num_vars());
-                for (unsigned i = 0; i < lits.size(); ++i) {
-                    _debug_var2position[lits[i].var()] = i;
-                }
-                IF_VERBOSE(0, verbose_stream() << "num marks: " << m_num_marks << "\n");
-                IF_VERBOSE(0, 
-                           active2pb(m_A);
-                           uint64_t c = 0;
-                           for (auto [w, l] : m_A.m_wlits) c += w;
-                           verbose_stream() << "sum of coefficients: " << c << "\n";
-                           display(verbose_stream(), m_A, true);
-                           verbose_stream() << "conflicting literal: " << s().m_not_l << "\n";);
-
+            if (idx == 0 && m_num_marks > 0) {
+                IF_VERBOSE(1, verbose_stream() << "pb bail_resolve_conflict: " << m_num_marks << " marks remaining at idx 0\n");
                 for (literal l : lits) {
                     if (s().is_marked(l.var())) {
-                        IF_VERBOSE(0, verbose_stream() << "missing mark: " << l << "\n";);
                         s().reset_mark(l.var());
                     }
                 }
                 m_num_marks = 0;
-                resolve_conflict();
-                exit(0);
+                return;
             }
             --idx;
         }
@@ -2441,7 +2426,6 @@ namespace pb {
 
     bool solver::is_cardinality(pbc const& p, literal_vector& lits) {
         lits.reset();
-        p.size();
         for (auto [w, lit] : p) {
             if (lits.size() > 2*p.size() + w) {
                 return false;

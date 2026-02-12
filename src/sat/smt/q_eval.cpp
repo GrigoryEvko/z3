@@ -95,9 +95,9 @@ namespace q {
         if (tn != tr) evidence.push_back(euf::enode_pair(tn, tr)), tn = tr;
         TRACE(q, tout << mk_pp(s, m) << " ~~ " << mk_pp(t, m) << "\n";
               tout << ctx.bpp(sn) << " " << ctx.bpp(tn) << "\n";);
-        
+
         lbool c;
-        if (sn && sn == tn) 
+        if (sn && sn == tn)
             return l_true;
         
         if (sn && sn == m_diseq_undef.first && tn == m_diseq_undef.second) 

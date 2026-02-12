@@ -167,6 +167,7 @@ namespace fpa {
     bool solver::unit_propagate() {
         if (m_nodes.size() <= m_nodes_qhead)
             return false;
+        force_push();
         ctx.push(value_trail<unsigned>(m_nodes_qhead));
         for (; m_nodes_qhead < m_nodes.size(); ++m_nodes_qhead) 
             unit_propagate(m_nodes[m_nodes_qhead]);
@@ -289,14 +290,17 @@ namespace fpa {
     }
 
     void solver::new_eq_eh(euf::th_eq const& eq) {
+        force_push();
         ensure_equality_relation(eq.v1(), eq.v2());
     }
 
     void solver::new_diseq_eh(euf::th_eq const& eq) {
+        force_push();
         ensure_equality_relation(eq.v1(), eq.v2());
     }
 
     void solver::asserted(sat::literal l) {
+        force_push();
         expr* e = ctx.bool_var2expr(l.var());
 
         TRACE(t_fpa, tout << "assign_eh for: " << l << "\n" << mk_ismt2_pp(e, m) << "\n";);

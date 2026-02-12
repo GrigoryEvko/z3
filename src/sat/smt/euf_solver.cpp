@@ -187,9 +187,12 @@ namespace euf {
         IF_VERBOSE(0, verbose_stream() << mk_pp(f, m) << " not handled\n");
     }
 
-    void solver::init_search() {   
-        if (get_config().m_sls_enable)
-            add_solver(alloc(sls::solver, *this));
+    void solver::init_search() {
+        if (get_config().m_sls_enable) {
+            family_id sls_fid = m.mk_family_id("sls");
+            if (!m_id2solver.get(sls_fid, nullptr))
+                add_solver(alloc(sls::solver, *this));
+        }
         TRACE(before_search, s().display(tout););
         m_reason_unknown.clear();
         for (auto* s : m_solvers)

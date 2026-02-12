@@ -691,7 +691,7 @@ namespace q {
             return true;
         for (unsigned i = 0; i < m_clauses.size(); ++i)
             if (m_clauses[i]->m_bindings) {
-                IF_VERBOSE(0, verbose_stream() << "missed propagation " << i << "\n");
+                IF_VERBOSE(2, verbose_stream() << "missed propagation " << i << "\n");
                 TRACE(q, display(tout << "missed propagation\n"));
                 break;
             }

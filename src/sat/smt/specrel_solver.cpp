@@ -51,12 +51,13 @@ namespace specrel {
         return alloc(solver, ctx, get_id());
     }
 
-    void solver::new_eq_eh(euf::th_eq const& eq) {    
+    void solver::new_eq_eh(euf::th_eq const& eq) {
         TRACE(specrel, tout << "new-eq\n");
         if (eq.is_eq()) {
+            force_push();
             auto* p = ctx.get_egraph().get_plugin(sp.get_family_id());
             p->merge_eh(var2enode(eq.v1()), var2enode(eq.v2()));
-            TRACE(specrel, tout << eq.v1() << " " << eq.v2() << "\n");                       
+            TRACE(specrel, tout << eq.v1() << " " << eq.v2() << "\n");
         }
     }
 

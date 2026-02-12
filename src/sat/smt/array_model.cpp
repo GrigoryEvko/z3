@@ -73,6 +73,10 @@ namespace array {
         euf::enode* d = get_default(v);
 
         if (a.is_const(n->get_expr())) {
+            if (!d) {
+                values.set(n->get_expr_id(), mdl.get_fresh_value(n->get_sort()));
+                return;
+            }
             expr* val = values.get(d->get_root_id());
             SASSERT(val);
             values.set(n->get_expr_id(), a.mk_const_array(n->get_sort(), val));
