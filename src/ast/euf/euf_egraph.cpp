@@ -567,6 +567,7 @@ namespace euf {
         TRACE(euf_verbose, tout << bpp(r) << "\n");
         SASSERT(all_of(enode_parents(r), [&](enode* p) { return !p->is_marked1(); }));
         TRACE(euf, tout << "remove_parents " << bpp(r) << "\n");
+        m_removed_parents.reset();
         for (enode* p : enode_parents(r)) {
             if (p->is_marked1())
                 continue;
@@ -579,25 +580,27 @@ namespace euf {
                 erase_from_table(p);
                 CTRACE(euf, m_table.contains_ptr(p), tout << bpp(p) << "\n"; display(tout));
                 SASSERT(!m_table.contains_ptr(p));
+                m_removed_parents.push_back(p);
             }
-            else if (p->is_equality())
+            else if (p->is_equality()) {
                 p->mark1();
+                m_removed_parents.push_back(p);
+            }
         }
     }
 
     void egraph::reinsert_parents(enode* r1, enode* r2) {
         TRACE(euf, tout << "reinsert_parents " << bpp(r1) << " " << bpp(r2) << "\n";);
-        for (enode* p : enode_parents(r1)) {
-            if (!p->is_marked1())
-                continue;
+        for (enode* p : m_removed_parents) {
+            SASSERT(p->is_marked1());
             p->unmark1();
             TRACE(euf, tout << "reinsert " << bpp(r1) << " " << bpp(r2) << " " << bpp(p) << " " << p->cgc_enabled() << "\n";);
             if (p->cgc_enabled()) {
                 auto [p_other, comm] = insert_table(p);
                 SASSERT(m_table.contains_ptr(p) == (p_other == p));
                 CTRACE(euf, p_other != p, tout << "reinsert " << bpp(p) << " == " << bpp(p_other) << " " << p->value() << " " << p_other->value() << "\n");
-                if (p_other != p) 
-                    m_to_merge.push_back(to_merge(p_other, p, comm));                
+                if (p_other != p)
+                    m_to_merge.push_back(to_merge(p_other, p, comm));
                 else
                     r2->m_parents.push_back(p);
                 if (p->is_equality())

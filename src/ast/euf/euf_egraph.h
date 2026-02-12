@@ -203,6 +203,7 @@ namespace euf {
         svector<th_eq>         m_new_th_eqs;
         bool_vector            m_th_propagates_diseqs;
         enode_vector           m_todo;
+        enode_vector           m_removed_parents;
         stats                  m_stats;
         bool                   m_uses_congruence = false;
         bool                   m_default_relevant = true;
