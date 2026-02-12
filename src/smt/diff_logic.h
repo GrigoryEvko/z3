@@ -1211,54 +1211,79 @@ public:
               });
     }    
 
-    void dfs(dl_var v, int_vector & scc_id) {
-        m_dfs_time[v] = m_next_dfs_time;
-        m_next_dfs_time++;
-        m_unfinished_set[v] = true;
-        m_unfinished.push_back(v);
-        m_roots.push_back(v);
+    // Iterative Tarjan's SCC over zero-weight edges.
+    // Converted from recursive to avoid O(N) stack depth on long chains.
+    void dfs(dl_var start, int_vector & scc_id) {
+        struct dfs_frame {
+            dl_var   m_v;
+            unsigned m_edge_idx;
+        };
+        svector<dfs_frame> call_stack;
+        call_stack.push_back({start, UINT_MAX});
         numeral gamma;
-        edge_id_vector & edges = m_out_edges[v];
-        for (edge_id e_id : edges) {
-            edge & e     = m_edges[e_id];
-            if (!e.is_enabled()) {
-                continue;
+
+        while (!call_stack.empty()) {
+            dfs_frame & fr = call_stack.back();
+            dl_var v = fr.m_v;
+
+            if (fr.m_edge_idx == UINT_MAX) {
+                // First visit: initialize DFS state for this node
+                m_dfs_time[v] = m_next_dfs_time++;
+                m_unfinished_set[v] = true;
+                m_unfinished.push_back(v);
+                m_roots.push_back(v);
+                fr.m_edge_idx = 0;
             }
-            SASSERT(e.get_source() == v);
-            set_gamma(e, gamma);
-            if (gamma.is_zero()) {
-                dl_var target = e.get_target();
-                if (m_dfs_time[target] == -1) {
-                    dfs(target, scc_id);
-                }
-                else if (m_unfinished_set[target]) {
-                    SASSERT(!m_roots.empty());
-                    while (m_dfs_time[m_roots.back()] > m_dfs_time[target]) {
-                        m_roots.pop_back();
+
+            // Continue iterating edges from where we left off
+            edge_id_vector & edges = m_out_edges[v];
+            bool pushed = false;
+            while (fr.m_edge_idx < edges.size()) {
+                edge_id e_id = edges[fr.m_edge_idx];
+                fr.m_edge_idx++;
+                edge & e = m_edges[e_id];
+                if (!e.is_enabled())
+                    continue;
+                SASSERT(e.get_source() == v);
+                set_gamma(e, gamma);
+                if (gamma.is_zero()) {
+                    dl_var target = e.get_target();
+                    if (m_dfs_time[target] == -1) {
+                        call_stack.push_back({target, UINT_MAX});
+                        pushed = true;
+                        break;
+                    }
+                    else if (m_unfinished_set[target]) {
                         SASSERT(!m_roots.empty());
+                        while (m_dfs_time[m_roots.back()] > m_dfs_time[target]) {
+                            m_roots.pop_back();
+                            SASSERT(!m_roots.empty());
+                        }
                     }
                 }
             }
-        }
-        if (v == m_roots.back()) {
-            dl_var scc_elem;
-            unsigned size = 0;
-            do {
-                scc_elem = m_unfinished.back();
-                m_unfinished.pop_back();
-                SASSERT(m_unfinished_set[scc_elem]);
-                m_unfinished_set[scc_elem] = false;
-                scc_id[scc_elem] = m_next_scc_id;
-                size++;
-            } while (scc_elem != v);
-            // Ignore SCC with size 1
-            if (size == 1) {
-                scc_id[scc_elem] = -1;
+            if (pushed)
+                continue;
+
+            // All edges processed — check if v is an SCC root
+            if (v == m_roots.back()) {
+                dl_var scc_elem;
+                unsigned size = 0;
+                do {
+                    scc_elem = m_unfinished.back();
+                    m_unfinished.pop_back();
+                    SASSERT(m_unfinished_set[scc_elem]);
+                    m_unfinished_set[scc_elem] = false;
+                    scc_id[scc_elem] = m_next_scc_id;
+                    size++;
+                } while (scc_elem != v);
+                if (size == 1)
+                    scc_id[scc_elem] = -1;
+                else
+                    m_next_scc_id++;
+                m_roots.pop_back();
             }
-            else {
-                m_next_scc_id++;
-            }
-            m_roots.pop_back();
+            call_stack.pop_back();
         }
     }
 

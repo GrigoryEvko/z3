@@ -122,20 +122,30 @@ bool func_interp::is_fi_entry_expr(expr * e, ptr_vector<expr> & args) {
         (m_arity > 1 && (!m().is_and(c) || to_app(c)->get_num_args() != m_arity)))
         return false;
 
-    args.resize(m_arity);
+    args.resize(m_arity, nullptr);
     for (unsigned i = 0; i < m_arity; ++i) {
         expr * ci = (m_arity == 1 && i == 0) ? c : to_app(c)->get_arg(i);
 
-        if (!m().is_eq(ci, a0, a1)) 
+        if (!m().is_eq(ci, a0, a1))
             return false;
 
-        if (is_var(a0) && to_var(a0)->get_idx() == i)
-            args[i] = a1;
-        else if (is_var(a1) && to_var(a1)->get_idx() == i)
-            args[i] = a0;
+        unsigned idx;
+        expr* val;
+        if (is_var(a0) && (idx = to_var(a0)->get_idx()) < m_arity)
+            val = a1;
+        else if (is_var(a1) && (idx = to_var(a1)->get_idx()) < m_arity)
+            val = a0;
         else
             return false;
+
+        if (args[idx] != nullptr)
+            return false;
+        args[idx] = val;
     }
+
+    for (unsigned i = 0; i < m_arity; ++i)
+        if (args[i] == nullptr)
+            return false;
 
     return true;
 }
