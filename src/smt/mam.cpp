@@ -3027,10 +3027,10 @@ namespace {
                 out << curr->m_label->get_name() << ":" << curr->m_arg_idx;
                 if (curr->m_ground_arg)
                     out << ":#" << curr->m_ground_arg->get_owner_id() << ":" << curr->m_ground_arg_idx;
-                out << "  " << m_filter << " " << m_code;
+                out << "  " << curr->m_filter << " " << curr->m_code;
 #ifdef _PROFILE_PATH_TREE
-                out << ", counter: " << m_counter << ", num_eq_visited: " << m_num_eq_visited << ", num_neq_visited: " << m_num_neq_visited
-                    << ", avg. : " << static_cast<double>(m_num_neq_visited)/static_cast<double>(m_num_neq_visited+m_num_eq_visited);
+                out << ", counter: " << curr->m_counter << ", num_eq_visited: " << curr->m_num_eq_visited << ", num_neq_visited: " << curr->m_num_neq_visited
+                    << ", avg. : " << static_cast<double>(curr->m_num_neq_visited)/static_cast<double>(curr->m_num_neq_visited+curr->m_num_eq_visited);
 #endif
                 out << "\n";
                 curr->m_first_child->display(out, indent+1);

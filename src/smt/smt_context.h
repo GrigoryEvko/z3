@@ -1824,6 +1824,8 @@ namespace smt {
         }
 
         void user_propagate_register_on_binding(user_propagator::binding_eh_t& t) {
+            if (!m_user_propagator)
+                throw default_exception("user propagator must be initialized");
             m_user_propagator->register_on_binding(t);
         }
 

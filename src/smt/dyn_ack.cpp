@@ -380,6 +380,7 @@ namespace smt {
         m_num_propagations_since_last_gc++;
         if (m_num_propagations_since_last_gc > m_params.m_dack_gc) {
             gc();
+            gc_triples();
             m_num_propagations_since_last_gc = 0;
         }
         unsigned max_instances  = static_cast<unsigned>(m_context.get_num_conflicts() * m_params.m_dack_factor);

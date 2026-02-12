@@ -1548,6 +1548,8 @@ namespace smt {
             return l_false;
         bool_var v = get_bool_var_of_id(owner->get_id());
         CTRACE(missing_propagation, v == null_bool_var, tout << mk_pp(owner, m) << "\n";);
+        if (v == null_bool_var)
+            return l_undef;
         return get_assignment(v);
     }
 

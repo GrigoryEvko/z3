@@ -99,7 +99,7 @@ struct smt_params : public preprocessor_params,
     unsigned         m_phase_caching_off = 100;
     bool             m_minimize_lemmas = true;
     unsigned         m_max_conflicts = UINT_MAX;
-    unsigned         m_restart_max;
+    unsigned         m_restart_max = UINT_MAX;
     unsigned         m_cube_depth = 1;
     unsigned         m_threads = 1;
     unsigned         m_threads_max_conflicts = UINT_MAX;

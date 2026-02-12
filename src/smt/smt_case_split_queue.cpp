@@ -1188,24 +1188,25 @@ namespace {
             SASSERT(threshold >= 0);
             if (m_context.get_random_value() < threshold) {
                 SASSERT(m_context.get_num_b_internalized() > 0);
-                next = m_context.get_random_value() % m_context.get_num_b_internalized(); 
+                next = m_context.get_random_value() % m_context.get_num_b_internalized();
                 TRACE(random_split, tout << "next: " << next << " get_assignment(next): " << m_context.get_assignment(next) << "\n";);
-                if (m_context.get_assignment(next) == l_undef)
+                if (m_context.get_assignment(next) == l_undef) {
+                    if (m_theory_vars.contains(next))
+                        m_theory_var_phase.find(next, phase);
                     return;
+                }
             }
 
             while (!m_queue.empty()) {
                 next = m_queue.erase_min();
-                if (m_context.get_assignment(next) == l_undef)
+                if (m_context.get_assignment(next) == l_undef) {
+                    if (m_theory_vars.contains(next))
+                        m_theory_var_phase.find(next, phase);
                     return;
+                }
             }
 
             next = null_bool_var;
-            if (m_theory_vars.contains(next)) {
-                if (!m_theory_var_phase.find(next, phase)) {
-                    phase = l_undef;
-                }
-            }
         }
 
         void add_theory_aware_branching_info(bool_var v, double priority, lbool phase) override {
