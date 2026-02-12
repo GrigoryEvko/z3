@@ -1980,7 +1980,7 @@ namespace sat {
               for (auto & c : m_neg_cls) 
                   tout << c << "\n";
               );
-        m_elim_counter -= num_pos * num_neg + before_lits;
+        // Budget charged per-pair inside resolve() — no bulk pre-charge needed.
 
         // eliminate variable
         ++s.m_stats.m_elim_var_res;

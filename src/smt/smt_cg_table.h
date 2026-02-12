@@ -77,7 +77,7 @@ namespace smt {
                 unsigned h2 = n->get_arg(1)->get_root()->hash();
                 if (h1 > h2)
                     std::swap(h1, h2);
-                return hash_u((h1 << 16) | (h2 & 0xFFFF));
+                return hash_u(h1 + h2);
             }
         };
         

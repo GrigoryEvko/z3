@@ -162,9 +162,8 @@ namespace euf {
         while (m_table.size() > m_gc_threshold) 
             remove(m_queue->prev());
     
-        m_gc_threshold *= 110;
-        m_gc_threshold /= 100;
-        m_gc_threshold++;
+        uint64_t new_threshold = static_cast<uint64_t>(m_gc_threshold) * 110 / 100 + 1;
+        m_gc_threshold = static_cast<unsigned>(std::min(new_threshold, static_cast<uint64_t>(UINT_MAX)));
     }
 
     void ackerman::propagate() {

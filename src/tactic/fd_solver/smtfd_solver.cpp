@@ -457,7 +457,7 @@ namespace smtfd {
         theory_plugin& p;
         f_app_hash(theory_plugin& p):p(p) {}
         unsigned operator()(f_app const& a) const;
-        unsigned operator()(expr* const* args) const { return 14; }
+        unsigned operator()(expr* const* args) const { return args[0] ? args[0]->hash() : 0; }
         unsigned operator()(expr* const* args, unsigned idx) const { return args[idx]->hash(); }
     };
 
