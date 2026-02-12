@@ -301,6 +301,8 @@ void func_interp::compress() {
                 m_args_are_values = false;
         }
         else {
+            if (m_entry_table)
+                m_entry_table->remove(curr);
             curr->deallocate(m(), m_arity);
         }
     }
@@ -327,6 +329,10 @@ void func_interp::compress() {
     //else
 #endif
     if (!m_entries.empty() && is_identity()) {
+        if (m_entry_table) {
+            for (func_entry * curr : m_entries)
+                m_entry_table->remove(curr);
+        }
         for (func_entry * curr : m_entries) {
             curr->deallocate(m(), m_arity);
         }

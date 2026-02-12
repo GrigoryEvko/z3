@@ -192,7 +192,7 @@ struct evaluator_cfg : public default_rewriter_cfg {
         try {
             for_each_expr(ha, e);
         }
-        catch (has_redex) {
+        catch (has_redex const&) {
             return true;
         }
         return false;

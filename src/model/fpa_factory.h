@@ -49,8 +49,10 @@ class fpa_value_factory : public value_factory {
     bool get_some_values(sort * s, expr_ref & v1, expr_ref & v2) override {
         mpf_manager & mpfm = m_util.fm();
         
-        if (m_util.is_rm(s))
-            v1 = v2 = m_util.mk_round_toward_zero();
+        if (m_util.is_rm(s)) {
+            v1 = m_util.mk_round_toward_zero();
+            v2 = m_util.mk_round_toward_positive();
+        }
         else {
             scoped_mpf q(mpfm);
             mpfm.set(q, m_util.get_ebits(s), m_util.get_sbits(s), 0);

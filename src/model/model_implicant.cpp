@@ -357,9 +357,9 @@ void model_implicant::eval_arith(app* e) {
         }
         set_number(e, r);
         break;                            
-    case OP_UMINUS: 
+    case OP_UMINUS:
         SASSERT(arity == 1);
-        set_number(e, get_number(e->get_arg(0)));
+        set_number(e, -get_number(e->get_arg(0)));
         break;                
     case OP_MUL: 
         r = rational::one();
@@ -493,6 +493,10 @@ bool model_implicant::extract_array_func_interp(expr* a, vector<expr_ref_vector>
     while (m_array.is_as_array(a)) {
         func_decl* f = m_array.get_as_array_func_decl(to_app(a));
         func_interp* g = m_model->get_func_interp(f);
+        if (!g) {
+            TRACE(pdr, tout << "no func_interp for " << mk_pp(f, m) << "\n";);
+            return false;
+        }
         unsigned sz = g->num_entries();
         unsigned arity = f->get_arity();
         for (unsigned i = 0; i < sz; ++i) {

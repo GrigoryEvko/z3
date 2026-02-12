@@ -22,6 +22,7 @@ class seq_factory : public value_factory {
     seq_util     u;
     symbol_set   m_strings;
     unsigned     m_next;
+    unsigned     m_next_char;
     std::string  m_unique_delim;
     obj_map<sort, expr*> m_unique_sequences;
     expr_ref_vector m_trail;
@@ -32,6 +33,7 @@ public:
         m_model(md),
         u(m),
         m_next(0),
+        m_next_char(0),
         m_unique_delim("!"),
         m_trail(m)
     {
@@ -107,7 +109,7 @@ public:
             return u.re.mk_to_re(v0);
         }
         if (u.is_char(s)) {
-            return u.mk_char('a');
+            return u.mk_char(m_next_char++);
         }
         if (u.is_seq(s, ch)) {
             expr* v = m_model.get_fresh_value(ch);

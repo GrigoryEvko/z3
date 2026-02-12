@@ -158,6 +158,7 @@ expr * datatype_factory::get_fresh_value(sort * s) {
 
     ptr_vector<func_decl> const& constructors = *m_util.get_datatype_constructors(s);
     for (func_decl * constructor : constructors) {
+        unsigned retry_count = 0;
         retry_value:
         expr_ref_vector args(m_manager);
         expr_ref new_value(m_manager);
@@ -165,8 +166,8 @@ expr * datatype_factory::get_fresh_value(sort * s) {
         unsigned num            = constructor->get_arity();
         for (unsigned i = 0; i < num; ++i) {
             sort * s_arg        = constructor->get_domain(i);
-            if (!found_fresh_arg && 
-                !m_util.is_recursive_nested(s_arg) && 
+            if (!found_fresh_arg &&
+                !m_util.is_recursive_nested(s_arg) &&
                 (!m_util.is_recursive(s) || !m_util.is_datatype(s_arg) || !m_util.are_siblings(s, s_arg))) {
                 expr * new_arg = m_model.get_fresh_value(s_arg);
                 if (new_arg != nullptr) {
@@ -181,7 +182,7 @@ expr * datatype_factory::get_fresh_value(sort * s) {
 
         new_value = m_manager.mk_app(constructor, args);
         CTRACE(datatype, found_fresh_arg && set->contains(new_value), tout << "seen: " << new_value << "\n";);
-        if (found_fresh_arg && set->contains(new_value))
+        if (found_fresh_arg && set->contains(new_value) && retry_count++ < 1000)
             goto retry_value;
         if (!set->contains(new_value)) {
             register_value(new_value);
