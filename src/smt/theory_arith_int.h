@@ -86,41 +86,31 @@ namespace smt {
     }
 
     /**
-       \brief Find an integer base var that is not assigned to an
-       integer value, but is bounded (i.e., it has lower and upper
-       bounds). Return null_var_id if all integer base variables are
-       assigned to integer values.
-
-       If there are multiple variables satisfying the condition above,
-       then select the one with the tightest bound.
+       \brief Find a bounded integer base var with tight range (< 1024)
+       that is not assigned to an integer value. Selects tightest range,
+       with random tie-breaking. Returns null_theory_var if none found.
+       Note: the main search logic is in find_infeasible_int_base_var which
+       subsumes this as its Tier 1 in a single unified pass.
     */
     template<typename Ext>
     theory_var theory_arith<Ext>::find_bounded_infeasible_int_base_var() {
         theory_var result = null_theory_var;
         numeral range;
-        numeral new_range;
         numeral small_range_threshold(1024);
         unsigned n = 0;
-        for (row const& row : m_rows) {
+        for (auto const& row : m_rows) {
             theory_var v = row.get_base_var();
-            if (v == null_theory_var)
-                continue;
-            if (!is_base(v))
-                continue;
-            if (!is_int(v))
-                continue;
-            if (get_value(v).is_int())
+            if (v == null_theory_var || !is_base(v) || !is_int(v) || get_value(v).is_int())
                 continue;
             if (!is_bounded(v))
                 continue;
             numeral const & l = lower_bound(v).get_rational();
             numeral const & u = upper_bound(v).get_rational();
-            new_range  = u;
+            numeral new_range = u;
             new_range -= l;
-            if (new_range > small_range_threshold) {
-                //
-            }
-            else if (result == null_theory_var || new_range < range) {
+            if (new_range > small_range_threshold)
+                continue;
+            if (result == null_theory_var || new_range < range) {
                 result = v;
                 range  = new_range;
                 n      = 1;
@@ -138,57 +128,107 @@ namespace smt {
 
     /**
        \brief Find an integer base var that is not assigned to an integer value.
-       Return null_var_id if all integer base variables are assigned to
+       Return null_theory_var if all integer base variables are assigned to
        integer values.
 
-       \remark This method gives preference to bounded integer variables.
-       If all variables are unbounded, then it selects a random one.
+       Selection priority (single pass over m_rows for base variables):
+         Tier 1: Bounded with tight range (< 1024), tightest range wins.
+         Tier 2: Small absolute value (< 1024) or close to a bound.
+         Tier 3: Any base variable (catch-all).
+       If no base variable qualifies, a second pass promotes quasi-base
+       variables (which has a side-effect and must remain separate).
+       Within each tier, ties are broken randomly with reservoir sampling.
     */
     template<typename Ext>
     theory_var theory_arith<Ext>::find_infeasible_int_base_var() {
-        theory_var r = find_bounded_infeasible_int_base_var();
-        CTRACE(find_infeasible_int_base_var, r != null_theory_var, display_var(tout << "bounded infeasible", r););
-        
-        unsigned n   = 0;
-        
-#define SELECT_VAR(VAR) if (r == null_theory_var) { n = 1; r = VAR; } else { n++; SASSERT(n >= 2); if (m_random() % n == 0) r = VAR; }
+        // Tier 1: bounded with tight range
+        theory_var bounded_result = null_theory_var;
+        numeral    bounded_range;
+        unsigned   bounded_n = 0;
 
+        // Tier 2: small value or close to a bound
+        theory_var small_result = null_theory_var;
+        unsigned   small_n = 0;
+
+        // Tier 3: any base variable
+        theory_var any_result = null_theory_var;
+        unsigned   any_n = 0;
+
+        numeral small_range_threshold(1024);
         numeral small_value(1024);
-        if (r == null_theory_var) {
-            for (auto const& row : m_rows) {
-                theory_var v = row.get_base_var();
-                if (v != null_theory_var && is_base(v) && is_int(v) && !get_value(v).is_int()) {
-                    if (abs(get_value(v)) < small_value) {
-                        SELECT_VAR(v);
+
+        for (auto const& row : m_rows) {
+            theory_var v = row.get_base_var();
+            if (v == null_theory_var || !is_base(v) || !is_int(v) || get_value(v).is_int())
+                continue;
+
+            // Tier 1: bounded with tight range (< 1024)
+            if (is_bounded(v)) {
+                numeral const & l = lower_bound(v).get_rational();
+                numeral const & u = upper_bound(v).get_rational();
+                numeral new_range = u;
+                new_range -= l;
+                if (!(new_range > small_range_threshold)) {
+                    if (bounded_result == null_theory_var || new_range < bounded_range) {
+                        bounded_result = v;
+                        bounded_range  = new_range;
+                        bounded_n      = 1;
                     }
-                    else if (upper(v) && small_value > upper_bound(v) - get_value(v)) {
-                        SELECT_VAR(v);
-                    }
-                    else if (lower(v) && small_value > get_value(v) - lower_bound(v)) {
-                        SELECT_VAR(v);
+                    else if (new_range == bounded_range) {
+                        bounded_n++;
+                        if (m_random() % bounded_n == 0) {
+                            bounded_result = v;
+                            bounded_range  = new_range;
+                        }
                     }
                 }
             }
-            CTRACE(find_infeasible_int_base_var, r != null_theory_var, tout << "found small value v" << r << "\n");
-        }
 
-        if (r == null_theory_var) {
-            for (auto const& row : m_rows) {
-                theory_var v = row.get_base_var();
-                if (v != null_theory_var && is_base(v) && is_int(v) && !get_value(v).is_int()) {
-                    SELECT_VAR(v);
-                }
+            // Tier 2: small absolute value or close to a bound
+            bool is_small = false;
+            if (abs(get_value(v)) < small_value) {
+                is_small = true;
             }
-            CTRACE(find_infeasible_int_base_var, r != null_theory_var, tout << "found base v" << r << "\n");
+            else if (upper(v) && small_value > upper_bound(v) - get_value(v)) {
+                is_small = true;
+            }
+            else if (lower(v) && small_value > get_value(v) - lower_bound(v)) {
+                is_small = true;
+            }
+            if (is_small) {
+                if (small_result == null_theory_var) { small_n = 1; small_result = v; }
+                else { small_n++; if (m_random() % small_n == 0) small_result = v; }
+            }
 
+            // Tier 3: any base variable
+            if (any_result == null_theory_var) { any_n = 1; any_result = v; }
+            else { any_n++; if (m_random() % any_n == 0) any_result = v; }
         }
 
+        // Pick the highest-priority tier that found a candidate
+        theory_var r = null_theory_var;
+        if (bounded_result != null_theory_var) {
+            r = bounded_result;
+            CTRACE(find_infeasible_int_base_var, true, display_var(tout << "bounded infeasible", r););
+        }
+        else if (small_result != null_theory_var) {
+            r = small_result;
+            CTRACE(find_infeasible_int_base_var, true, tout << "found small value v" << r << "\n");
+        }
+        else if (any_result != null_theory_var) {
+            r = any_result;
+            CTRACE(find_infeasible_int_base_var, true, tout << "found base v" << r << "\n");
+        }
+
+        // Tier 4: quasi-base variables (separate pass due to side-effect)
         if (r == null_theory_var) {
+            unsigned n = 0;
             for (auto const& row : m_rows) {
                 theory_var v = row.get_base_var();
                 if (v != null_theory_var && is_quasi_base(v) && is_int(v) && !get_value(v).is_int()) {
                     quasi_base_row2base_row(get_var_row(v));
-                    SELECT_VAR(v);
+                    if (r == null_theory_var) { n = 1; r = v; }
+                    else { n++; if (m_random() % n == 0) r = v; }
                 }
             }
             CTRACE(find_infeasible_int_base_var, r != null_theory_var, tout << "found quasi base v" << r << "\n");
