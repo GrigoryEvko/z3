@@ -56,7 +56,7 @@ public:
     bool is_minus_one() const { return m_value == -1; }
     bool is_nonneg() const { return m_value >= 0; }
     bool is_nonpos() const { return m_value <= 0; }
-    bool is_even() const { return 0 == (m_value ^ 0x1); }
+    bool is_even() const { return 0 == (m_value & 0x1); }
     
     static checked_int64 zero() { return ci(0); }
     static checked_int64 one() { return ci(1); }
@@ -202,7 +202,12 @@ public:
             if (other.m_value == 0)
                 throw overflow_exception();
         }
-        m_value %= other.m_value;
+        // INT64_MIN % -1 is UB in C++ (since the corresponding division overflows),
+        // but the mathematical result is 0. Handle it explicitly.
+        if (m_value == INT64_MIN && other.m_value == -1)
+            m_value = 0;
+        else
+            m_value %= other.m_value;
         return *this;
     }
 

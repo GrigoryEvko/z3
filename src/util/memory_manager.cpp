@@ -7,6 +7,7 @@ Copyright (c) 2015 Microsoft Corporation
 #include<iostream>
 #include<stdlib.h>
 #include<climits>
+#include<cstdint>
 #include "util/mutex.h"
 #include "util/trace.h"
 #include "util/memory_manager.h"
@@ -108,8 +109,8 @@ void memory::initialize(size_t max_size) {
     static mutex init_mux;
     lock_guard lock(init_mux);
 
-    // only update the maximum size if max_size != UINT_MAX
-    if (max_size != UINT_MAX)
+    // only update the maximum size if max_size != SIZE_MAX
+    if (max_size != SIZE_MAX)
         g_memory_max_size = max_size;
 
     if (g_memory_initialized)
@@ -215,9 +216,9 @@ void memory::display_max_usage(std::ostream & os) {
 
 void memory::display_i_max_usage(std::ostream & os) {
     unsigned long long mem = get_max_used_memory();
-    std::cout << "MEMORY " 
-              << static_cast<double>(mem)/static_cast<double>(1024*1024) 
-              << "\n";
+    os << "MEMORY "
+       << static_cast<double>(mem)/static_cast<double>(1024*1024)
+       << "\n";
 }
 
 #if Z3DEBUG

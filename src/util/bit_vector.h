@@ -33,7 +33,7 @@ protected:
     unsigned *  m_data;
 
     static unsigned get_pos_mask(unsigned bit_idx) {
-        return 1 << (bit_idx % 32);
+        return 1U << (bit_idx % 32);
     }
     
     static unsigned num_words(unsigned num_bits) { 

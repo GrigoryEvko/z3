@@ -30,7 +30,7 @@ class fixed_bit_vector {
     unsigned    m_data[1];
 
     static unsigned get_pos_mask(unsigned bit_idx) {
-        return 1 << (bit_idx % 32);
+        return 1U << (bit_idx % 32);
     }
 
 

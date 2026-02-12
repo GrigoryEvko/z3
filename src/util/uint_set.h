@@ -55,19 +55,19 @@ public:
         if (idx >= size()) {
             resize(idx+1);
         }
-        (*this)[idx] |= 1 << (val & 31);
+        (*this)[idx] |= 1U << (val & 31);
     }
 
     void remove(unsigned val) {
         unsigned idx = val >> 5;
         if (idx < size()) {
-            (*this)[val >> 5] &= ~(1 << (val & 31));
+            (*this)[val >> 5] &= ~(1U << (val & 31));
         }
     }
 
     bool contains(unsigned val) const {
         unsigned idx = val >> 5;        
-        return idx < size() && ((*this)[idx] & (1 << (val & 31))) != 0;
+        return idx < size() && ((*this)[idx] & (1U << (val & 31))) != 0;
     }
 
     unsigned num_elems() const {

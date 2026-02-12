@@ -428,7 +428,7 @@ Notes:
                 // B is digits from Xs that are set at bit position i
                 B.reset(); 
                 for (unsigned j = 0; j < n; ++j) {
-                    if (0 != ((1 << i) & Ws[j])) {
+                    if (0 != ((1U << i) & Ws[j])) {
                         B.push_back(Xs[j]);
                     }
                 }                
@@ -564,7 +564,7 @@ Notes:
             unsigned k0 = k1;
             while (k0 > 0) { ++num_bits; k0 >>= 1; }
             for (unsigned i = 0; i < num_bits; ++i) {
-                kvec.push_back((0 != (k1 & (1 << i))) ? ctx.mk_true() : ctx.mk_false());
+                kvec.push_back((0 != (k1 & (1U << i))) ? ctx.mk_true() : ctx.mk_false());
             }
             literal ovfl = circuit_add(num_bits, n, xs, out);
             switch (cmp) {
@@ -907,7 +907,7 @@ Notes:
             }
             
             unsigned nbits = 0;
-            while (static_cast<unsigned>(1 << nbits) < ors.size()) {
+            while ((1U << nbits) < ors.size()) {
                 ++nbits;
             }
             literal_vector bits;
@@ -916,7 +916,7 @@ Notes:
             }
             for (unsigned i = 0; i < ors.size(); ++i) {
                 for (unsigned k = 0; k < nbits; ++k) {
-                    bool bit_set = (i & (static_cast<unsigned>(1 << k))) != 0;
+                    bool bit_set = (i & (1U << k)) != 0;
                     add_clause(mk_not(result), mk_not(ors[i]), bit_set ? bits[k] : mk_not(bits[k]));
                 }
             }            
@@ -959,7 +959,7 @@ Notes:
         bool odd(unsigned n) const { return !even(n); }
         unsigned ceil2(unsigned n) const { return n/2 + odd(n); }
         unsigned floor2(unsigned n) const { return n/2; }
-        unsigned power2(unsigned n) const { SASSERT(n < 10); return 1 << n; }
+        unsigned power2(unsigned n) const { SASSERT(n < 10); return 1U << n; }
 
 
         literal mk_max(literal a, literal b) {

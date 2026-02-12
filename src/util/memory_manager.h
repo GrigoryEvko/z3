@@ -117,7 +117,7 @@ void dealloc_vect(T * ptr, unsigned sz) {
     memory::deallocate(ptr);
 }
 
-#define alloc_svect(T, sz) static_cast<T*>(memory::allocate(sizeof(T) * sz))
+#define alloc_svect(T, sz) static_cast<T*>(memory::allocate(sizeof(T) * (sz)))
 
 template<typename T>
 void dealloc_svect(T * ptr) {

@@ -96,7 +96,7 @@ unsigned u_gcd(unsigned u, unsigned v) {
     if (v == 0) return u;
     unsigned shift = _trailing_zeros32(u | v);
     u >>= _trailing_zeros32(u);
-    if (u == 1 || v == 1) return 1 << shift; 
+    if (u == 1 || v == 1) return 1U << shift;
     if (u == v) return u << shift;
     do {
         v >>= _trailing_zeros32(v);        
@@ -1994,7 +1994,7 @@ void mpz_manager<SYNCH>::power(mpz const & a, unsigned p, mpz & b) {
     if (is_small(a)) {
         if (a.m_val == 2) {
             if (p < 8 * sizeof(int) - 1) {
-                b.m_val = 1 << p;
+                b.m_val = 1U << p;
                 b.m_kind = mpz_small;
             }
             else {
@@ -2006,7 +2006,7 @@ void mpz_manager<SYNCH>::power(mpz const & a, unsigned p, mpz & b) {
                 b.m_ptr->m_size     = sz;
                 for (unsigned i = 0; i < sz - 1; ++i)
                     b.m_ptr->m_digits[i] = 0;
-                b.m_ptr->m_digits[sz-1] = 1 << shift;
+                b.m_ptr->m_digits[sz-1] = static_cast<digit_t>(1) << shift;
                 b.m_val = 1;
                 b.m_kind = mpz_large;
             }
@@ -2300,7 +2300,9 @@ unsigned mpz_manager<SYNCH>::power_of_two_multiple(mpz const & a) {
         // For negative values, two's complement trailing zeros count is the
         // same as for the absolute value (since -v = ~v + 1, trailing zeros
         // of v are preserved). So we can use the raw bit pattern directly.
-        return _trailing_zeros32(static_cast<uint32_t>(a.m_val > 0 ? a.m_val : -a.m_val));
+        // Trailing zeros are the same for positive and negative in two's complement,
+        // so cast directly to unsigned to avoid UB when a.m_val == INT_MIN.
+        return _trailing_zeros32(static_cast<uint32_t>(static_cast<unsigned>(a.m_val)));
     }
 #ifndef _MP_GMP
     mpz_cell * c        = a.m_ptr;

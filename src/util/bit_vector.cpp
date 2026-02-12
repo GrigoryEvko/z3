@@ -75,7 +75,17 @@ void bit_vector::resize(unsigned new_size, bool val) {
     if (bwidx < ewidx) {
         memset(begin + 1, cval, (ewidx - bwidx - 1) * sizeof(unsigned));
     }
-    
+
+    // When filling with 1s, mask out trailing bits beyond new_size in the last word
+    // to maintain the invariant that bits beyond m_num_bits are zero.
+    // This ensures get_hash() consistency with operator==.
+    if (val) {
+        unsigned last_bits = new_size % 32;
+        if (last_bits != 0) {
+            m_data[ewidx - 1] &= (1U << last_bits) - 1;
+        }
+    }
+
     m_num_bits = new_size;
 }
 
@@ -208,18 +218,27 @@ void bit_vector::display(std::ostream & out) const {
 
 bool bit_vector::contains(bit_vector const& other) const {
     unsigned n = num_words();
-    if (n == 0)
-        return true;
-    
-    for (unsigned i = 0; i < n - 1; ++i) {
-        if ((m_data[i] & other.m_data[i]) != other.m_data[i])
+    unsigned on = other.num_words();
+
+    // Check words common to both vectors
+    unsigned common = (n < on) ? n : on;
+    for (unsigned i = 0; i < common; ++i) {
+        unsigned other_w = other.m_data[i];
+        // For the last word of this, mask to m_num_bits
+        if (i == n - 1) {
+            unsigned bit_rest = m_num_bits % 32;
+            unsigned mask = (bit_rest == 0) ? UINT_MAX : (1U << bit_rest) - 1;
+            other_w &= mask;
+        }
+        if ((m_data[i] & other_w) != other_w)
             return false;
     }
-    unsigned bit_rest = m_num_bits % 32;
-    unsigned mask = (1U << bit_rest) - 1;
-    if (mask == 0) mask = UINT_MAX;
-    unsigned other_data = other.m_data[n-1] & mask;
-    return (m_data[n-1] & other_data) == other_data;
+    // If other has more words than this, check that they are all zero
+    for (unsigned i = common; i < on; ++i) {
+        if (other.m_data[i] != 0)
+            return false;
+    }
+    return true;
 }
 
 unsigned bit_vector::get_hash() const {
