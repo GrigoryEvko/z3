@@ -1829,6 +1829,7 @@ namespace {
                 enode * const * m_end;
             };
         };
+        bool m_bind_use_iter;  // true when BIND uses iterator mode (m_it/m_end) instead of circular list (m_curr)
     };
 
     typedef svector<backtrack_point> backtrack_stack;
@@ -1907,6 +1908,33 @@ namespace {
                 curr = curr->get_next();
             }
             return nullptr;
+        }
+
+        /**
+           \brief Build a vector of enodes from enodes_of(lbl) that belong to the same
+           equivalence class as n, have the right number of args, and are congruence roots.
+           Returns nullptr if the vector would be empty (caller should backtrack).
+           Sets bp iterator fields for backtracking.
+         */
+        enode * init_bind_from_enodes_of(func_decl * lbl, unsigned num_expected_args,
+                                         enode * n, backtrack_point & bp) {
+            enode * root = n->get_root();
+            enode_vector const & all = m_context.enodes_of(lbl);
+            enode_vector * v = mk_enode_vector();
+            for (enode * e : all) {
+                if (e->get_root() == root && e->is_cgr() && e->get_num_args() == num_expected_args)
+                    v->push_back(e);
+            }
+            if (v->empty()) {
+                recycle_enode_vector(v);
+                return nullptr;
+            }
+            bp.m_to_recycle = v;
+            bp.m_it = v->begin();
+            bp.m_end = v->end();
+            enode * result = *bp.m_it;
+            update_max_generation(result, n);
+            return result;
         }
 
         /**
@@ -2148,6 +2176,7 @@ namespace {
         bp.m_instr                = c;
         bp.m_old_max_generation   = m_max_generation;
         bp.m_old_used_enodes_size = m_used_enodes.size();
+        bp.m_bind_use_iter        = false;
         if (best_v == nullptr) {
             TRACE(mam_bug, tout << "m_top: " << m_top << ", m_backtrack_stack.size(): " << m_backtrack_stack.size() << "\n";
                   tout << *c << "\n";);
@@ -2409,6 +2438,7 @@ namespace {
             m_backtrack_stack[m_top].m_instr                = m_pc;
             m_backtrack_stack[m_top].m_old_max_generation   = m_max_generation;
             m_backtrack_stack[m_top].m_old_used_enodes_size = m_used_enodes.size();
+            m_backtrack_stack[m_top].m_bind_use_iter        = false;
             m_top++;
             m_pc = m_pc->m_next;
             goto main_loop;
@@ -2424,14 +2454,26 @@ namespace {
                  m_oreg = static_cast<const bind *>(m_pc)->m_oreg;                                                      \
                  m_curr_max_generation = m_max_generation;                                                              \
                  m_curr_used_enodes_size = m_used_enodes.size();                                                        \
-                 m_app  = get_first_f_app(static_cast<const bind *>(m_pc)->m_label, static_cast<const bind *>(m_pc)->m_num_args, m_n1); \
-                 if (!m_app)                                                                                            \
-                     goto backtrack;                                                                                    \
-                 TRACE(mam_int, tout << "bind candidate: " << mk_pp(m_app->get_expr(), m) << "\n";);     \
+                 {                                                                                                      \
+                 func_decl * _lbl = static_cast<const bind *>(m_pc)->m_label;                                           \
+                 unsigned _nargs = static_cast<const bind *>(m_pc)->m_num_args;                                         \
+                 unsigned _class_sz = m_n1->get_root()->get_class_size();                                               \
+                 unsigned _enodes_sz = m_context.get_num_enodes_of(_lbl);                                               \
                  m_backtrack_stack[m_top].m_instr              = m_pc;                                                  \
                  m_backtrack_stack[m_top].m_old_max_generation = m_curr_max_generation;                                 \
                  m_backtrack_stack[m_top].m_old_used_enodes_size = m_curr_used_enodes_size;                             \
-                 m_backtrack_stack[m_top].m_curr               = m_app;                                                 \
+                 if (_enodes_sz < _class_sz) {                                                                          \
+                     m_app = init_bind_from_enodes_of(_lbl, _nargs, m_n1, m_backtrack_stack[m_top]);                    \
+                     m_backtrack_stack[m_top].m_bind_use_iter = true;                                                   \
+                 } else {                                                                                               \
+                     m_app = get_first_f_app(_lbl, _nargs, m_n1);                                                      \
+                     m_backtrack_stack[m_top].m_bind_use_iter = false;                                                  \
+                     m_backtrack_stack[m_top].m_curr          = m_app;                                                  \
+                 }                                                                                                      \
+                 }                                                                                                      \
+                 if (!m_app)                                                                                            \
+                     goto backtrack;                                                                                    \
+                 TRACE(mam_int, tout << "bind candidate: " << mk_pp(m_app->get_expr(), m) << "\n";);     \
                  m_top++;
 
             BIND_COMMON();
@@ -2679,6 +2721,8 @@ namespace {
                     backtrack_point & bp = m_backtrack_stack[m_top - 1];
                     if (bp.m_instr->m_opcode == CONTINUE && bp.m_to_recycle)
                         recycle_enode_vector(bp.m_to_recycle);
+                    else if (bp.m_bind_use_iter && bp.m_to_recycle)
+                        recycle_enode_vector(bp.m_to_recycle);
                     m_top--;
                 }
 #ifdef _PROFILE_MAM
@@ -2698,12 +2742,23 @@ namespace {
         case BIND1:
 #define BBIND_COMMON() m_b   = static_cast<const bind*>(bp.m_instr);                                                            \
                        m_n1  = m_registers[m_b->m_ireg];                                                                        \
-                       m_app = get_next_f_app(m_b->m_label, m_b->m_num_args, m_n1, bp.m_curr); \
-                       if (m_app == 0) {                                                                                        \
-                           m_top--;                                                                                             \
-                           goto backtrack;                                                                                      \
+                       if (bp.m_bind_use_iter) {                                                                                \
+                           ++bp.m_it;                                                                                           \
+                           if (bp.m_it == bp.m_end) {                                                                           \
+                               if (bp.m_to_recycle) recycle_enode_vector(bp.m_to_recycle);                                      \
+                               m_top--;                                                                                         \
+                               goto backtrack;                                                                                  \
+                           }                                                                                                    \
+                           m_app = *bp.m_it;                                                                                    \
+                           update_max_generation(m_app, m_n1);                                                                  \
+                       } else {                                                                                                 \
+                           m_app = get_next_f_app(m_b->m_label, m_b->m_num_args, m_n1, bp.m_curr);                              \
+                           if (m_app == 0) {                                                                                    \
+                               m_top--;                                                                                         \
+                               goto backtrack;                                                                                  \
+                           }                                                                                                    \
+                           bp.m_curr = m_app;                                                                                   \
                        }                                                                                                        \
-                       bp.m_curr = m_app;                                                                                       \
                        TRACE(mam_int, tout << "bind next candidate:\n" << mk_ll_pp(m_app->get_expr(), m););      \
                        m_oreg    = m_b->m_oreg
 
