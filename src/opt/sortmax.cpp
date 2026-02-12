@@ -40,35 +40,76 @@ namespace opt {
             maxsmt_solver_base(c, s, index), m_sort(*this), m_trail(m), m_fresh(m) {}
 
         lbool operator()() override {
-            if (!init()) 
+            if (!init())
                 return l_undef;
 
             lbool is_sat = l_true;
             m_filter = alloc(generic_model_converter, m, "sortmax");
-            expr_ref_vector in(m);
-            expr_ref tmp(m);
             ptr_vector<expr> out;
+
+            // Validate all weights are unsigned and compute their GCD
+            // to reduce the sorting network size.
+            rational weight_gcd(0);
             for (auto const & [e, w, t] : m_soft) {
                 if (!w.is_unsigned()) {
                     throw default_exception("sortmax can only handle unsigned weights. Use a different heuristic.");
                 }
-                unsigned n = w.get_unsigned();
-                while (n > 0) {
-                    in.push_back(e);
-                    --n;
-                }
+                if (w.is_pos())
+                    weight_gcd = (weight_gcd.is_zero()) ? w : gcd(weight_gcd, w);
             }
-            m_sort.sorting(in.size(), in.data(), out);
+            if (weight_gcd.is_zero())
+                weight_gcd = rational::one();
 
-            // initialize sorting network outputs using the initial assignment.
+            unsigned gcd_val = weight_gcd.get_unsigned();
+
+            // Build sorted runs per clause and merge them incrementally.
+            // A clause with normalized weight w contributes a pre-sorted
+            // run of w identical copies of its literal -- no comparators
+            // needed for identical elements. We then merge runs pairwise
+            // via the sorting network merge, which only introduces
+            // comparators between different soft clause literals.
+            // Total output size: sum(w_i / gcd) instead of sum(w_i).
+            // Comparator count: O(N log N) where N = sum(w_i / gcd),
+            // versus O(W log^2 W) where W = sum(w_i) in the old code.
+
+            // Collect per-clause sorted runs.
+            vector<ptr_vector<expr>> runs;
+            for (auto const & [e, w, t] : m_soft) {
+                unsigned nw = w.get_unsigned() / gcd_val;
+                if (nw == 0)
+                    continue;
+                ptr_vector<expr> run;
+                for (unsigned i = 0; i < nw; ++i)
+                    run.push_back(e);
+                runs.push_back(std::move(run));
+            }
+
+            // Pairwise merge until a single sorted sequence remains.
+            while (runs.size() > 1) {
+                vector<ptr_vector<expr>> next_runs;
+                for (unsigned i = 0; i + 1 < runs.size(); i += 2) {
+                    ptr_vector<expr> merged;
+                    m_sort.merge_network(
+                        runs[i].size(), runs[i].data(),
+                        runs[i + 1].size(), runs[i + 1].data(),
+                        merged);
+                    next_runs.push_back(std::move(merged));
+                }
+                if (runs.size() % 2 == 1)
+                    next_runs.push_back(std::move(runs.back()));
+                runs = std::move(next_runs);
+            }
+            if (!runs.empty())
+                out.append(runs[0]);
+
+            // Initialize sorting network outputs using the initial assignment.
             unsigned first = 0;
             for (auto const & [e, w, t] : m_soft) {
                 if (t == l_true) {
-                    unsigned n = w.get_unsigned();
-                    while (n > 0) {
+                    unsigned nw = w.get_unsigned() / gcd_val;
+                    for (unsigned i = 0; i < nw && first < out.size(); ++i) {
                         s().assert_expr(out[first]);
                         ++first;
-                        --n;
                     }
                 }
             }
@@ -84,11 +125,11 @@ namespace opt {
                     ++first;
                     s().get_model(m_model);
                     update_assignment();
-                    for (; first < out.size() && is_true(out[first]); ++first) { 
+                    for (; first < out.size() && is_true(out[first]); ++first) {
                         s().assert_expr(out[first]);
                     }
                     TRACE(opt, model_smt2_pp(tout, m, *m_model.get(), 0););
-                    m_upper = m_lower + rational(out.size() - first);
+                    m_upper = m_lower + rational(out.size() - first) * weight_gcd;
                     (*m_filter)(m_model);
                 }
             }

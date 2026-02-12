@@ -187,9 +187,9 @@ public:
 
 
 class basic_union_find {
-    unsigned_vector   m_find;
-    unsigned_vector   m_size;
-    unsigned_vector   m_next;
+    mutable unsigned_vector   m_find;
+    unsigned_vector            m_size;
+    unsigned_vector            m_next;
     
     void ensure_size(unsigned v) {
         while (v >= get_num_vars()) {
@@ -210,12 +210,17 @@ class basic_union_find {
         if (v >= get_num_vars()) {
             return v;
         }
-        while (true) {
-            unsigned new_v = m_find[v];
-            if (new_v == v)
-                return v;
-            v = new_v;
+        // Find root
+        unsigned root = v;
+        while (m_find[root] != root)
+            root = m_find[root];
+        // Path compression: point all nodes on the path directly to root
+        while (m_find[v] != root) {
+            unsigned next = m_find[v];
+            m_find[v] = root;
+            v = next;
         }
+        return root;
     }
     
     unsigned next(unsigned v) const { 

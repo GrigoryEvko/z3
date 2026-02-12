@@ -1191,6 +1191,12 @@ Notes:
         }
         
     public:
+        void merge_network(unsigned a, literal const* as,
+                           unsigned b, literal const* bs,
+                           literal_vector& out) {
+            merge(a, as, b, bs, out);
+        }
+
         void sorting(unsigned n, literal const* xs, literal_vector& out) {
             TRACE(pb_verbose, tout << "sorting: " << n << "\n";);
             switch(n) {
