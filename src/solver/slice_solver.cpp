@@ -287,11 +287,13 @@ public:
 
     void pop(unsigned n) override {
         unsigned old_sz = m_assertions_lim[m_assertions_lim.size() - n];
-        for (unsigned i = m_assertions.size(); i-- > old_sz; ) {
-            auto const& f = m_assertions[i];
-            if (f.level < s->get_scope_level()) 
-                s->pop(s->get_scope_level() - f.level);
-        }
+        // Pop the underlying solver to the target scope level in one batch
+        // instead of iterating over each removed assertion and popping individually.
+        // All removed assertions have f.level >= target_level, so the minimum
+        // level we need to reach is exactly target_level.
+        unsigned target_level = m_assertions_lim.size() - n;
+        if (target_level < s->get_scope_level())
+            s->pop(s->get_scope_level() - target_level);
         m_assertions_lim.shrink(m_assertions_lim.size() - n);
         m_assertions.shrink(old_sz);
         old_sz = m_occurs_lim[m_occurs_lim.size() - n];

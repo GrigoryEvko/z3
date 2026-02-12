@@ -268,6 +268,8 @@ public:
 
     ast_manager& get_manager() const override { return m_base->get_manager(); }
 
+    bool is_stale() const { return m_ref_count == 1; }
+
     void refresh(solver* new_base) {
         SASSERT(!m_pushed);
         m_head = 0;
@@ -392,6 +394,19 @@ void solver_pool::reset_statistics() {
    among the first num_pools.
 */
 solver* solver_pool::mk_solver() {
+    // Garbage-collect stale pool_solvers when the pool has grown beyond
+    // 2x the seed count.  Only entries at index >= m_num_pools can be stale.
+    if (m_solvers.size() > 2 * m_num_pools) {
+        unsigned stale = 0;
+        for (unsigned i = m_num_pools; i < m_solvers.size(); ++i) {
+            if (static_cast<pool_solver*>(m_solvers[i])->is_stale())
+                ++stale;
+        }
+        if (stale > m_num_pools) {
+            gc_stale();
+        }
+    }
+
     ref<solver> base_solver;
     ast_manager& m = m_base_solver->get_manager();
     if (m_solvers.size() < m_num_pools) {
@@ -423,5 +438,47 @@ void solver_pool::refresh(solver* base_solver) {
         if (base_solver == s->base_solver()) {
             s->refresh(new_base.get());
         }
+    }
+}
+
+/**
+   \brief Remove pool_solvers that are only held by the pool (ref_count == 1).
+   The first m_num_pools entries are permanent seeds used for base-solver
+   lookup and must not be removed. Only entries at index >= m_num_pools
+   are candidates for collection.
+   After removing stale entries, refresh the affected base solvers so that
+   accumulated dead-predicate assertions (pred => ...) and NOT(pred)
+   from stale solver destructors are discarded.
+*/
+void solver_pool::gc_stale() {
+    // Collect base solvers that have stale pool_solvers (beyond the seed entries)
+    ptr_vector<solver> affected_bases;
+    for (unsigned i = m_num_pools; i < m_solvers.size(); ++i) {
+        pool_solver* s = static_cast<pool_solver*>(m_solvers[i]);
+        if (s->is_stale() && !affected_bases.contains(s->base_solver())) {
+            affected_bases.push_back(s->base_solver());
+        }
+    }
+    if (affected_bases.empty())
+        return;
+
+    // Compact: remove stale entries beyond the seed region.
+    // Their destructors fire, asserting NOT(pred) into the old base solver,
+    // but that base will be replaced by refresh() below.
+    unsigned j = m_num_pools;
+    for (unsigned i = m_num_pools; i < m_solvers.size(); ++i) {
+        if (!static_cast<pool_solver*>(m_solvers[i])->is_stale()) {
+            if (i != j)
+                m_solvers.set(j, m_solvers[i]);
+            ++j;
+        }
+    }
+    m_solvers.shrink(j);
+
+    // Refresh each affected base solver with a clean copy.
+    // This rebinds all surviving pool_solvers to fresh base solvers
+    // that have no dead-predicate assertions.
+    for (solver* base : affected_bases) {
+        refresh(base);
     }
 }

@@ -80,8 +80,9 @@ struct mus::imp {
     lbool get_mus1(expr_ref_vector& mus) {
         ptr_vector<expr> unknown(m_lit2expr.size(), m_lit2expr.data());
         expr_ref_vector core_exprs(m);
+        expr_set mus_set;  // O(1) membership test for mus contents
         TRACE(mus, m_solver.display(tout););
-        while (!unknown.empty()) { 
+        while (!unknown.empty()) {
             IF_VERBOSE(12, verbose_stream() << "(mus reducing core: " << unknown.size() << " new core: " << mus.size() << ")\n";);
             TRACE(mus, display_vec(tout << "core:  ", unknown); display_vec(tout << "mus:   ", mus););
             expr* lit = unknown.back();
@@ -95,10 +96,11 @@ struct mus::imp {
                 is_sat = m_solver.check_sat(mus);
             }
             switch (is_sat) {
-            case l_undef: 
+            case l_undef:
                 return is_sat;
             case l_true:
                 mus.push_back(lit);
+                mus_set.insert(lit);
                 update_model();
                 break;
             default:
@@ -108,7 +110,7 @@ struct mus::imp {
                     // unknown := core_exprs \ mus
                     unknown.reset();
                     for (expr* c : core_exprs) {
-                        if (!mus.contains(c)) {
+                        if (!mus_set.contains(c)) {
                             unknown.push_back(c);
                         }
                     }

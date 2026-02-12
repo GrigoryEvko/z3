@@ -58,16 +58,42 @@ private:
     bool                 m_use_solver1_results;
     ref<solver>          m_solver1;
     ref<solver>          m_solver2;
-    // We delay sending assertions to solver 2
-    // This is relevant for big benchmarks that are meant to be solved
-    // by a non-incremental solver.                                                 );
+
+    // Lazy assertion forwarding to solver2.
+    // Assertions are always sent to solver1 immediately (cheap: just push_back).
+    // Assertions are buffered for solver2 and only flushed when solver2 is
+    // actually needed (push/pop/check_sat in incremental mode/etc.).
+    // This avoids expensive preprocessing in solver2 for non-incremental
+    // benchmarks that are solved entirely by solver1 (the tactic).
+    struct pending_assertion {
+        expr_ref    m_expr;
+        expr_ref    m_assumption;  // null for untracked assertions
+        pending_assertion(expr_ref e, expr_ref a) : m_expr(std::move(e)), m_assumption(std::move(a)) {}
+    };
+    vector<pending_assertion> m_pending_assertions;
+    unsigned                  m_pending_assumptions; // count of pending tracked assertions
 
     bool                 m_ignore_solver1;
     inc_unknown_behavior m_inc_unknown_behavior;
     unsigned             m_inc_timeout;
-    
+
     void switch_inc_mode() {
         m_inc_mode = true;
+    }
+
+    // Flush any buffered assertions to solver2.
+    // Must be called before any operation that uses solver2.
+    void flush_to_solver2() {
+        for (auto& pa : m_pending_assertions) {
+            if (pa.m_assumption) {
+                m_solver2->assert_expr(pa.m_expr, pa.m_assumption);
+            }
+            else {
+                m_solver2->assert_expr(pa.m_expr);
+            }
+        }
+        m_pending_assertions.reset();
+        m_pending_assumptions = 0;
     }
 
     struct aux_timeout_eh : public event_handler {
@@ -123,10 +149,14 @@ public:
         m_inc_mode            = false;
         m_check_sat_executed  = false;
         m_use_solver1_results = true;
+        m_pending_assumptions = 0;
     }
 
     solver* translate(ast_manager& m, params_ref const& p) override {
         TRACE(solver, tout << "translate\n";);
+        // Flush pending assertions so the translated solver2 gets a
+        // complete copy. translate() is rare, so the cost is acceptable.
+        flush_to_solver2();
         solver* s1 = m_solver1->translate(m, p);
         solver* s2 = m_solver2->translate(m, p);
         combined_solver* r = alloc(combined_solver, s1, s2, p);
@@ -163,26 +193,31 @@ public:
         if (m_check_sat_executed)
             switch_inc_mode();
         m_solver1->assert_expr(t);
-        m_solver2->assert_expr(t);
+        ast_manager& m = get_manager();
+        m_pending_assertions.push_back(pending_assertion(expr_ref(t, m), expr_ref(nullptr, m)));
     }
 
     void assert_expr_core2(expr * t, expr * a) override {
         if (m_check_sat_executed)
             switch_inc_mode();
         m_solver1->assert_expr(t, a);
-        m_solver2->assert_expr(t, a);
+        ast_manager& m = get_manager();
+        m_pending_assertions.push_back(pending_assertion(expr_ref(t, m), expr_ref(a, m)));
+        if (a) ++m_pending_assumptions;
     }
 
     void push() override {
         switch_inc_mode();
+        flush_to_solver2();
         m_solver1->push();
-        m_solver2->push();        
+        m_solver2->push();
         TRACE(pop, tout << "push\n";);
     }
-    
+
     void pop(unsigned n) override {
         TRACE(pop, tout << n << "\n";);
         switch_inc_mode();
+        flush_to_solver2();
         m_solver1->pop(n);
         m_solver2->pop(n);
     }
@@ -193,6 +228,7 @@ public:
 
     lbool get_consequences(expr_ref_vector const& asms, expr_ref_vector const& vars, expr_ref_vector& consequences) override {
         switch_inc_mode();
+        flush_to_solver2();
         m_use_solver1_results = false;
         try {
             return m_solver2->get_consequences(asms, vars, consequences);
@@ -209,27 +245,29 @@ public:
     }
 
     lbool check_sat_core(unsigned num_assumptions, expr * const * assumptions) override {
-        m_check_sat_executed  = true;        
+        m_check_sat_executed  = true;
         m_use_solver1_results = false;
 
-        if (get_num_assumptions() != 0 ||            
-            num_assumptions > 0 ||  // assumptions were provided            
+        if (get_num_assumptions() != 0 ||
+            num_assumptions > 0 ||  // assumptions were provided
             m_ignore_solver1)  {
             // must use incremental solver
             switch_inc_mode();
+            flush_to_solver2();
             return m_solver2->check_sat_core(num_assumptions, assumptions);
         }
-        
+
         if (m_inc_mode) {
+            flush_to_solver2();
             if (m_inc_timeout == UINT_MAX) {
-                IF_VERBOSE(PS_VB_LVL, verbose_stream() << "(combined-solver \"using solver 2 (without a timeout)\")\n";);            
+                IF_VERBOSE(PS_VB_LVL, verbose_stream() << "(combined-solver \"using solver 2 (without a timeout)\")\n";);
                 lbool r = m_solver2->check_sat_core(num_assumptions, assumptions);
                 if (r != l_undef || !use_solver1_when_undef() || !get_manager().inc()) {
                     return r;
                 }
             }
             else {
-                IF_VERBOSE(PS_VB_LVL, verbose_stream() << "(combined-solver \"using solver 2 (with timeout)\")\n";);            
+                IF_VERBOSE(PS_VB_LVL, verbose_stream() << "(combined-solver \"using solver 2 (with timeout)\")\n";);
                 aux_timeout_eh eh(m_solver2.get());
                 lbool r = l_undef;
                 try {
@@ -250,7 +288,8 @@ public:
             }
             IF_VERBOSE(PS_VB_LVL, verbose_stream() << "(combined-solver \"solver 2 failed, trying solver1\")\n";);
         }
-        
+
+        // Non-incremental: solver1 only. No need to flush to solver2.
         IF_VERBOSE(PS_VB_LVL, verbose_stream() << "(combined-solver \"using solver 1\")\n";);
         m_use_solver1_results = true;
         return m_solver1->check_sat_core(num_assumptions, assumptions);
@@ -270,17 +309,18 @@ public:
     }
 
     unsigned get_num_assumptions() const override {
-        return m_solver2->get_num_assumptions();
+        return m_solver2->get_num_assumptions() + m_pending_assumptions;
     }
 
     expr_ref_vector cube(expr_ref_vector& vars, unsigned backtrack_level) override {
         switch_inc_mode();
+        flush_to_solver2();
         return m_solver2->cube(vars, backtrack_level);
     }
 
-    expr* congruence_next(expr* e) override { switch_inc_mode(); return m_solver2->congruence_next(e); }
-    expr* congruence_root(expr* e) override { switch_inc_mode(); return m_solver2->congruence_root(e); }
-    expr_ref congruence_explain(expr* a, expr* b) override { switch_inc_mode(); return m_solver2->congruence_explain(a, b); }
+    expr* congruence_next(expr* e) override { switch_inc_mode(); flush_to_solver2(); return m_solver2->congruence_next(e); }
+    expr* congruence_root(expr* e) override { switch_inc_mode(); flush_to_solver2(); return m_solver2->congruence_root(e); }
+    expr_ref congruence_explain(expr* a, expr* b) override { switch_inc_mode(); flush_to_solver2(); return m_solver2->congruence_explain(a, b); }
 
 
     expr * get_assumption(unsigned idx) const override {
@@ -353,15 +393,17 @@ public:
 
     void register_on_clause(void* ctx, user_propagator::on_clause_eh_t& on_clause) override {
         switch_inc_mode();
+        flush_to_solver2();
         m_solver2->register_on_clause(ctx, on_clause);
-    }    
+    }
 
     void user_propagate_init(
-        void* ctx, 
+        void* ctx,
         user_propagator::push_eh_t&                                   push_eh,
         user_propagator::pop_eh_t&                                    pop_eh,
         user_propagator::fresh_eh_t&                                  fresh_eh) override {
         switch_inc_mode();
+        flush_to_solver2();
         m_solver2->user_propagate_init(ctx, push_eh, pop_eh, fresh_eh);
     }        
     

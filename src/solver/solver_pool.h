@@ -53,9 +53,10 @@ class solver_pool {
     stopwatch m_proof_watch;
 
     void refresh(solver* s);
+    void gc_stale();
 
     ptr_vector<solver> get_base_solvers() const;
-  
+
 public:
     solver_pool(solver* base_solver, unsigned num_pools);
 
