@@ -29,7 +29,6 @@ Notes:
 #include "util/ref_util.h"
 #include "ast/ast_smt2_pp.h"
 #include "ast/ast_pp.h"
-#include "ast/ast_smt2_pp.h"
 #include "ast/ast_ll_pp.h"
 #include "ast/pb_decl_plugin.h"
 #include "ast/ast_util.h"
@@ -454,10 +453,11 @@ struct goal2sat::imp : public sat::sat_internalizer {
         unsigned old_sz = m_result_stack.size() - num;
         SASSERT(num <= m_result_stack.size());
         if (root) {
+            SASSERT(num == m_result_stack.size());
             if (sign) {
                 for (unsigned i = 0; i < num; ++i) {
                     m_result_stack[i].neg();
-                }                
+                }
                 mk_root_clause(m_result_stack.size(), m_result_stack.data());
             }
             else {
@@ -620,14 +620,13 @@ struct goal2sat::imp : public sat::sat_internalizer {
                 return;
             sat::bool_var k = add_var(false, t);
             sat::literal  l(k, false);
+            cache(t, l);
             if (m.is_xor(t))
                 l1.neg();
             mk_clause(~l,  l1, ~l2, mk_tseitin(~l, l1, ~l2));
             mk_clause(~l, ~l1,  l2, mk_tseitin(~l, ~l1, l2));
             mk_clause(l,   l1,  l2, mk_tseitin(l, l1, l2));
             mk_clause(l,  ~l1, ~l2, mk_tseitin(l, ~l1, ~l2));
-
-            cache(t, l);
             if (sign)
                 l.neg();
             m_result_stack.push_back(l);
@@ -1095,8 +1094,10 @@ void goal2sat::user_push() {
 void goal2sat::user_pop(unsigned n) {
     if (m_imp)
         m_imp->user_pop(n);
-    else
-        m_scopes -= n;
+    else {
+        SASSERT(n <= m_scopes);
+        m_scopes -= (n <= m_scopes) ? n : m_scopes;
+    }
 }
 
 

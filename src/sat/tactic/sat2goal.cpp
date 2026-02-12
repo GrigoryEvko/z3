@@ -29,7 +29,6 @@ Notes:
 #include "util/ref_util.h"
 #include "ast/ast_smt2_pp.h"
 #include "ast/ast_pp.h"
-#include "ast/ast_smt2_pp.h"
 #include "ast/ast_ll_pp.h"
 #include "ast/pb_decl_plugin.h"
 #include "ast/ast_util.h"
