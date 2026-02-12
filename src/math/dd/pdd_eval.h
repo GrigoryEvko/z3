@@ -20,22 +20,33 @@ Revision History:
 #pragma once
 
 #include "math/dd/dd_pdd.h"
+#include "util/map.h"
 
 namespace dd {
-// calculates the value of a pdd expression based on the given values of the variables
+// calculates the value of a pdd expression based on the given values of the variables.
+// Caches intermediate results keyed by node index so that shared DAG nodes
+// are evaluated at most once (without caching, tree-shaped traversal of a
+// DAG can be exponential in the depth).
 class pdd_eval {
-    
+
     std::function<rational (unsigned)> m_var2val;
-    
+    u_map<rational> m_cache;
+
 public:
     std::function<rational (unsigned)>& var2val() { return m_var2val; } // setter
     const std::function<rational (unsigned)>& var2val() const { return m_var2val; } // getter
-    
+
+    void reset_cache() { m_cache.reset(); }
+
     rational operator()(pdd const& p) {
-        if (p.is_val()) {
+        if (p.is_val())
             return p.val();
-        }
-        return (*this)(p.hi()) * m_var2val(p.var()) + (*this)(p.lo());
+        rational r;
+        if (m_cache.find(p.index(), r))
+            return r;
+        r = (*this)(p.hi()) * m_var2val(p.var()) + (*this)(p.lo());
+        m_cache.insert(p.index(), r);
+        return r;
     }
 };
 }

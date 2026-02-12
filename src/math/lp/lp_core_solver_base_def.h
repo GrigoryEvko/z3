@@ -244,11 +244,24 @@ divide_row_by_pivot(unsigned pivot_row, unsigned pivot_col, int& pivot_col_cell_
     // in the column strip, instead of the linear scan that was here before.
     pivot_col_cell_index = static_cast<int>(pivot_cell.offset());
 
-    // this->m_b[pivot_row] /= coeff;
-    for (unsigned j = 0; j < size; ++j) {
-        auto & c = row[j];
-        if (c.var() != pivot_col) {
-            c.coeff() /= coeff;
+    // Special-case coeff == +/-1: skip division or just negate
+    if (coeff.is_one()) {
+        // coeff is already 1, nothing to do
+    }
+    else if (coeff.is_minus_one()) {
+        for (unsigned j = 0; j < size; ++j) {
+            auto & c = row[j];
+            if (c.var() != pivot_col) {
+                c.coeff().neg();
+            }
+        }
+    }
+    else {
+        for (unsigned j = 0; j < size; ++j) {
+            auto & c = row[j];
+            if (c.var() != pivot_col) {
+                c.coeff() /= coeff;
+            }
         }
     }
     coeff = one_of_type<T>();

@@ -3089,7 +3089,20 @@ namespace algebraic_numbers {
             bqm().set(l, i.lower());
             bqm().set(u, i.upper());
             // the precision on refine is base 2
-            return upm().refine(c->m_p_sz, c->m_p, bqm(), l, u, precision * 4);
+            bool r = upm().refine(c->m_p_sz, c->m_p, bqm(), l, u, precision * 4);
+            // Cache the refined interval back into the cell so future
+            // queries start from the tighter bounds instead of redoing work.
+            if (r) {
+                bqm().set(c->m_interval.lower(), l);
+                bqm().set(c->m_interval.upper(), u);
+                SASSERT(acell_inv(*c));
+            }
+            else {
+                // Exact root found (stored in l). Collapse interval to [l, l].
+                bqm().set(c->m_interval.lower(), l);
+                bqm().set(c->m_interval.upper(), l);
+            }
+            return r;
         }
         
         std::ostream& display_decimal(std::ostream & out, numeral const & a, unsigned precision) {

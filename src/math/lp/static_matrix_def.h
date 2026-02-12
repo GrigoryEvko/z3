@@ -48,7 +48,7 @@ namespace lp {
     }
 
 
-    template <typename T, typename X> bool static_matrix<T, X>::pivot_row_to_row_given_cell(unsigned i, 
+    template <typename T, typename X> bool static_matrix<T, X>::pivot_row_to_row_given_cell(unsigned i,
                                                                                             column_cell & c, unsigned pivot_col) {
         unsigned ii = c.var();
         SASSERT(i < row_count() && ii < column_count() && i != ii);
@@ -58,18 +58,52 @@ namespace lp {
         remove_element(rowii, rowii[c.offset()]);
         scan_row_strip_to_work_vector(rowii);
         unsigned prev_size_ii = static_cast<unsigned>(rowii.size());
-        // run over the pivot row and update row ii
-        for (const auto & iv : m_rows[i]) {
-            unsigned j = iv.var();
-            if (j == pivot_col) continue;
-            SASSERT(!is_zero(iv.coeff()));
-            int j_offs = m_work_vector_of_row_offsets[j];
-            if (j_offs == -1) { // it is a new element
-                T alv = alpha * iv.coeff();
-                add_new_element(ii, j, alv);
+        // Special-case alpha == +/-1: avoid full mpq multiply in the new-element path.
+        // The addmul path already handles +/-1 internally via rational::addmul.
+        if (alpha.is_one()) {
+            for (const auto & iv : m_rows[i]) {
+                unsigned j = iv.var();
+                if (j == pivot_col) continue;
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    add_new_element(ii, j, iv.coeff());
+                }
+                else {
+                    rowii[j_offs].coeff() += iv.coeff();
+                }
             }
-            else {
-                addmul(rowii[j_offs].coeff(), iv.coeff(), alpha);
+        }
+        else if (alpha.is_minus_one()) {
+            for (const auto & iv : m_rows[i]) {
+                unsigned j = iv.var();
+                if (j == pivot_col) continue;
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    T alv = iv.coeff();
+                    alv.neg();
+                    add_new_element(ii, j, alv);
+                }
+                else {
+                    rowii[j_offs].coeff() -= iv.coeff();
+                }
+            }
+        }
+        else {
+            // General case: full multiply
+            for (const auto & iv : m_rows[i]) {
+                unsigned j = iv.var();
+                if (j == pivot_col) continue;
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    T alv = alpha * iv.coeff();
+                    add_new_element(ii, j, alv);
+                }
+                else {
+                    addmul(rowii[j_offs].coeff(), iv.coeff(), alpha);
+                }
             }
         }
         // clean the work vector
@@ -91,16 +125,44 @@ namespace lp {
         auto & rowk = m_rows[k];
         scan_row_strip_to_work_vector(rowk);
         unsigned prev_size_k = static_cast<unsigned>(rowk.size());
-        // run over the pivot row and update row k
-        for (const auto & iv : m_rows[i]) {
-            unsigned j = iv.var();
-            int j_offs = m_work_vector_of_row_offsets[j];
-            if (j_offs == -1) { // it is a new element
-                T alv = alpha * iv.coeff();
-                add_new_element(k, j, alv);
+        // Special-case alpha == +/-1: avoid full mpq multiply in the new-element path
+        if (alpha.is_one()) {
+            for (const auto & iv : m_rows[i]) {
+                unsigned j = iv.var();
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    add_new_element(k, j, iv.coeff());
+                }
+                else {
+                    rowk[j_offs].coeff() += iv.coeff();
+                }
             }
-            else {
-                addmul(rowk[j_offs].coeff(), iv.coeff(), alpha);
+        }
+        else if (alpha.is_minus_one()) {
+            for (const auto & iv : m_rows[i]) {
+                unsigned j = iv.var();
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    T alv = iv.coeff();
+                    alv.neg();
+                    add_new_element(k, j, alv);
+                }
+                else {
+                    rowk[j_offs].coeff() -= iv.coeff();
+                }
+            }
+        }
+        else {
+            for (const auto & iv : m_rows[i]) {
+                unsigned j = iv.var();
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    T alv = alpha * iv.coeff();
+                    add_new_element(k, j, alv);
+                }
+                else {
+                    addmul(rowk[j_offs].coeff(), iv.coeff(), alpha);
+                }
             }
         }
         // clean the work vector
@@ -117,7 +179,7 @@ namespace lp {
 
 
     template <typename T, typename X>
-    inline void static_matrix<T, X>::pivot_row_to_row_given_cell_with_sign(unsigned piv_row_index, 
+    inline void static_matrix<T, X>::pivot_row_to_row_given_cell_with_sign(unsigned piv_row_index,
                                                                            column_cell& c, unsigned pivot_col, int pivot_sign) {
         unsigned ii = c.var();
         SASSERT(ii != piv_row_index);
@@ -127,18 +189,50 @@ namespace lp {
         remove_element(rowii, rowii[c.offset()]);
         scan_row_strip_to_work_vector(rowii);
         unsigned prev_size_ii = static_cast<unsigned>(rowii.size());
-        // run over the pivot row and update row ii
-        for (const auto & iv : m_rows[piv_row_index]) {
-            unsigned j = iv.var();
-            if (j == pivot_col) continue;
-            SASSERT(!is_zero(iv.coeff()));
-            int j_offs = m_work_vector_of_row_offsets[j];
-            if (j_offs == -1) { // it is a new element
-                T alv = alpha * iv.coeff();
-                add_new_element(ii, j, alv);
+        // Special-case alpha == +/-1: avoid full mpq multiply in the new-element path
+        if (alpha.is_one()) {
+            for (const auto & iv : m_rows[piv_row_index]) {
+                unsigned j = iv.var();
+                if (j == pivot_col) continue;
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    add_new_element(ii, j, iv.coeff());
+                }
+                else {
+                    rowii[j_offs].coeff() += iv.coeff();
+                }
             }
-            else {
-                addmul(rowii[j_offs].coeff(), iv.coeff(), alpha);
+        }
+        else if (alpha.is_minus_one()) {
+            for (const auto & iv : m_rows[piv_row_index]) {
+                unsigned j = iv.var();
+                if (j == pivot_col) continue;
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    T alv = iv.coeff();
+                    alv.neg();
+                    add_new_element(ii, j, alv);
+                }
+                else {
+                    rowii[j_offs].coeff() -= iv.coeff();
+                }
+            }
+        }
+        else {
+            for (const auto & iv : m_rows[piv_row_index]) {
+                unsigned j = iv.var();
+                if (j == pivot_col) continue;
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    T alv = alpha * iv.coeff();
+                    add_new_element(ii, j, alv);
+                }
+                else {
+                    addmul(rowii[j_offs].coeff(), iv.coeff(), alpha);
+                }
             }
         }
         // clean the work vector
@@ -160,18 +254,50 @@ namespace lp {
         auto & rowii = m_rows[ii];
         scan_row_strip_to_work_vector(rowii);
         unsigned prev_size_ii = static_cast<unsigned>(rowii.size());
-        // run over the term and update row ii
-        for (const auto & iv : term) {
-            unsigned j = iv.var();
-            SASSERT(!is_zero(iv.coeff()));
-            int j_offs = m_work_vector_of_row_offsets[j];
-            if (j_offs == -1) { // it is a new element
-                add_columns_up_to(j);
-                T alv = alpha * iv.coeff();
-                add_new_element(ii, j, alv);
+        // Special-case alpha == +/-1: avoid full mpq multiply in the new-element path
+        if (alpha.is_one()) {
+            for (const auto & iv : term) {
+                unsigned j = iv.var();
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    add_columns_up_to(j);
+                    add_new_element(ii, j, iv.coeff());
+                }
+                else {
+                    rowii[j_offs].coeff() += iv.coeff();
+                }
             }
-            else {
-                addmul(rowii[j_offs].coeff(), iv.coeff(), alpha);
+        }
+        else if (alpha.is_minus_one()) {
+            for (const auto & iv : term) {
+                unsigned j = iv.var();
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    add_columns_up_to(j);
+                    T alv = iv.coeff();
+                    alv.neg();
+                    add_new_element(ii, j, alv);
+                }
+                else {
+                    rowii[j_offs].coeff() -= iv.coeff();
+                }
+            }
+        }
+        else {
+            for (const auto & iv : term) {
+                unsigned j = iv.var();
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    add_columns_up_to(j);
+                    T alv = alpha * iv.coeff();
+                    add_new_element(ii, j, alv);
+                }
+                else {
+                    addmul(rowii[j_offs].coeff(), iv.coeff(), alpha);
+                }
             }
         }
         // clean the work vector
@@ -196,18 +322,50 @@ namespace lp {
         remove_element(rowii, rowii[c.offset()]);
         scan_row_strip_to_work_vector(rowii);
         unsigned prev_size_ii = static_cast<unsigned>(rowii.size());
-        // run over the pivot row and update row ii
-        for (const auto & iv : term) {
-            unsigned j = iv.var();
-            if (j == pivot_col) continue;
-            SASSERT(!is_zero(iv.coeff()));
-            int j_offs = m_work_vector_of_row_offsets[j];
-            if (j_offs == -1) { // it is a new element
-                T alv = alpha * iv.coeff();
-                add_new_element(ii, j, alv);
+        // Special-case alpha == +/-1: avoid full mpq multiply in the new-element path
+        if (alpha.is_one()) {
+            for (const auto & iv : term) {
+                unsigned j = iv.var();
+                if (j == pivot_col) continue;
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    add_new_element(ii, j, iv.coeff());
+                }
+                else {
+                    rowii[j_offs].coeff() += iv.coeff();
+                }
             }
-            else {
-                addmul(rowii[j_offs].coeff(), iv.coeff(), alpha);
+        }
+        else if (alpha.is_minus_one()) {
+            for (const auto & iv : term) {
+                unsigned j = iv.var();
+                if (j == pivot_col) continue;
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    T alv = iv.coeff();
+                    alv.neg();
+                    add_new_element(ii, j, alv);
+                }
+                else {
+                    rowii[j_offs].coeff() -= iv.coeff();
+                }
+            }
+        }
+        else {
+            for (const auto & iv : term) {
+                unsigned j = iv.var();
+                if (j == pivot_col) continue;
+                SASSERT(!is_zero(iv.coeff()));
+                int j_offs = m_work_vector_of_row_offsets[j];
+                if (j_offs == -1) {
+                    T alv = alpha * iv.coeff();
+                    add_new_element(ii, j, alv);
+                }
+                else {
+                    addmul(rowii[j_offs].coeff(), iv.coeff(), alpha);
+                }
             }
         }
         // clean the work vector
