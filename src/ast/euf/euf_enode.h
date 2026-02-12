@@ -38,36 +38,41 @@ namespace euf {
     typedef id_var_list<> th_var_list;
 
     class enode {
-        expr*         m_expr = nullptr;
-        bool          m_mark1 = false;
-        bool          m_mark2 = false;
-        bool          m_mark3 = false;
-        bool          m_commutative = false;
-        bool          m_interpreted = false;
-        bool          m_cgc_enabled = true;
-        bool          m_merge_tf_enabled = false;
-        bool          m_is_equality = false;    // Does the expression represent an equality
-        bool          m_is_relevant = false;
-        lbool         m_is_shared = l_undef;
-        lbool         m_value = l_undef;        // Assignment by SAT solver for Boolean node
-        sat::bool_var m_bool_var = sat::null_bool_var;    // SAT solver variable associated with Boolean node
-        unsigned      m_class_size = 1;         // Size of the equivalence class if the enode is the root.
-        unsigned      m_table_id = UINT_MAX;       
-        unsigned      m_generation = 0;         // Tracks how many quantifier instantiation rounds were needed to generate this enode.
-        unsigned      m_class_generation = UINT_MAX; // Cached minimum generation across equivalence class (UINT_MAX = not cached).
-        enode_vector  m_parents;
-        enode*        m_next   = nullptr;
-        enode*        m_root   = nullptr;
-        enode*        m_target = nullptr;
-        enode*        m_cg     = nullptr;
-        th_var_list   m_th_vars;
-        justification m_justification;
-        justification m_lit_justification;
-        unsigned      m_num_args = 0;
-        signed char   m_lbl_hash = -1;  // It is different from -1, if enode is used in a pattern
-        approx_set    m_lbls;
-        approx_set    m_plbls;
-        enode*        m_args[0];
+        // --- Cache line 0: HOT fields (congruence closure inner loop) ---
+        expr*         m_expr = nullptr;         // identity, hash, func_decl
+        enode*        m_root = nullptr;         // equivalence class root (hottest field)
+        enode*        m_next = nullptr;         // next in equivalence class ring
+        enode*        m_cg   = nullptr;         // congruence representative
+        enode_vector  m_parents;                // parent enodes (remove/reinsert)
+        enode*        m_target = nullptr;       // explanation chain target
+        unsigned      m_class_size = 1;         // equivalence class size (merge orientation)
+        unsigned      m_num_args = 0;           // arity (table ops, iteration)
+        bool          m_mark1 = false;          // merge/unmerge traversal mark
+        bool          m_mark2 = false;          // LCA find traversal mark
+        bool          m_mark3 = false;          // auxiliary mark
+        bool          m_cgc_enabled = true;     // congruence closure enabled
+        bool          m_commutative = false;    // commutative function
+        bool          m_interpreted = false;    // interpreted constant
+        bool          m_is_equality = false;    // expression is an equality
+        bool          m_is_relevant = false;    // relevancy tracking
+
+        // --- Cache line 1: WARM fields (theory integration, values) ---
+        th_var_list   m_th_vars;                // theory variable associations
+        justification m_justification;          // merge justification
+        lbool         m_value = l_undef;        // SAT solver assignment for Boolean node
+        unsigned      m_table_id = UINT_MAX;    // congruence table ID
+        lbool         m_is_shared = l_undef;    // shared between theories
+        sat::bool_var m_bool_var = sat::null_bool_var; // SAT solver variable
+        bool          m_merge_tf_enabled = false; // merge with true/false
+        unsigned      m_generation = 0;         // quantifier instantiation generation
+
+        // --- Cache line 2: COLD fields (explanation, pattern matching) ---
+        justification m_lit_justification;      // literal justification
+        unsigned      m_class_generation = UINT_MAX; // cached min generation across class
+        signed char   m_lbl_hash = -1;          // pattern label hash (-1 = not in pattern)
+        approx_set    m_lbls;                   // label set for pattern matching
+        approx_set    m_plbls;                  // parent label set for pattern matching
+        enode*        m_args[0];                // flexible array of child pointers
 
         friend class enode_args;
         friend class enode_parents;
