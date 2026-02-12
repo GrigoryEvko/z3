@@ -83,7 +83,7 @@ namespace sat {
                 }
             }
             // loop over binary clauses in watch list
-            for (watched const & w : s.get_wlist(l)) {
+            for (watched const & w : s.get_bin_wlist(l)) {
                 if (w.is_binary_clause() && s.is_visited(w.get_literal().var()) && w.get_literal().index() < l.index()) {
                     if (extract_xor(parity, c, ~l, w.get_literal())) {
                         add_xor(parity, c);
@@ -92,7 +92,7 @@ namespace sat {
                 }
             }
             l.neg();
-            for (watched const & w : s.get_wlist(l)) {
+            for (watched const & w : s.get_bin_wlist(l)) {
                 if (w.is_binary_clause() && s.is_visited(w.get_literal().var()) && w.get_literal().index() < l.index()) {
                     if (extract_xor(parity, c, ~l, w.get_literal())) {
                         add_xor(parity, c);

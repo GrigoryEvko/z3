@@ -36,24 +36,22 @@ namespace sat {
        - Delete watched clauses (they will be reinserted after they are cleaned).
     */
     void cleaner::cleanup_watches() {
-        vector<watch_list>::iterator it  = s.m_watches.begin();
-        vector<watch_list>::iterator end = s.m_watches.end();
-        unsigned l_idx = 0;
-        for (; it != end; ++it, ++l_idx) {
+        unsigned num_lits = s.m_watches.size();
+        for (unsigned l_idx = 0; l_idx < num_lits; ++l_idx) {
             if (s.value(to_literal(l_idx)) != l_undef) {
-                it->finalize();
-                SASSERT(it->empty());
+                s.m_bin_watches[l_idx].finalize();
+                s.m_watches[l_idx].finalize();
                 continue;
             }
-            TRACE(cleanup_bug, tout << "processing wlist of " << to_literal(l_idx) << "\n";);
-            watch_list & wlist = *it;
-            watch_list::iterator it2      = wlist.begin();
-            watch_list::iterator it_prev  = it2;
-            watch_list::iterator end2     = wlist.end();
-            for (; it2 != end2; ++it2) {
-                switch (it2->get_kind()) {
-                case watched::BINARY:
-                    TRACE(cleanup_bug, 
+            // Clean binary watches: remove satisfied binary clauses
+            {
+                watch_list & bwlist = s.m_bin_watches[l_idx];
+                watch_list::iterator it2     = bwlist.begin();
+                watch_list::iterator it_prev = it2;
+                watch_list::iterator end2    = bwlist.end();
+                for (; it2 != end2; ++it2) {
+                    SASSERT(it2->is_binary_clause());
+                    TRACE(cleanup_bug,
                           tout << ~to_literal(l_idx) << " " << it2->get_literal() << "\n";
                           tout << s.value(~to_literal(l_idx)) << " " << s.value(it2->get_literal()) << "\n";
                           tout << s.was_eliminated(it2->get_literal()) << " " << s.inconsistent() << "\n";);
@@ -63,20 +61,35 @@ namespace sat {
                         ++it_prev;
                     }
                     TRACE(cleanup_bug, tout << "keeping: " << ~to_literal(l_idx) << " " << it2->get_literal() << "\n";);
-                    break;
-                case watched::CLAUSE:
-                    // skip
-                    break;
-                case watched::EXT_CONSTRAINT:
-                    *it_prev = *it2;
-                    ++it_prev;
-                    break;
-                default:
-                    UNREACHABLE();
-                    break;
                 }
+                bwlist.set_end(it_prev);
             }
-            wlist.set_end(it_prev);
+            // Clean clause watches: remove clause entries (they will be reinserted after cleanup),
+            // keep ext constraints.
+            {
+                watch_list & wlist = s.m_watches[l_idx];
+                watch_list::iterator it2     = wlist.begin();
+                watch_list::iterator it_prev = it2;
+                watch_list::iterator end2    = wlist.end();
+                for (; it2 != end2; ++it2) {
+                    switch (it2->get_kind()) {
+                    case watched::BINARY:
+                        UNREACHABLE();
+                        break;
+                    case watched::CLAUSE:
+                        // skip
+                        break;
+                    case watched::EXT_CONSTRAINT:
+                        *it_prev = *it2;
+                        ++it_prev;
+                        break;
+                    default:
+                        UNREACHABLE();
+                        break;
+                    }
+                }
+                wlist.set_end(it_prev);
+            }
         }
     }
 
@@ -181,11 +194,9 @@ namespace sat {
                 if (s.value(lit) != l_undef && s.lvl(lit) == 0) return false;
             }
         }
-        unsigned idx = 0;
-        for (auto& wlist : s.m_watches) {
+        for (unsigned idx = 0; idx < s.m_watches.size(); ++idx) {
             literal lit = to_literal(idx);
-            if (s.value(lit) != l_undef && s.lvl(lit) == 0 && !wlist.empty()) return false;
-            ++idx;
+            if (s.value(lit) != l_undef && s.lvl(lit) == 0 && (!s.m_watches[idx].empty() || !s.m_bin_watches[idx].empty())) return false;
         }
         return true;
     }

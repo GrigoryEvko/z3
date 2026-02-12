@@ -176,6 +176,8 @@ namespace sat {
         lbool value(literal l) const;
         watch_list & get_wlist(literal l);
         watch_list const & get_wlist(literal l) const;
+        watch_list & get_bin_wlist(literal l);
+        watch_list const & get_bin_wlist(literal l) const;
 
         struct blocked_clause_elim;
         void elim_blocked_clauses();

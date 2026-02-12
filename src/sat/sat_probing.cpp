@@ -152,8 +152,8 @@ namespace sat {
 #if 0
             // learn equivalences during probing:
             if (implies(lit, l)) {
-                if (nullptr == find_binary_watch(s.get_wlist(lit), l) ||
-                    nullptr == find_binary_watch(s.get_wlist(~l), ~lit)) {
+                if (nullptr == find_binary_watch(s.get_bin_wlist(lit), l) ||
+                    nullptr == find_binary_watch(s.get_bin_wlist(~l), ~lit)) {
                     m_equivs.push_back(std::make_pair(lit, l));
                 }
             }
@@ -167,9 +167,9 @@ namespace sat {
             return;
 
         if (m_probing_binary) {
-            unsigned sz = s.get_wlist(~l).size();
+            unsigned sz = s.get_bin_wlist(~l).size();
             for (unsigned i = 0; i < sz; ++i) {
-                watch_list& wlist = s.get_wlist(~l);
+                watch_list& wlist = s.get_bin_wlist(~l);
                 watched & w = wlist[i];                
                 if (!w.is_binary_clause())
                     continue;

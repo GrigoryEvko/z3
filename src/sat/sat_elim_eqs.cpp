@@ -42,7 +42,7 @@ namespace sat {
     void elim_eqs::cleanup_bin_watches(literal_vector const & roots) {        
         unsigned l_idx = 0;
         m_new_bin.reset();
-        for (watch_list & wlist : m_solver.m_watches) {
+        for (watch_list & wlist : m_solver.m_bin_watches) {
             literal l1 = ~to_literal(l_idx++);
             literal r1 = norm(roots, l1);
             watch_list::iterator it     = wlist.begin();

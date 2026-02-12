@@ -1008,11 +1008,11 @@ namespace sat {
         }
 
         // copy binary clauses
-        unsigned sz = m_s.m_watches.size();
+        unsigned sz = m_s.m_bin_watches.size();
         for (unsigned l_idx = 0; l_idx < sz; ++l_idx) {
             literal l = ~to_literal(l_idx);
             if (m_s.was_eliminated(l.var())) continue;
-            watch_list const & wlist = m_s.m_watches[l_idx];
+            watch_list const & wlist = m_s.m_bin_watches[l_idx];
             for (auto& w : wlist) {
                 if (!w.is_binary_clause())
                     continue;
@@ -2450,7 +2450,7 @@ namespace sat {
         for (unsigned idx = 0; idx < num_lits; ++idx) {
             literal u = get_parent(to_literal(idx));
             if (null_literal != u) {
-                for (watched const& w : m_s.m_watches[idx]) {
+                for (watched const& w : m_s.m_bin_watches[idx]) {
                     if (!w.is_binary_clause()) continue;
                     literal v = get_parent(w.get_literal());
                     if (null_literal != v) {

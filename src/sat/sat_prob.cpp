@@ -128,10 +128,10 @@ namespace sat {
         for (unsigned i = 0; i < trail_sz; ++i) {
             add(1, s.m_trail.data() + i);
         }
-        unsigned sz = s.m_watches.size();
+        unsigned sz = s.m_bin_watches.size();
         for (unsigned l_idx = 0; l_idx < sz; ++l_idx) {
             literal l1 = ~to_literal(l_idx);
-            watch_list const & wlist = s.m_watches[l_idx];
+            watch_list const & wlist = s.m_bin_watches[l_idx];
             for (watched const& w : wlist) {
                 if (!w.is_binary_non_learned_clause())
                     continue;

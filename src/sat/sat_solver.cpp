@@ -202,25 +202,24 @@ namespace sat {
             assign_unit(src.m_trail[i]);
         }
 
-        // copy binary clauses 
+        // copy binary clauses
         {
-            unsigned sz = src.m_watches.size();
+            unsigned sz = src.m_bin_watches.size();
             for (unsigned l_idx = 0; l_idx < sz; ++l_idx) {
                 literal l = ~to_literal(l_idx);
                 if (src.was_eliminated(l.var())) continue;
-                watch_list const & wlist = src.m_watches[l_idx];
+                watch_list const & wlist = src.m_bin_watches[l_idx];
                 for (auto & wi : wlist) {
-                    if (!wi.is_binary_clause())
-                        continue;
+                    SASSERT(wi.is_binary_clause());
                     literal l2 = wi.get_literal();
                     if (l.index() > l2.index() ||
                         src.was_eliminated(l2.var()))
                         continue;
-                                        
+
                     watched w1(l2, wi.is_learned());
                     watched w2(l, wi.is_learned());
-                    m_watches[(~l).index()].push_back(w1);
-                    m_watches[(~l2).index()].push_back(w2);
+                    m_bin_watches[(~l).index()].push_back(w1);
+                    m_bin_watches[(~l2).index()].push_back(w2);
                 }
             }
         }
@@ -274,6 +273,8 @@ namespace sat {
     void solver::reset_var(bool_var v, bool ext, bool dvar) {
         m_watches[2*v].reset();
         m_watches[2*v+1].reset();
+        m_bin_watches[2*v].reset();
+        m_bin_watches[2*v+1].reset();
         m_assignment[2*v] = l_undef;
         m_assignment[2*v+1] = l_undef;
         m_justification[v] = justification(UINT_MAX);
@@ -315,6 +316,8 @@ namespace sat {
         m_active_vars.push_back(v);
         m_watches.push_back(watch_list());
         m_watches.push_back(watch_list());
+        m_bin_watches.push_back(watch_list());
+        m_bin_watches.push_back(watch_list());
         m_assignment.push_back(l_undef);
         m_assignment.push_back(l_undef);
         m_justification.push_back(justification(UINT_MAX));
@@ -483,22 +486,22 @@ namespace sat {
         if (m_config.m_drat)
             m_drat.add(l1, l2, st);
         
-        if (redundant && !m_trim && find_binary_watch(get_wlist(~l1), ~l2) && value(l1) == l_undef) {
+        if (redundant && !m_trim && find_binary_watch(get_bin_wlist(~l1), ~l2) && value(l1) == l_undef) {
             assign_unit(l1);
             return;
         }
-        if (redundant && !m_trim && find_binary_watch(get_wlist(~l2), ~l1) && value(l2) == l_undef) {
+        if (redundant && !m_trim && find_binary_watch(get_bin_wlist(~l2), ~l1) && value(l2) == l_undef) {
             assign_unit(l2);
             return;
         }
-        watched* w0 = redundant ? find_binary_watch(get_wlist(~l1), l2) : nullptr;
+        watched* w0 = redundant ? find_binary_watch(get_bin_wlist(~l1), l2) : nullptr;
         if (w0 && !m_trim) {
             TRACE(sat, tout << "found binary " << l1 << " " << l2 << "\n";);
             if (w0->is_learned() && !redundant) {
                 w0->set_learned(false);
-                w0 = find_binary_watch(get_wlist(~l2), l1);            
+                w0 = find_binary_watch(get_bin_wlist(~l2), l1);
                 VERIFY(w0);
-                w0->set_learned(false);                        
+                w0->set_learned(false);
             }
             if (propagate_bin_clause(l1, l2) && !at_base_lvl() && !redundant)
                 push_reinit_stack(l1, l2);
@@ -516,8 +519,8 @@ namespace sat {
         else if (has_variables_to_reinit(l1, l2))
             push_reinit_stack(l1, l2);
         m_stats.m_mk_bin_clause++;
-        get_wlist(~l1).push_back(watched(l2, redundant));
-        get_wlist(~l2).push_back(watched(l1, redundant));
+        get_bin_wlist(~l1).push_back(watched(l2, redundant));
+        get_bin_wlist(~l2).push_back(watched(l1, redundant));
     }
 
     bool solver::has_variables_to_reinit(clause const& c) const {
@@ -638,7 +641,7 @@ namespace sat {
     }
 
     void solver::set_learned1(literal l1, literal l2, bool redundant) {
-        for (watched& w : get_wlist(~l1)) {
+        for (watched& w : get_bin_wlist(~l1)) {
             if (w.is_binary_clause() && l2 == w.get_literal() && !w.is_learned()) {
                 w.set_learned(redundant);
                 break;
@@ -871,9 +874,9 @@ namespace sat {
     }
 
     void solver::detach_bin_clause(literal l1, literal l2, bool redundant) {
-        get_wlist(~l1).erase(watched(l2, redundant));
-        get_wlist(~l2).erase(watched(l1, redundant));
-        if (m_config.m_drat) m_drat.del(l1, l2);       
+        get_bin_wlist(~l1).erase(watched(l2, redundant));
+        get_bin_wlist(~l2).erase(watched(l1, redundant));
+        if (m_config.m_drat) m_drat.del(l1, l2);
     }
 
     void solver::detach_clause(clause& c) {
@@ -983,11 +986,14 @@ namespace sat {
                 literal l = m_trail[m_qhead];
                 m_qhead++;
                 if (m_config.m_propagate_prefetch && m_qhead < m_trail.size()) {
+                    unsigned next_idx = m_trail[m_qhead].index();
 #if defined(__GNUC__) || defined(__clang__)
-                    __builtin_prefetch((const char*)((m_watches[m_trail[m_qhead].index()].data())));
+                    __builtin_prefetch((const char*)((m_bin_watches[next_idx].data())));
+                    __builtin_prefetch((const char*)((m_watches[next_idx].data())));
 #else
     #if !defined(_M_ARM) && !defined(_M_ARM64)
-                    _mm_prefetch((const char*)((m_watches[m_trail[m_qhead].index()].data())), _MM_HINT_T1);
+                    _mm_prefetch((const char*)((m_bin_watches[next_idx].data())), _MM_HINT_T1);
+                    _mm_prefetch((const char*)((m_watches[next_idx].data())), _MM_HINT_T1);
     #endif
 #endif
                 }
@@ -1034,8 +1040,6 @@ namespace sat {
     }
 
     bool solver::propagate_literal(literal l, bool update) {
-        literal l1;
-
         bool keep;
         unsigned curr_level = lvl(l);
         TRACE(sat_propagate, tout << "propagating: " << l << "@" << curr_level << " " << m_justification[l.var()] << "\n"; );
@@ -1043,10 +1047,35 @@ namespace sat {
         literal not_l = ~l;
         SASSERT(value(l) == l_true);
         SASSERT(value(not_l) == l_false);
+
+        // Phase 1: propagate binary watches (tight inner loop, no pointer chasing)
+        {
+            watch_list& bin_wlist = m_bin_watches[l.index()];
+            watch_list::iterator it  = bin_wlist.begin();
+            watch_list::iterator end = bin_wlist.end();
+            m_asymm_branch.dec(bin_wlist.size());
+            m_probing.dec(bin_wlist.size());
+            for (; it != end; ++it) {
+                literal l1 = it->get_literal();
+                switch (value(l1)) {
+                case l_false:
+                    set_conflict(justification(curr_level, not_l), ~l1);
+                    return false;
+                case l_undef:
+                    m_stats.m_bin_propagate++;
+                    assign_core(l1, justification(curr_level, not_l));
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+
+        // Phase 2: propagate clause and ext_constraint watches
         watch_list& wlist = m_watches[l.index()];
         m_asymm_branch.dec(wlist.size());
         m_probing.dec(wlist.size());
-        watch_list::iterator it = wlist.begin();
+        watch_list::iterator it  = wlist.begin();
         watch_list::iterator it2 = it;
         watch_list::iterator end = wlist.end();
 #define CONFLICT_CLEANUP() {                    \
@@ -1057,19 +1086,8 @@ namespace sat {
         for (; it != end; ++it) {
             switch (it->get_kind()) {
             case watched::BINARY:
-                l1 = it->get_literal();
-                switch (value(l1)) {
-                case l_false:
-                    CONFLICT_CLEANUP();
-                    set_conflict(justification(curr_level, not_l), ~l1);
-                    return false;
-                case l_undef:
-                    m_stats.m_bin_propagate++;
-                    assign_core(l1, justification(curr_level, not_l));
-                    break;
-                case l_true:
-                    break; // skip
-                }
+                // Binary watches should not appear in m_watches; skip gracefully.
+                UNREACHABLE();
                 *it2 = *it;
                 it2++;
                 break;
@@ -1090,11 +1108,6 @@ namespace sat {
 
 
                 if (c.was_removed() || c.size() == 1 || c[1] != not_l) {
-                    // Remark: this method may be invoked when the watch lists are not in a consistent state,
-                    // and may contain dead/removed clauses, or clauses with removed literals.
-                    // See: method propagate_unit at sat_simplifier.cpp
-                    // So, we must check whether the clause was marked for deletion, or
-                    // c[1] != not_l
                     *it2 = *it;
                     it2++;
                     break;
@@ -1109,8 +1122,6 @@ namespace sat {
                 unsigned sz = c.size();
 
                 if (value(c[0]) == l_undef) {
-                    // Fast path: c[0] is undef, just find ANY non-false tail literal
-                    // to move the watch to. No assign_level tracking needed.
                     for (unsigned i = 2; i < sz; ++i) {
                         literal lit = c[i];
                         switch (value(lit)) {
@@ -1125,8 +1136,6 @@ namespace sat {
                             break;
                         }
                     }
-                    // All tail literals are false, c[0] is undef: unit propagation.
-                    // Need assign_level and max_index for watch placement.
                     unsigned assign_level = curr_level;
                     unsigned max_index = 1;
                     for (unsigned i = 2; i < sz; ++i) {
@@ -1147,7 +1156,6 @@ namespace sat {
                     propagate_clause(c, update, assign_level, cls_off);
                 }
                 else {
-                    // c[0] is false: need full scan for undefs and assign_level tracking
                     SASSERT(value(c[0]) == l_false);
                     unsigned undef_index = 0;
                     unsigned assign_level = std::max(curr_level, lvl(c[0]));
@@ -1183,7 +1191,6 @@ namespace sat {
                         goto end_clause_case;
                     }
 
-                    // All literals false: conflict
                     c.mark_used();
                     CONFLICT_CLEANUP();
                     set_conflict(justification(assign_level, cls_off));
@@ -2175,9 +2182,8 @@ namespace sat {
     }
 
     void solver::sort_watch_lits() {
-        for (watch_list & wlist : m_watches) {
-            std::stable_sort(wlist.begin(), wlist.end(), watched_lt());
-        }
+        // With separated binary watches, m_watches contains only clause/ext watches.
+        // No sorting needed since binary watches are already separate.
     }
 
     void solver::set_model(model const& mdl, bool is_current) {
@@ -2261,14 +2267,14 @@ namespace sat {
             }
         }
         unsigned l_idx = 0;
-        for (watch_list const& wlist : m_watches) {
+        for (watch_list const& wlist : m_bin_watches) {
             literal l = ~to_literal(l_idx);
             if (value_at(l, m) != l_true) {
                 for (watched const& w : wlist) {
                     if (!w.is_binary_non_learned_clause())
                         continue;
                     literal l2 = w.get_literal();
-                    if (l.index() > l2.index()) 
+                    if (l.index() > l2.index())
                         continue;
                     if (value_at(l2, m) != l_true) {
                         IF_VERBOSE(1, verbose_stream() << "failed binary: " << l << " := " << value_at(l, m) << " " << l2 <<  " := " << value_at(l2, m) << "\n");
@@ -3313,9 +3319,10 @@ namespace sat {
         for (unsigned i = 1; i < sz; ++i) {
             mark_lit(m_lemma[i]);            
         }
-        watch_list const& wlist = get_wlist(m_lemma[0]);
-        for (watched const& w : wlist) {
-            if (w.is_binary_clause() && is_marked_lit(w.get_literal())) {
+        watch_list const& bin_wlist = get_bin_wlist(m_lemma[0]);
+        for (watched const& w : bin_wlist) {
+            SASSERT(w.is_binary_clause());
+            if (is_marked_lit(w.get_literal())) {
                 unmark_lit(~w.get_literal());
                 num_reduced++;
             }
@@ -3445,26 +3452,14 @@ namespace sat {
             literal l = m_lemma[i];
             if (!is_marked_lit(l))
                 continue; // literal was eliminated
-            // first use watch lists
-            watch_list const & wlist = get_wlist(~l);
-            for (watched const& w : wlist) {
-                // In this for-loop, the conditions l0 != ~l2 and l0 != ~l3
-                // are not really needed if the solver does not miss unit propagations.
-                // However, we add them anyway because we don't want to rely on this
-                // property of the propagator.
-                // For example, if this property is relaxed in the future, then the code
-                // without the conditions l0 != ~l2 and l0 != ~l3 may remove the FUIP
-                if (w.is_binary_clause()) {
-                    literal l2 = w.get_literal();
-                    if (is_marked_lit(~l2) && l0 != ~l2) {
-                        // eliminate ~l2 from lemma because we have the clause l \/ l2
-                        unmark_lit(~l2);
-                    }
-                }
-                else {
-                    // Skip non-binary entries; binary watches learned after
-                    // the last simplification round may appear after them.
-                    continue;
+            // first use binary watch lists
+            watch_list const & bin_wlist = get_bin_wlist(~l);
+            for (watched const& w : bin_wlist) {
+                SASSERT(w.is_binary_clause());
+                literal l2 = w.get_literal();
+                if (is_marked_lit(~l2) && l0 != ~l2) {
+                    // eliminate ~l2 from lemma because we have the clause l \/ l2
+                    unmark_lit(~l2);
                 }
             }
             // try to use cached implication if available
@@ -3605,8 +3600,11 @@ namespace sat {
         m_active_vars.shrink(j);
 
         auto cleanup_watch = [&](literal lit) {
-            for (auto const& w : get_wlist(lit)) {
-                IF_VERBOSE(1, verbose_stream() << "cleanup: " << lit << " " << w.is_binary_clause() << "\n");
+            for ([[maybe_unused]] auto const& w : get_bin_wlist(lit)) {
+                IF_VERBOSE(1, verbose_stream() << "cleanup: " << lit << " binary\n");
+            }
+            for ([[maybe_unused]] auto const& w : get_wlist(lit)) {
+                IF_VERBOSE(1, verbose_stream() << "cleanup: " << lit << " clause/ext\n");
             }
         };
         for (bool_var v : m_vars_to_free) {
@@ -3637,6 +3635,7 @@ namespace sat {
             m_probing.reset_cache(literal(w, false));
         }
         m_watches.shrink(2*v);
+        m_bin_watches.shrink(2*v);
         m_assignment.shrink(2*v);
         m_justification.shrink(v);
         m_decision.shrink(v);
@@ -3885,17 +3884,16 @@ namespace sat {
     //
     // -----------------------
     void solver::collect_bin_clauses(svector<bin_clause> & r, bool redundant, bool learned_only) const {
-        SASSERT(redundant || !learned_only);  
-        unsigned sz = m_watches.size();
+        SASSERT(redundant || !learned_only);
+        unsigned sz = m_bin_watches.size();
         for (unsigned l_idx = 0; l_idx < sz; ++l_idx) {
             literal l = to_literal(l_idx);
             l.neg();
-            for (watched const& w : m_watches[l_idx]) {
-                if (!w.is_binary_clause())
-                    continue;
+            for (watched const& w : m_bin_watches[l_idx]) {
+                SASSERT(w.is_binary_clause());
                 if (!redundant && w.is_learned())
                     continue;
-                else if (redundant && learned_only && !w.is_learned()) 
+                else if (redundant && learned_only && !w.is_learned())
                     continue;
                 literal l2 = w.get_literal();
                 if (l.index() > l2.index())
@@ -3938,13 +3936,12 @@ namespace sat {
 }
 
     void solver::display_binary(std::ostream & out) const {
-        unsigned sz = m_watches.size();
+        unsigned sz = m_bin_watches.size();
         for (unsigned l_idx = 0; l_idx < sz; ++l_idx) {
             literal l = to_literal(l_idx);
             l.neg();
-            for (watched const& w : m_watches[l_idx]) {
-                if (!w.is_binary_clause())
-                    continue;
+            for (watched const& w : m_bin_watches[l_idx]) {
+                SASSERT(w.is_binary_clause());
                 literal l2 = w.get_literal();
                 if (l.index() > l2.index())
                     continue;
@@ -4016,7 +4013,7 @@ namespace sat {
     unsigned solver::num_clauses() const {
         unsigned num_cls = m_trail.size(); // units;
         unsigned l_idx = 0;
-        for (auto const& wl : m_watches) {
+        for (auto const& wl : m_bin_watches) {
             literal l = ~to_literal(l_idx++);
             for (auto const& w : wl) {
                 if (w.is_binary_clause() && l.index() < w.get_literal().index())
@@ -4029,10 +4026,11 @@ namespace sat {
     void solver::num_binary(unsigned& given, unsigned& redundant) const {
         given = redundant = 0;
         unsigned l_idx = 0;
-        for (auto const& wl : m_watches) {
+        for (auto const& wl : m_bin_watches) {
             literal l = ~to_literal(l_idx++);
             for (auto const& w : wl) {
-                if (w.is_binary_clause() && l.index() < w.get_literal().index()) {
+                SASSERT(w.is_binary_clause());
+                if (l.index() < w.get_literal().index()) {
                     if (w.is_learned()) ++redundant; else ++given;
                 }
             }
@@ -4045,10 +4043,11 @@ namespace sat {
             out << dimacs_lit(lit) << " 0\n";
         }
         unsigned l_idx = 0;
-        for (auto const& wlist : m_watches) {
+        for (auto const& wlist : m_bin_watches) {
             literal l = ~to_literal(l_idx++);
             for (auto const& w : wlist) {
-                if (w.is_binary_clause() && l.index() < w.get_literal().index())
+                SASSERT(w.is_binary_clause());
+                if (l.index() < w.get_literal().index())
                     out << dimacs_lit(l) << " " << dimacs_lit(w.get_literal()) << " 0\n";
             }
         }
@@ -4079,7 +4078,7 @@ namespace sat {
         for (literal lit : m_trail) 
             out << max_weight << " " << dimacs_lit(lit) << " 0\n";
         unsigned l_idx = 0;
-        for (watch_list const& wlist : m_watches) {
+        for (watch_list const& wlist : m_bin_watches) {
             literal l = ~to_literal(l_idx);
             for (watched const& w : wlist) {
                 if (w.is_binary_clause() && l.index() < w.get_literal().index())
@@ -4105,15 +4104,19 @@ namespace sat {
     }
 
     void solver::display_watches(std::ostream & out, literal lit) const {
-        display_watch_list(out << lit << ": ", get_wlist(lit)) << "\n";
+        display_watch_list(out << lit << " bin: ", get_bin_wlist(lit)) << "\n";
+        display_watch_list(out << lit << " cls: ", get_wlist(lit)) << "\n";
     }
 
     void solver::display_watches(std::ostream & out) const {
-        unsigned l_idx = 0;
-        for (watch_list const& wlist : m_watches) {
-            literal l = to_literal(l_idx++);
-            if (!wlist.empty()) 
-                display_watch_list(out << l << ": ", wlist) << "\n";
+        for (unsigned l_idx = 0; l_idx < m_watches.size(); ++l_idx) {
+            literal l = to_literal(l_idx);
+            watch_list const& bwl = m_bin_watches[l_idx];
+            watch_list const& cwl = m_watches[l_idx];
+            if (!bwl.empty())
+                display_watch_list(out << l << " bin: ", bwl) << "\n";
+            if (!cwl.empty())
+                display_watch_list(out << l << " cls: ", cwl) << "\n";
         }
     }
 
@@ -4734,22 +4737,19 @@ namespace sat {
         unsigned num_ext = 0;
         unsigned num_lits = 0;
         unsigned l_idx = 0;
-        for (watch_list const& wlist : m_watches) {
+        for (watch_list const& wlist : m_bin_watches) {
             literal l = ~to_literal(l_idx++);
             for (watched const& w : wlist) {
-                switch (w.get_kind()) {
-                case watched::BINARY:
-                    if (l.index() < w.get_literal().index()) {
-                        num_lits += 2;
-                        num_bin++;
-                    }
-                    break;
-                case watched::EXT_CONSTRAINT:
-                    num_ext++;
-                    break;
-                default:
-                    break;
+                if (w.is_binary_clause() && l.index() < w.get_literal().index()) {
+                    num_lits += 2;
+                    num_bin++;
                 }
+            }
+        }
+        for (watch_list const& wlist : m_watches) {
+            for (watched const& w : wlist) {
+                if (w.is_ext_constraint())
+                    num_ext++;
             }
         }
         unsigned num_elim = 0;

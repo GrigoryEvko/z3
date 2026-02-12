@@ -122,6 +122,7 @@ namespace sat {
 
     bool integrity_checker::check_bool_vars() const {
         VERIFY(s.m_watches.size() == s.num_vars() * 2);
+        VERIFY(s.m_bin_watches.size() == s.num_vars() * 2);
         VERIFY(s.m_assignment.size() == s.num_vars() * 2);
         VERIFY(s.m_lit_mark.size() == s.num_vars() * 2);
         VERIFY(s.m_justification.size() == s.num_vars());
@@ -137,12 +138,31 @@ namespace sat {
             if (s.was_eliminated(v)) {
                 VERIFY(s.get_wlist(literal(v, false)).empty());
                 VERIFY(s.get_wlist(literal(v, true)).empty());
+                VERIFY(s.get_bin_wlist(literal(v, false)).empty());
+                VERIFY(s.get_bin_wlist(literal(v, true)).empty());
             }
         }
         return true;
     }
 
     bool integrity_checker::check_watches(literal l) const {
+        // Check binary watches
+        watch_list const& bwlist = s.get_bin_wlist(~l);
+        for (watched const& w : bwlist) {
+            VERIFY(w.is_binary_clause());
+            VERIFY(!s.was_eliminated(w.get_literal().var()));
+            CTRACE(sat_watched_bug, !s.get_bin_wlist(~(w.get_literal())).contains(watched(l, w.is_learned())),
+                   tout << "l: " << l << " l2: " << w.get_literal() << "\n";
+                   tout << "was_eliminated1: " << s.was_eliminated(l.var());
+                   tout << " was_eliminated2: " << s.was_eliminated(w.get_literal().var());
+                   tout << " learned: " << w.is_learned() << "\n";
+                   s.display_watch_list(tout, bwlist);
+                   tout << "\n";
+                   s.display_watch_list(tout, s.get_bin_wlist(~(w.get_literal())));
+                   tout << "\n";);
+            VERIFY(find_binary_watch(s.get_bin_wlist(~(w.get_literal())), l));
+        }
+        // Check clause/ext watches
         return check_watches(l, s.get_wlist(~l));
     }
 
@@ -150,17 +170,8 @@ namespace sat {
         for (watched const& w : wlist) {
             switch (w.get_kind()) {
             case watched::BINARY:
-                VERIFY(!s.was_eliminated(w.get_literal().var()));
-                CTRACE(sat_watched_bug, !s.get_wlist(~(w.get_literal())).contains(watched(l, w.is_learned())),
-                       tout << "l: " << l << " l2: " << w.get_literal() << "\n"; 
-                       tout << "was_eliminated1: " << s.was_eliminated(l.var());
-                       tout << " was_eliminated2: " << s.was_eliminated(w.get_literal().var());
-                       tout << " learned: " << w.is_learned() << "\n";
-                       s.display_watch_list(tout, wlist);
-                       tout << "\n";
-                       s.display_watch_list(tout, s.get_wlist(~(w.get_literal())));
-                       tout << "\n";);
-                VERIFY(find_binary_watch(s.get_wlist(~(w.get_literal())), l));
+                // Binary watches should not be in clause watch list
+                UNREACHABLE();
                 break;
             case watched::CLAUSE:
                 VERIFY(!s.get_clause(w.get_clause_offset()).was_removed());
@@ -173,18 +184,19 @@ namespace sat {
     }
 
     bool integrity_checker::check_watches() const {
-        unsigned l_idx = 0;
-        for (watch_list const& wlist : s.m_watches) {
-            literal l = ~to_literal(l_idx++);            
-            CTRACE(sat_bug, 
-                   s.was_eliminated(l.var()) && !wlist.empty(),
+        for (unsigned l_idx = 0; l_idx < s.m_watches.size(); ++l_idx) {
+            literal l = ~to_literal(l_idx);
+            watch_list const& bwlist = s.m_bin_watches[l_idx];
+            watch_list const& cwlist = s.m_watches[l_idx];
+            CTRACE(sat_bug,
+                   s.was_eliminated(l.var()) && (!cwlist.empty() || !bwlist.empty()),
                    tout << "l: " << l << "\n";
                    s.display_watches(tout);
                    s.display(tout););
-            VERIFY(!s.was_eliminated(l.var()) || wlist.empty());
-            if (!check_watches(l, wlist)) 
+            VERIFY(!s.was_eliminated(l.var()) || (cwlist.empty() && bwlist.empty()));
+            if (!check_watches(l))
                 return false;
-        }        
+        }
         return true;
     }
 

@@ -95,7 +95,7 @@ namespace sat {
                 next_index++;                                                   \
                 s.push_back(LIDX);                                              \
                 in_s[LIDX] = true;                                              \
-                watch_list & wlist = m_solver.get_wlist(LIDX);                  \
+                watch_list & wlist = m_solver.get_bin_wlist(LIDX);              \
                 frames.push_back(frame(LIDX, wlist.begin(), wlist.end()));      \
             }
 

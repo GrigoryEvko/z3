@@ -37,32 +37,35 @@ namespace sat {
             if (s.was_eliminated(u.var())) 
                 continue;
             auto& edges = m_dag[l_idx];
-            for (watched const& w : s.get_wlist(l_idx)) {
+            for (watched const& w : s.get_bin_wlist(l_idx)) {
                 if (learned ? w.is_binary_clause() : w.is_binary_non_learned_clause()) {
                     literal v = w.get_literal();
                     m_roots[v.index()] = false;
                     edges.push_back(v);
                 }
-                if (m_include_cardinality && 
-                    w.is_ext_constraint() && 
-                    s.m_ext && 
-                    learned && // cannot (yet) observe if ext constraints are learned
-                    !seen_idx.contains(w.get_ext_constraint_idx()) &&
-                    s.m_ext->is_extended_binary(w.get_ext_constraint_idx(), r)) {
-                    seen_idx.insert(w.get_ext_constraint_idx(), true);
-                    for (unsigned i = 0; i < std::min(4u, r.size()); ++i) {
-                        shuffle<literal>(r.size(), r.data(), m_rand);
-                        literal u = r[0];
-                        for (unsigned j = 1; j < r.size(); ++j) {
-                            literal v = ~r[j];
-                            // add u -> v
-                            m_roots[v.index()] = false;
-                            m_dag[u.index()].push_back(v);
-                            // add ~v -> ~u
-                            v.neg();
-                            u.neg();
-                            m_roots[u.index()] = false;
-                            m_dag[v.index()].push_back(u);
+            }
+            if (m_include_cardinality) {
+                for (watched const& w : s.get_wlist(l_idx)) {
+                    if (w.is_ext_constraint() &&
+                        s.m_ext &&
+                        learned && // cannot (yet) observe if ext constraints are learned
+                        !seen_idx.contains(w.get_ext_constraint_idx()) &&
+                        s.m_ext->is_extended_binary(w.get_ext_constraint_idx(), r)) {
+                        seen_idx.insert(w.get_ext_constraint_idx(), true);
+                        for (unsigned i = 0; i < std::min(4u, r.size()); ++i) {
+                            shuffle<literal>(r.size(), r.data(), m_rand);
+                            literal u = r[0];
+                            for (unsigned j = 1; j < r.size(); ++j) {
+                                literal v = ~r[j];
+                                // add u -> v
+                                m_roots[v.index()] = false;
+                                m_dag[u.index()].push_back(v);
+                                // add ~v -> ~u
+                                v.neg();
+                                u.neg();
+                                m_roots[u.index()] = false;
+                                m_dag[v.index()].push_back(u);
+                            }
                         }
                     }
                 }
@@ -181,12 +184,12 @@ namespace sat {
         unsigned idx = 0;
         unsigned elim = 0;
         m_del_bin.reset();
-        m_del_bin.reserve(s.m_watches.size());
-        for (watch_list & wlist : s.m_watches) {
-            if (s.inconsistent()) 
+        m_del_bin.reserve(s.m_bin_watches.size());
+        for (watch_list & wlist : s.m_bin_watches) {
+            if (s.inconsistent())
                 break;
             literal u = to_literal(idx++);
-            unsigned j = 0, sz = wlist.size();            
+            unsigned j = 0, sz = wlist.size();
             for (unsigned i = 0; i < sz; ++i) {
                 watched& w = wlist[i];
                 if (learned() ? w.is_binary_learned_clause() : w.is_binary_clause()) {
@@ -194,7 +197,7 @@ namespace sat {
                     if (u != get_parent(v) && ~u != get_parent(v) && safe_reach(u, v)) {
                         ++elim;
                         add_del(~u, v);
-                        if (s.get_config().m_drat) 
+                        if (s.get_config().m_drat)
                             s.m_drat.del(~u, v);
                         s.m_mc.stackv().reset(); // TBD: brittle code
                         s.add_ate(~u, v);
@@ -203,7 +206,7 @@ namespace sat {
                             s.assign_unit(~u);
                         }
                         // could turn non-learned non-binary tautology into learned binary.
-                        s.get_wlist(~v).erase(watched(~u, w.is_learned()));
+                        s.get_bin_wlist(~v).erase(watched(~u, w.is_learned()));
                         continue;
                     }
                 }

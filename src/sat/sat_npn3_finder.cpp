@@ -77,7 +77,7 @@ namespace sat {
     bool npn3_finder::implies(literal a, literal b) const {
         if (m_big.connected(a, b))
             return true;
-        for (auto const& w : s.get_wlist(a)) {
+        for (auto const& w : s.get_bin_wlist(a)) {
             if (w.is_binary_clause() && b == w.get_literal())
                 return true;
         }

@@ -2975,7 +2975,7 @@ namespace pb {
         if (c1.k() + 1 != c1.size()) return;
         SASSERT(is_visited(lit));
         SASSERT(!c1.was_removed());
-        watch_list & wlist = get_wlist(~lit);
+        watch_list & wlist = s().get_bin_wlist(~lit);
         watch_list::iterator it = wlist.begin();
         watch_list::iterator it2 = it;
         watch_list::iterator end = wlist.end();

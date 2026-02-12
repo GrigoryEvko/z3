@@ -416,14 +416,16 @@ namespace sat {
         init_visited();
         m_aux_literals.reset();
         auto gc_watch = [&](literal lit) {
-            auto& wl1 = get_wlist(lit);
-            for (auto w : get_wlist(lit)) {
-                if (w.is_binary_clause() && w.get_literal().var() < max_var && !is_visited(w.get_literal())) {
+            auto& bwl = get_bin_wlist(lit);
+            for (auto w : bwl) {
+                SASSERT(w.is_binary_clause());
+                if (w.get_literal().var() < max_var && !is_visited(w.get_literal())) {
                     m_aux_literals.push_back(w.get_literal());
                     mark_visited(w.get_literal());
                 }
             }
-            wl1.reset();
+            bwl.reset();
+            get_wlist(lit).reset();
         };
         for (unsigned v = max_var; v < num_vars(); ++v) {
             gc_watch(literal(v, false));
@@ -431,12 +433,12 @@ namespace sat {
         }
 
         for (literal lit : m_aux_literals) {
-            auto& wl2 = get_wlist(~lit);
+            auto& bwl2 = get_bin_wlist(~lit);
             unsigned j = 0;
-            for (auto w2 : wl2) 
-                if (!w2.is_binary_clause() || w2.get_literal().var() < max_var)
-                    wl2[j++] = w2;
-            wl2.shrink(j);                        
+            for (auto w2 : bwl2)
+                if (w2.get_literal().var() < max_var)
+                    bwl2[j++] = w2;
+            bwl2.shrink(j);
         }
         m_aux_literals.reset();
 

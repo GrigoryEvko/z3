@@ -122,7 +122,8 @@ namespace sat {
         clause_vector           m_learned;
         unsigned                m_num_frozen;
         unsigned_vector         m_active_vars, m_free_vars, m_vars_to_free, m_vars_to_reinit;
-        vector<watch_list>      m_watches;
+        vector<watch_list>      m_watches;     // clause + ext_constraint watches
+        vector<watch_list>      m_bin_watches; // binary clause watches (separated for fast BCP)
         svector<lbool>          m_assignment;
         svector<justification>  m_justification; 
         bool_vector             m_decision;
@@ -454,8 +455,11 @@ namespace sat {
 
         watch_list const& get_wlist(literal l) const { return m_watches[l.index()]; }
         watch_list& get_wlist(literal l) { return m_watches[l.index()]; }
-    protected:            
+        watch_list const& get_bin_wlist(literal l) const { return m_bin_watches[l.index()]; }
+        watch_list& get_bin_wlist(literal l) { return m_bin_watches[l.index()]; }
+    protected:
         watch_list & get_wlist(unsigned l_idx) { return m_watches[l_idx]; }
+        watch_list & get_bin_wlist(unsigned l_idx) { return m_bin_watches[l_idx]; }
         bool is_marked(bool_var v) const { return m_mark[v]; }
         void mark(bool_var v) { SASSERT(!is_marked(v)); m_mark[v] = true; }
         void reset_mark(bool_var v) { SASSERT(is_marked(v)); m_mark[v] = false; }
