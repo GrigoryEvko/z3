@@ -20,6 +20,7 @@ Author:
 #include "ast/rewriter/var_subst.h"
 #include "ast/normal_forms/pull_quant.h"
 #include "ast/rewriter/inj_axiom.h"
+#include "util/dec_ref_util.h"
 #include "sat/smt/q_solver.h"
 #include "sat/smt/euf_solver.h"
 #include "sat/smt/sat_th.h"
@@ -37,6 +38,10 @@ namespace q {
     {
     }
 
+    solver::~solver() {
+        dec_ref_keys(m, m_skolem_cache);
+    }
+
     void solver::asserted(sat::literal l) {
         expr* e = bool_var2expr(l.var());
         if (!is_forall(e) && !is_exists(e))
@@ -44,6 +49,8 @@ namespace q {
         quantifier* q = to_quantifier(e);
 
         if (l.sign() == is_forall(e)) {
+            if (m_skolem_cache.contains(q))
+                return;
             sat::literal lit = skolemize(q);
             add_clause(~l, lit);
             return;
@@ -140,10 +147,16 @@ namespace q {
     }
 
     sat::literal solver::skolemize(quantifier* q) {
+        sat::literal lit;
+        if (m_skolem_cache.find(q, lit))
+            return lit;
         std::function<expr* (quantifier*, unsigned)> mk_var = [&](quantifier* q, unsigned i) {
             return m.mk_fresh_const(q->get_decl_name(i), q->get_decl_sort(i));
         };
-        return instantiate(q, is_forall(q), mk_var);
+        lit = instantiate(q, is_forall(q), mk_var);
+        m.inc_ref(q);
+        m_skolem_cache.insert(q, lit);
+        return lit;
     }
 
     /*
