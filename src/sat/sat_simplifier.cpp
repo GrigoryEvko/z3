@@ -61,7 +61,12 @@ namespace sat {
 
     simplifier::simplifier(solver & _s, params_ref const & p):
         s(_s),
-        m_num_calls(0) {
+        m_num_calls(0),
+        m_elim_heap(0, elim_cost_lt(this)),
+        m_elim_bound(0),
+        m_elim_bound_max(16),
+        m_gate_type(GATE_NONE),
+        m_xor_lim(5) {
         updt_params(p);
         reset_statistics();
     }
@@ -172,6 +177,9 @@ namespace sat {
         m_sub_todo.finalize();
         m_sub_bin_todo.finalize();
         m_elim_todo.finalize();
+        m_elim_heap.reset();
+        m_elim_costs.finalize();
+        m_elim_heap_dirty.finalize();
         m_visited.finalize();
         m_bs_cs.finalize();
         m_bs_ls.finalize();
@@ -215,10 +223,6 @@ namespace sat {
         }
         register_clauses(s.m_clauses);
 
-        if (!learned && (bce_enabled() || bca_enabled() || ate_enabled())) {
-            elim_blocked_clauses();
-        }
-
         if (!learned) {
             m_num_calls++;
         }
@@ -233,27 +237,95 @@ namespace sat {
             }
         }
 
-        unsigned count = 0;
+        bool bce_applicable = !learned && (bce_enabled() || bca_enabled() || ate_enabled());
+        bool elim_applicable = !learned && elim_vars_enabled();
+
+        // Interleaved simplification loop (CaDiCaL-style).
+        //
+        // CaDiCaL's elimination phase (elim.cpp:1069-1109) interleaves:
+        //   elim_round -> subsume_round -> block -> cover -> fixpoint
+        // Each step can remove clauses or strengthen them, creating new
+        // elimination candidates. We follow the same principle:
+        //   subsumption -> variable elimination -> BCE/CCE
+        // and repeat while any step makes progress.
+        //
+        // Key insight: BCE marks clauses as learned, reducing
+        // num_irredundant() in occurrence lists. This can make
+        // previously unprofitable variable eliminations profitable
+        // (fewer clauses to resolve over, lower cost).
+        unsigned round = 0;
+        unsigned const max_rounds = 10;
         do {
-            if (m_subsumption)
+            bool progress = false;
+
+            // Step 1: Subsumption removes subsumed clauses and strengthens.
+            // remove_clause() and elim_lit() insert affected variables
+            // into m_elim_todo, seeding step 2.
+            if (m_subsumption) {
+                unsigned old_subsumed = m_num_subsumed;
+                unsigned old_sub_res  = m_num_sub_res;
                 subsume();
+                if (m_num_subsumed > old_subsumed || m_num_sub_res > old_sub_res)
+                    progress = true;
+            }
             if (s.inconsistent())
                 return;
-            if (!learned && elim_vars_enabled())
-                elim_vars();            
+
+            // Step 2: Variable elimination via bounded resolution.
+            if (elim_applicable) {
+                unsigned old_elim = m_num_elim_vars;
+                elim_vars();
+                if (m_num_elim_vars > old_elim)
+                    progress = true;
+            }
             if (s.inconsistent())
                 return;
-            if (!m_subsumption || m_sub_counter < 0)
+
+            // Step 3: Blocked clause elimination (BCE/CCE/ACCE/ABCE/ATE).
+            // Blocking clauses reduces irredundant occurrence counts,
+            // which can enable new variable eliminations in the next round.
+            // elim_blocked_clauses_tracked() re-seeds m_elim_todo with
+            // all eligible variables after successful blocking.
+            if (bce_applicable) {
+                if (elim_blocked_clauses_tracked())
+                    progress = true;
+            }
+            if (s.inconsistent())
+                return;
+
+            ++round;
+            m_num_elim_rounds++;
+
+            TRACE(sat_simplifier, tout << "interleaved round " << round
+                  << " progress=" << progress
+                  << " sub_todo=" << m_sub_todo.size()
+                  << " elim_todo=" << m_elim_todo.size() << "\n";);
+
+            if (!progress)
                 break;
-            ++count;
+            if (m_sub_counter < 0 && m_elim_counter < 0)
+                break;
         }
-        while (!m_sub_todo.empty() && count < 20);
+        while (round < max_rounds);
+
+        IF_VERBOSE(SAT_VB_LVL,
+                   if (round > 1)
+                       verbose_stream() << " (sat-simplifier-rounds " << round << ")\n";);
 
         if (!learned && bva_enabled() && !s.inconsistent()) {
             bva();
         }
 
         bool vars_eliminated = m_num_elim_vars > m_old_num_elim_vars;
+
+        // Elimination bound escalation (CaDiCaL / GlueMiniSAT style).
+        // After a complete simplification phase where elimination was active
+        // and variables were eliminated, increase the bound so the next
+        // simplification call allows more clause growth during elimination.
+        // The escalation is persistent across inprocessing rounds.
+        if (elim_applicable && vars_eliminated && m_elim_counter >= 0) {
+            increase_elim_bound();
+        }
 
         if (m_need_cleanup || vars_eliminated) {
             TRACE(after_simplifier, tout << "cleanning watches...\n";);
@@ -1024,6 +1096,8 @@ namespace sat {
         unsigned       m_ala_cost;
         unsigned       m_ala_benefit;
         unsigned       m_ala_max_cost;
+        bool_vector    m_mark2;
+        literal_vector m_mark2_stack;
 
         blocked_clause_elim(simplifier & _s, unsigned limit, model_converter & _mc, use_list & l,
                             vector<watch_list> & wlist, vector<watch_list> & bwlist):
@@ -1035,6 +1109,7 @@ namespace sat {
             m_ala_cost(0),
             m_ala_benefit(0) {
             m_in_intersection.resize(s.s.num_vars() * 2, false);
+            m_mark2.resize(s.s.num_vars() * 2, false);
             m_ala_max_cost = (s.s.m_clauses.size() * s.m_num_calls)/5;
         }
 
@@ -1045,6 +1120,21 @@ namespace sat {
 
         bool process_var(bool_var v) {
             return !s.s.is_assumption(v) && !s.was_eliminated(v) && !s.is_external(v) && s.value(v) == l_undef;
+        }
+
+        // Secondary marking for candidate filtering (Opt C) and impossible pre-check (Opt B).
+        // Uses m_mark2 bitvector indexed by literal index, with m_mark2_stack for O(1) cleanup.
+        void set_mark2(literal l) {
+            unsigned idx = l.index();
+            if (!m_mark2[idx]) {
+                m_mark2[idx] = true;
+                m_mark2_stack.push_back(l);
+            }
+        }
+        bool is_marked2(literal l) const { return m_mark2[l.index()]; }
+        void reset_mark2() {
+            for (literal l : m_mark2_stack) m_mark2[l.index()] = false;
+            m_mark2_stack.reset();
         }
 
         bool reached_max_cost() {
@@ -1162,6 +1252,10 @@ namespace sat {
                             add_intersection(lit);
                     }
                     if (m_intersection.empty()) {
+                        // Move-to-front heuristic (CaDiCaL): move the clause that
+                        // caused the intersection to become empty to the front of
+                        // the occurrence list so it is found faster next time.
+                        neg_occs.move_to_front(c);
                         m_tautology.shrink(tsz);
                         return false;
                     }
@@ -1172,6 +1266,73 @@ namespace sat {
                 m_tautology.shrink(tsz);
             }
             return first;
+        }
+
+        // Candidate filtering (CaDiCaL block_candidates adaptation).
+        // For pivot literal l in clause c = m_covered_clause[0..sz0):
+        // Mark all literals appearing in clauses containing ~l (the "negative" clauses).
+        // Then check: does any literal in c (other than l) have its negation in the mark set?
+        // If not, no resolvent of c on l can be tautological, so l is not a viable pivot.
+        bool is_viable_pivot(literal l, unsigned sz0) {
+            if (!process_var(l.var())) return false;
+            // Mark all literals in binary clauses ~l \/ lit (watch list of l).
+            for (watched & w : s.get_bin_wlist(l)) {
+                if (w.is_binary_non_learned_clause())
+                    set_mark2(w.get_literal());
+            }
+            // Mark all literals in long clauses containing ~l.
+            clause_use_list & neg_occs = s.m_use_list.get(~l);
+            for (auto it = neg_occs.mk_iterator(); !it.at_end(); it.next()) {
+                clause & c = it.curr();
+                if (c.is_learned() || c.was_removed()) continue;
+                for (literal lit : c)
+                    if (lit != ~l) set_mark2(lit);
+            }
+            // Check if any literal in the candidate clause has its negation marked.
+            bool viable = false;
+            for (unsigned i = 0; i < sz0; ++i) {
+                literal lit = m_covered_clause[i];
+                if (lit != l && is_marked2(~lit)) {
+                    viable = true;
+                    break;
+                }
+            }
+            reset_mark2();
+            return viable;
+        }
+
+        // Impossible pre-check (CaDiCaL block_impossible adaptation).
+        // Given pivot l and clause c already marked via s.mark_visited:
+        // Check if there exists a clause containing ~l where NO literal (other than ~l)
+        // has its negation in c. Such a clause produces a non-tautological resolvent,
+        // making it impossible to block c on l.
+        bool is_impossible_pivot(literal l) {
+            if (!process_var(l.var())) return true;
+            // Binary clauses: ~l \/ lit. Non-tautological iff ~lit not in c.
+            for (watched & w : s.get_bin_wlist(l)) {
+                if (w.is_binary_non_learned_clause()) {
+                    if (!s.is_marked(~w.get_literal()))
+                        return true;
+                }
+            }
+            // Long clauses containing ~l.
+            clause_use_list & neg_occs = s.m_use_list.get(~l);
+            for (auto it = neg_occs.mk_iterator(); !it.at_end(); it.next()) {
+                clause & c = it.curr();
+                if (c.is_learned() || c.was_removed()) continue;
+                bool has_complement = false;
+                for (literal lit : c) {
+                    if (lit != ~l && s.is_marked(~lit)) {
+                        has_complement = true;
+                        break;
+                    }
+                }
+                if (!has_complement) {
+                    neg_occs.move_to_front(c);
+                    return true;
+                }
+            }
+            return false;
         }
 
         bool check_abce_tautology(literal l) {
@@ -1201,6 +1362,8 @@ namespace sat {
                     }
                 }
                 if (!tautology) {
+                    // Move-to-front: this clause prevents blocking on l.
+                    neg_occs.move_to_front(c);
                     m_tautology.shrink(tsz);
                     return false;
                 }
@@ -1441,8 +1604,18 @@ namespace sat {
 
                 if (first) {
                     for (unsigned i = 0; i < sz0; ++i) {
-                        if (check_abce_tautology(m_covered_clause[i])) {
-                            blocked = m_covered_clause[i];
+                        literal l = m_covered_clause[i];
+                        // Candidate filtering (CaDiCaL): skip if l is not a viable
+                        // pivot, i.e., no literal in the clause has its negation in
+                        // any negative clause of ~l.
+                        if (et == bce_t && !is_viable_pivot(l, sz0))
+                            continue;
+                        // Impossible pre-check (CaDiCaL): if some negative clause of ~l
+                        // has no complement in the candidate clause, blocking is impossible.
+                        if (et == bce_t && is_impossible_pivot(l))
+                            continue;
+                        if (check_abce_tautology(l)) {
+                            blocked = l;
                             reset_mark();
                             m_covered_clause.shrink(sz0);
                             if (et == bce_t) return bce_t;
@@ -1500,6 +1673,11 @@ namespace sat {
         template<elim_type et>
         void cce() {
             insert_queue();
+            // CaDiCaL-style: reset covered flags at the start of each CCE epoch
+            // so that clauses become eligible for re-evaluation after structural
+            // changes from the previous round (e.g., new unit propagations).
+            for (clause* cp : s.s.m_clauses)
+                cp->set_covered(false);
             cce_clauses<et>();
             cce_binary<et>();
         }
@@ -1555,7 +1733,10 @@ namespace sat {
             for (unsigned i = 0; i < sz; ++i) {
                 clause& c = *s.s.m_clauses[(i + start) % sz];
                 if (c.was_removed() || c.is_learned()) continue;
+                // CaDiCaL-style: skip clauses already tried in this CCE epoch
+                if (c.is_covered()) continue;
                 if (!select_clause<et>(c.size())) continue;
+                c.set_covered(true);
                 elim_type r = cce<et>(c, blocked, k);
                 inc_bc(r);
                 switch (r) {
@@ -1672,8 +1853,11 @@ namespace sat {
                     if (s.is_marked(~c[i]))
                         break;
                 }
-                if (i == sz)
+                if (i == sz) {
+                    // Move-to-front: this clause prevents blocking on l.
+                    neg_occs.move_to_front(c);
                     return false;
+                }
             }
 
             if (s.s.m_ext) {
@@ -1734,6 +1918,25 @@ namespace sat {
         elim();
     }
 
+    bool simplifier::elim_blocked_clauses_tracked() {
+        unsigned old_bce  = m_num_bce;
+        unsigned old_cce  = m_num_cce;
+        unsigned old_acce = m_num_acce;
+        unsigned old_abce = m_num_abce;
+        unsigned old_ate  = m_num_ate;
+        elim_blocked_clauses();
+        unsigned blocked = (m_num_bce - old_bce) + (m_num_cce - old_cce) +
+                           (m_num_acce - old_acce) + (m_num_abce - old_abce) +
+                           (m_num_ate - old_ate);
+        if (blocked > 0) {
+            for (bool_var v = 0; v < s.num_vars(); ++v) {
+                if (!s.m_eliminated[v] && !is_external(v) && value(v) == l_undef)
+                    insert_elim_todo(v);
+            }
+        }
+        return blocked > 0;
+    }
+
     unsigned simplifier::num_nonlearned_bin(literal l) const {
         unsigned r = 0;
         watch_list const & wlist = get_bin_wlist(~l);
@@ -1755,6 +1958,52 @@ namespace sat {
         CTRACE(sat_simplifier, cost == 0, tout << v << " num_pos: " << num_pos << " num_neg: " << num_neg << " num_bin_pos: " << num_bin_pos
                << " num_bin_neg: " << num_bin_neg << " cost: " << cost << "\n";);
         return cost;
+    }
+
+    // -------------------------------------------------------
+    // Dynamic elimination heap (CaDiCaL-style).
+    //
+    // Comparator for the min-heap: lower cost = higher priority.
+    // Ties broken by variable index (lower first) for determinism.
+    // -------------------------------------------------------
+
+    bool simplifier::elim_cost_lt::operator()(int v1, int v2) const {
+        unsigned c1 = m_simp->m_elim_costs[v1];
+        unsigned c2 = m_simp->m_elim_costs[v2];
+        if (c1 != c2) return c1 < c2;
+        return v1 < v2;
+    }
+
+    void simplifier::elim_heap_update_var(bool_var v) {
+        if (was_eliminated(v) || is_external(v) || value(v) != l_undef)
+            return;
+        if (static_cast<unsigned>(v) >= m_elim_costs.size())
+            return;
+        unsigned new_cost = get_to_elim_cost(v);
+        m_elim_costs[v] = new_cost;
+        if (m_elim_heap.contains(v)) {
+            // Re-position in heap based on updated cost.
+            // erase + re-insert is O(log n) and always correct.
+            m_elim_heap.erase(v);
+            m_elim_heap.insert(v);
+        }
+        else {
+            // Variable not in heap -- reschedule it (CaDiCaL-style).
+            // When a neighbor's occurrence counts change due to an
+            // elimination, it may become newly eliminable.
+            m_elim_heap.insert(v);
+        }
+    }
+
+    void simplifier::mark_elim_heap_dirty(bool_var v) {
+        if (!was_eliminated(v) && !is_external(v) && value(v) == l_undef)
+            m_elim_heap_dirty.insert(v);
+    }
+
+    void simplifier::flush_elim_heap_dirty() {
+        for (bool_var v : m_elim_heap_dirty)
+            elim_heap_update_var(v);
+        m_elim_heap_dirty.reset();
     }
 
     typedef std::pair<bool_var, unsigned> bool_var_and_cost;
@@ -1780,7 +2029,7 @@ namespace sat {
         TRACE(sat_simplifier,
               for (auto& [v, c] : tmp) tout << "(" << v << ", " << c << ") ";
               tout << "\n";);
-        for (auto& [v, c] : tmp) 
+        for (auto& [v, c] : tmp)
             r.push_back(v);
     }
 
@@ -1921,6 +2170,9 @@ namespace sat {
         }
     }
 
+    // Gate detection methods for CaDiCaL-style gate-aware variable elimination.
+#include "sat/sat_gate_elim.inc"
+
     bool simplifier::try_eliminate(bool_var v) {
         if (value(v) != l_undef)
             return false;
@@ -1967,32 +2219,91 @@ namespace sat {
         collect_clauses(pos_l, m_pos_cls);
         collect_clauses(neg_l, m_neg_cls);
 
-        TRACE(sat_simplifier, tout << "collecting number of after_clauses\n";);
+        // --- Gate detection (CaDiCaL-style) ---
+        // Try to detect structural gates to reduce the number of resolution pairs.
+        // With a gate, only (gate, non-gate) pairs are resolved, skipping
+        // (gate, gate) and (non-gate, non-gate) pairs.
+        m_gate_type = GATE_NONE;
+        literal eq_lit = null_literal;
+
+        if (num_pos >= 2 && num_neg >= 2) {
+            if (find_equivalence(v, eq_lit)) {
+                m_gate_type = GATE_EQUIV;
+            } else if (find_and_gate(v)) {
+                m_gate_type = GATE_AND;
+            } else if (find_ite_gate(v)) {
+                m_gate_type = GATE_ITE;
+            } else if (find_xor_gate(v)) {
+                m_gate_type = GATE_XOR;
+            }
+        }
+
+        TRACE(sat_simplifier, {
+            tout << "collecting number of after_clauses";
+            switch (m_gate_type) {
+            case GATE_EQUIV: tout << " [equiv]"; break;
+            case GATE_AND:   tout << " [AND]"; break;
+            case GATE_ITE:   tout << " [ITE]"; break;
+            case GATE_XOR:   tout << " [XOR]"; break;
+            default: break;
+            }
+            tout << "\n";
+        });
         unsigned before_clauses = num_pos + num_neg;
         unsigned after_clauses  = 0;
-        for (clause_wrapper& c1 : m_pos_cls) {
-            for (clause_wrapper& c2 : m_neg_cls) {
+        for (unsigned i = 0; i < m_pos_cls.size(); ++i) {
+            clause_wrapper & c1 = m_pos_cls[i];
+            bool c1_is_gate = (m_gate_type != GATE_NONE) && m_gate_marks[i];
+            for (unsigned j = 0; j < m_neg_cls.size(); ++j) {
+                clause_wrapper & c2 = m_neg_cls[j];
+                bool c2_is_gate = (m_gate_type != GATE_NONE) && m_gate_marks[m_pos_cls.size() + j];
+                // Gate-aware skipping: only resolve (gate, non-gate) pairs.
+                if (m_gate_type != GATE_NONE && c1_is_gate == c2_is_gate)
+                    continue;
                 m_new_cls.reset();
                 if (resolve(c1, c2, pos_l, m_new_cls)) {
+                    // On-the-fly self-subsumption detection (Han & Somenzi, SAT'09):
+                    // If the resolvent is strictly smaller than a non-binary antecedent,
+                    // the resolvent subsumes that antecedent minus its pivot literal.
+                    // We skip counting such resolvents; physical strengthening is
+                    // deferred to the adding phase (after model converter save).
+                    unsigned rsz = m_new_cls.size();
+                    if ((!c1.is_binary() && c1.size() > rsz) ||
+                        (!c2.is_binary() && c2.size() > rsz)) {
+                        TRACE(sat_simplifier, tout << "otf self-sub detected (counting): "
+                              << c1 << " x " << c2 << " resolvent size " << rsz << "\n";);
+                        continue; // don't count this resolvent
+                    }
                     TRACE(sat_simplifier, tout << c1 << "\n" << c2 << "\n-->\n";
                           for (literal l : m_new_cls) tout << l << " "; tout << "\n";);
                     after_clauses++;
-                    if (after_clauses > before_clauses) {
-                        TRACE(sat_simplifier, tout << "too many after clauses: " << after_clauses << "\n";);
+                    if (after_clauses > before_clauses + static_cast<unsigned>(m_elim_bound)) {
+                        TRACE(sat_simplifier, tout << "too many after clauses: " << after_clauses
+                              << " > " << before_clauses << " + " << m_elim_bound << "\n";);
                         return false;
                     }
                 }
             }
         }
-        TRACE(sat_simplifier, tout << "eliminate " << v << ", before: " << before_clauses << " after: " << after_clauses << "\n";
-              tout << "pos\n";
-              for (auto & c : m_pos_cls) 
+        TRACE(sat_simplifier, {
+              tout << "eliminate " << v << ", before: " << before_clauses << " after: " << after_clauses;
+              switch (m_gate_type) {
+              case GATE_EQUIV: tout << " [equiv gate]"; break;
+              case GATE_AND:   tout << " [AND gate]"; break;
+              case GATE_ITE:   tout << " [ITE gate]"; break;
+              case GATE_XOR:   tout << " [XOR gate]"; break;
+              default: break;
+              }
+              tout << "\npos\n";
+              for (auto & c : m_pos_cls)
                   tout << c << "\n";
               tout << "neg\n";
-              for (auto & c : m_neg_cls) 
+              for (auto & c : m_neg_cls)
                   tout << c << "\n";
-              );
+        });
         // Budget charged per-pair inside resolve() — no bulk pre-charge needed.
+        if (m_gate_type != GATE_NONE)
+            m_num_elim_gate++;
 
         // eliminate variable
         ++s.m_stats.m_elim_var_res;
@@ -2002,17 +2313,97 @@ namespace sat {
         save_clauses(mc_entry, m_neg_cls);
         s.set_eliminated(v, true);
 
-        for (auto & c1 : m_pos_cls) {
-            if (c1.was_removed() && !c1.contains(pos_l))
+        // Mark variables in old clauses as needing heap rescore.
+        // Their occurrence counts will change when these clauses are removed.
+        for (auto & cw : m_pos_cls) {
+            for (unsigned k = 0; k < cw.size(); ++k) {
+                bool_var w = cw[k].var();
+                if (w != v) mark_elim_heap_dirty(w);
+            }
+        }
+        for (auto & cw : m_neg_cls) {
+            for (unsigned k = 0; k < cw.size(); ++k) {
+                bool_var w = cw[k].var();
+                if (w != v) mark_elim_heap_dirty(w);
+            }
+        }
+
+        for (unsigned i = 0; i < m_pos_cls.size(); ++i) {
+            clause_wrapper & c1 = m_pos_cls[i];
+            // Skip wrappers whose clause was removed or lost its pivot
+            // via on-the-fly self-subsumption in a previous iteration.
+            if (!c1.is_binary() && (c1.was_removed() || !c1.contains(pos_l)))
                 continue;
-            for (auto & c2 : m_neg_cls) {
+            if (c1.is_binary() && !c1.contains(pos_l))
+                continue;
+            bool c1_is_gate = (m_gate_type != GATE_NONE) && m_gate_marks[i];
+            for (unsigned j = 0; j < m_neg_cls.size(); ++j) {
+                clause_wrapper & c2 = m_neg_cls[j];
+                if (!c2.is_binary() && (c2.was_removed() || !c2.contains(neg_l)))
+                    continue;
+                if (c2.is_binary() && !c2.contains(neg_l))
+                    continue;
+                bool c2_is_gate = (m_gate_type != GATE_NONE) && m_gate_marks[m_pos_cls.size() + j];
+                // Gate-aware skipping (same logic as bounding phase).
+                if (m_gate_type != GATE_NONE && c1_is_gate == c2_is_gate)
+                    continue;
                 m_new_cls.reset();
                 if (!resolve(c1, c2, pos_l, m_new_cls))
-                    continue;                
+                    continue;
+
+                // On-the-fly self-subsumption (Han & Somenzi, SAT'09):
+                // If the resolvent is strictly smaller than a non-binary antecedent,
+                // strengthen the antecedent by removing its pivot literal and skip
+                // adding the resolvent (it's subsumed by the strengthened clause).
+                {
+                    unsigned rsz = m_new_cls.size();
+                    bool otf_c1 = !c1.is_binary() && c1.size() > rsz;
+                    bool otf_c2 = !c2.is_binary() && c2.size() > rsz;
+
+                    if (otf_c1 && otf_c2) {
+                        TRACE(sat_simplifier, tout << "otf double self-sub (adding): " << c1
+                              << " and " << c2 << " resolvent size " << rsz << "\n";);
+                        clause& cl1 = *c1.get_clause();
+                        elim_lit(cl1, pos_l);
+                        m_num_elim_otf_sub++;
+                        if (!s.inconsistent() && !c2.was_removed()) {
+                            clause& cl2 = *c2.get_clause();
+                            elim_lit(cl2, neg_l);
+                            m_num_elim_otf_sub++;
+                        }
+                        if (s.inconsistent())
+                            return true;
+                        continue;
+                    }
+                    if (otf_c1) {
+                        TRACE(sat_simplifier, tout << "otf self-sub c1 (adding): " << c1
+                              << " resolvent size " << rsz << "\n";);
+                        clause& cl1 = *c1.get_clause();
+                        elim_lit(cl1, pos_l);
+                        m_num_elim_otf_sub++;
+                        if (s.inconsistent())
+                            return true;
+                        continue;
+                    }
+                    if (otf_c2) {
+                        TRACE(sat_simplifier, tout << "otf self-sub c2 (adding): " << c2
+                              << " resolvent size " << rsz << "\n";);
+                        clause& cl2 = *c2.get_clause();
+                        elim_lit(cl2, neg_l);
+                        m_num_elim_otf_sub++;
+                        if (s.inconsistent())
+                            return true;
+                        continue;
+                    }
+                }
+
                 TRACE(sat_simplifier, tout << c1 << "\n" << c2 << "\n-->\n" << m_new_cls << "\n";);
                 if (cleanup_clause(m_new_cls)) {
                     continue; // clause is already satisfied.
                 }
+                // Mark resolvent variables for heap update.
+                for (literal lit : m_new_cls)
+                    mark_elim_heap_dirty(lit.var());
                 switch (m_new_cls.size()) {
                 case 0:
                     s.set_conflict();
@@ -2075,27 +2466,92 @@ namespace sat {
                        verbose_stream() << " (sat-resolution :elim-vars "
                        << (m_simplifier.m_num_elim_vars - m_num_elim_vars)
                        << " :threshold " << m_simplifier.m_elim_counter
+                       << " :elim-bound " << m_simplifier.m_elim_bound
                        << mem_stat()
                        << " :time " << std::fixed << std::setprecision(2) << m_watch.get_seconds() << ")\n";);
         }
     };
 
+    /**
+     * Double the elimination bound (CaDiCaL / GlueMiniSAT escalation).
+     * Progression: 0 -> 1 -> 2 -> 4 -> 8 -> 16.
+     * After increasing, reschedule all non-eliminated, non-external variables
+     * so they get retried with the relaxed bound on the next simplification call.
+     */
+    void simplifier::increase_elim_bound() {
+        if (m_elim_bound >= m_elim_bound_max)
+            return;
+
+        if (m_elim_bound <= 0)
+            m_elim_bound = 1;
+        else
+            m_elim_bound *= 2;
+
+        if (m_elim_bound > m_elim_bound_max)
+            m_elim_bound = m_elim_bound_max;
+
+        IF_VERBOSE(SAT_VB_LVL,
+                   verbose_stream() << " (sat-elim-bound :new-bound " << m_elim_bound << ")\n";);
+        TRACE(sat_simplifier, tout << "increased elimination bound to " << m_elim_bound << "\n";);
+    }
+
     void simplifier::elim_vars() {
-        if (!elim_vars_enabled()) 
+        if (!elim_vars_enabled())
             return;
         elim_var_report rpt(*this);
-        bool_var_vector vars;
-        order_vars_for_elim(vars);
-        for (bool_var v : vars) {
-            checkpoint();
-            if (m_elim_counter < 0) 
-                break;
+
+        // Initialize the dynamic elimination heap with all eligible variables.
+        unsigned nv = s.num_vars();
+        m_elim_heap.reset();
+        m_elim_heap.set_bounds(nv);
+        m_elim_costs.reset();
+        m_elim_costs.resize(nv, 0);
+        m_elim_heap_dirty.reset();
+
+        for (bool_var v : m_elim_todo) {
             if (is_external(v))
-                ; // skip            
-            else if (try_eliminate(v)) 
-                m_num_elim_vars++;            
+                continue;
+            if (was_eliminated(v))
+                continue;
+            if (value(v) != l_undef)
+                continue;
+            m_elim_costs[v] = get_to_elim_cost(v);
+            m_elim_heap.insert(v);
+        }
+        m_elim_todo.reset();
+
+        TRACE(sat_simplifier, tout << "dynamic elim heap: " << m_elim_heap.size() << " variables\n";);
+
+        // Process variables from the heap.  After each successful
+        // elimination, flush_elim_heap_dirty() rescores and re-inserts
+        // affected neighbors, enabling cascading eliminations.
+        while (!m_elim_heap.empty()) {
+            checkpoint();
+            if (m_elim_counter < 0)
+                break;
+            if (s.inconsistent())
+                break;
+            bool_var v = static_cast<bool_var>(m_elim_heap.erase_min());
+            if (is_external(v))
+                continue;
+            if (was_eliminated(v))
+                continue;
+            if (value(v) != l_undef)
+                continue;
+            if (try_eliminate(v)) {
+                m_num_elim_vars++;
+                // Rescore and reschedule affected neighbors.
+                flush_elim_heap_dirty();
+            }
+            else {
+                // Elimination failed; discard any stale dirty marks.
+                m_elim_heap_dirty.reset();
+            }
         }
 
+        m_elim_heap.reset();
+        m_elim_costs.finalize();
+        m_elim_heap_dirty.reset();
         m_pos_cls.finalize();
         m_neg_cls.finalize();
         m_new_cls.finalize();
@@ -2146,346 +2602,530 @@ namespace sat {
         }
     };
 
-    /**
-       \brief Try BVA for a specific literal l.
-       Look for groups of clauses containing l that share a common "tail"
-       (all literals except l and one differing literal).
-       Returns true if any transformation was applied.
+    // =============================================================
+    // Multi-factor BVA (CaDiCaL-style iterative factorization)
+    //
+    // For a given initial literal, we build a chain of factors by
+    // iteratively finding co-occurring literals across clauses that
+    // share a common quotient. This discovers multi-way factorizations
+    // that the single-pass hash approach misses entirely.
+    // =============================================================
 
-       counter is decremented by the work done; caller should stop when it goes negative.
-    */
-    bool simplifier::try_bva(literal l, int & counter) {
-        if (s.inconsistent())
-            return false;
-        if (value(l) != l_undef)
-            return false;
-
-        // Phase 1: collect all non-learned clauses containing l.
-        // Each clause is stored as a sorted literal vector, plus a pointer
-        // to the original clause object (nullptr for binary clauses).
-
-        struct bva_clause {
-            literal_vector lits;    // sorted literals (includes l)
-            clause*        cls;     // nullptr for binary clauses
-            literal        bin_lit; // other literal for binary, null_literal otherwise
-        };
-
-        vector<bva_clause> clauses;
-
-        // Collect from use_list (clauses of size >= 3)
-        clause_use_list const & occs = m_use_list.get(l);
-        for (auto it = occs.mk_iterator(); !it.at_end(); it.next()) {
-            clause & c = it.curr();
-            if (c.is_learned() || c.was_removed())
-                continue;
-            bva_clause bc;
-            bc.cls = &c;
-            bc.bin_lit = null_literal;
-            for (literal lit : c)
-                bc.lits.push_back(lit);
-            std::sort(bc.lits.begin(), bc.lits.end());
-            clauses.push_back(std::move(bc));
-            counter -= static_cast<int>(c.size());
+    void simplifier::bva_factoring::release_all() {
+        for (bva_quotient * q = first, * nxt; q; q = nxt) {
+            nxt = q->next;
+            dealloc(q);
         }
-
-        // Collect binary clauses containing l
-        watch_list const & bwlist = get_bin_wlist(~l);
-        for (auto const & w : bwlist) {
-            if (w.is_binary_non_learned_clause()) {
-                literal l2 = w.get_literal();
-                bva_clause bc;
-                bc.cls = nullptr;
-                bc.bin_lit = l2;
-                if (l.index() < l2.index()) {
-                    bc.lits.push_back(l);
-                    bc.lits.push_back(l2);
-                } else {
-                    bc.lits.push_back(l2);
-                    bc.lits.push_back(l);
-                }
-                clauses.push_back(std::move(bc));
-                counter -= 2;
-            }
-        }
-
-        if (clauses.size() < 2)
-            return false;
-
-        // Bound the work: skip literals with too many occurrences.
-        if (clauses.size() > 1000)
-            return false;
-
-        // Phase 2: For each clause C and each literal a in C (a != l),
-        // form tail = C \ {l, a}, hash the tail, and group entries by (tail_size, tail_hash).
-        // Later we verify exact tail equality within each bucket.
-
-        typedef unsigned tail_hash_t;
-
-        struct tail_entry {
-            unsigned clause_idx;
-            literal  diff_lit;
-        };
-
-        // Use a simple vector-of-vectors approach keyed by (tail_sz, hash).
-        // Since Z3's map doesn't support range-for with structured bindings well,
-        // we use a two-level approach: collect all entries into a flat list, sort,
-        // then process groups.
-
-        struct keyed_entry {
-            unsigned    tail_sz;
-            tail_hash_t tail_hash;
-            unsigned    clause_idx;
-            literal     diff_lit;
-        };
-
-        svector<keyed_entry> all_entries;
-
-        for (unsigned ci = 0; ci < clauses.size(); ++ci) {
-            literal_vector const & lits = clauses[ci].lits;
-            unsigned sz = lits.size();
-            if (sz < 2) continue;
-
-            // Compute additive hash of all literals
-            tail_hash_t full_hash = 0;
-            for (literal lit : lits)
-                full_hash += lit.index() * 1000003u;
-
-            tail_hash_t l_contrib = l.index() * 1000003u;
-            for (unsigned i = 0; i < sz; ++i) {
-                literal a = lits[i];
-                if (a == l) continue;
-                tail_hash_t a_contrib = a.index() * 1000003u;
-                tail_hash_t th = full_hash - l_contrib - a_contrib;
-                unsigned tail_sz = sz - 2;
-                keyed_entry ke;
-                ke.tail_sz = tail_sz;
-                ke.tail_hash = th;
-                ke.clause_idx = ci;
-                ke.diff_lit = a;
-                all_entries.push_back(ke);
-                counter -= static_cast<int>(sz);
-            }
-        }
-
-        // Sort entries by (tail_sz, tail_hash) to group potential matches together.
-        std::sort(all_entries.begin(), all_entries.end(),
-                  [](keyed_entry const & a, keyed_entry const & b) {
-                      if (a.tail_sz != b.tail_sz) return a.tail_sz < b.tail_sz;
-                      return a.tail_hash < b.tail_hash;
-                  });
-
-        // Phase 3: process each group of entries with the same (tail_sz, tail_hash).
-        bool did_something = false;
-        bool_vector consumed(clauses.size(), false);
-
-        unsigned gi = 0;
-        while (gi < all_entries.size()) {
-            if (counter < 0) break;
-
-            // Find the end of this group
-            unsigned gj = gi + 1;
-            while (gj < all_entries.size() &&
-                   all_entries[gj].tail_sz == all_entries[gi].tail_sz &&
-                   all_entries[gj].tail_hash == all_entries[gi].tail_hash)
-                ++gj;
-
-            unsigned group_sz = gj - gi;
-            unsigned tail_sz = all_entries[gi].tail_sz;
-
-            if (group_sz < 2) {
-                gi = gj;
-                continue;
-            }
-
-            // Within this group, sub-group by exact tail match.
-            // Pick the first non-consumed entry, extract its tail,
-            // then find all others with the same exact tail.
-            for (unsigned si = gi; si < gj; ++si) {
-                if (consumed[all_entries[si].clause_idx]) continue;
-                unsigned ci0 = all_entries[si].clause_idx;
-
-                // Extract the reference tail
-                literal_vector tail;
-                literal_vector const & lits0 = clauses[ci0].lits;
-                literal a0 = all_entries[si].diff_lit;
-                for (literal lit : lits0) {
-                    if (lit != l && lit != a0)
-                        tail.push_back(lit);
-                }
-                SASSERT(tail.size() == tail_sz);
-
-                // Mark tail literals for fast membership test
-                for (literal lit : tail) mark_visited(lit);
-
-                // Collect matching entries
-                svector<unsigned> matching; // indices into all_entries
-                matching.push_back(si);
-                for (unsigned sj = si + 1; sj < gj; ++sj) {
-                    if (consumed[all_entries[sj].clause_idx]) continue;
-                    unsigned cj = all_entries[sj].clause_idx;
-                    literal_vector const & litsj = clauses[cj].lits;
-                    literal aj = all_entries[sj].diff_lit;
-
-                    // Verify exact tail match: every lit in litsj except l and aj must be marked
-                    bool match = true;
-                    unsigned matched_count = 0;
-                    for (literal lit : litsj) {
-                        if (lit == l || lit == aj) continue;
-                        if (!is_marked(lit)) { match = false; break; }
-                        matched_count++;
-                    }
-                    if (match && matched_count == tail_sz && !is_marked(aj)) {
-                        matching.push_back(sj);
-                    }
-                    counter -= static_cast<int>(litsj.size());
-                }
-
-                for (literal lit : tail) unmark_visited(lit);
-
-                unsigned N = matching.size();
-
-                // Profitability check: saving = (N-1)*tail_sz - 2 > 0
-                if (N < 2 || static_cast<int>(N - 1) * static_cast<int>(tail_sz) <= 2)
-                    continue;
-
-                // Verify all diff_lits are distinct
-                literal_vector diff_lits;
-                bool all_distinct = true;
-                for (unsigned mi = 0; mi < matching.size(); ++mi) {
-                    literal a = all_entries[matching[mi]].diff_lit;
-                    if (is_marked(a)) {
-                        all_distinct = false;
-                        break;
-                    }
-                    mark_visited(a);
-                    diff_lits.push_back(a);
-                }
-                for (literal a : diff_lits) unmark_visited(a);
-
-                if (!all_distinct) continue;
-
-                // All checks passed. Apply BVA transformation.
-
-                // 1. Create fresh internal variable x
-                bool_var x = s.mk_var(false, true);
-                literal pos_x(x, false);
-                literal neg_x(x, true);
-
-                // Ensure visited array and use_list are large enough for the new variable
-                if (m_visited.size() <= 2 * x + 1)
-                    m_visited.resize(2 * (x + 1), false);
-                m_use_list.reserve(s.num_vars());
-
-                TRACE(sat_simplifier, tout << "BVA: literal " << l << ", tail_sz=" << tail_sz
-                      << ", N=" << N << ", saving=" << ((N-1)*tail_sz - 2) << "\n";
-                      tout << "  tail:";
-                      for (literal t : tail) tout << " " << t;
-                      tout << "\n  diff_lits:";
-                      for (literal a : diff_lits) tout << " " << a;
-                      tout << "\n";);
-
-                // 2. No model converter entry needed for x.
-                //    x is a fresh variable that lives in the simplified formula.
-                //    The solver assigns it during search. If x is later eliminated
-                //    by variable elimination, that code records the needed clauses.
-                //    The BVA transformation is equisatisfiable: any model of the
-                //    new clauses automatically satisfies the original clauses.
-
-                // 3. Remove original clauses
-                for (unsigned mi = 0; mi < matching.size(); ++mi) {
-                    unsigned ci = all_entries[matching[mi]].clause_idx;
-                    bva_clause & bc = clauses[ci];
-                    if (bc.cls != nullptr) {
-                        remove_clause(*bc.cls, true);
-                    } else {
-                        // Binary clause: mark as learned in both watch directions
-                        set_learned(l, bc.bin_lit);
-                        watch_list & wl1 = get_bin_wlist(~l);
-                        for (watched & w : wl1) {
-                            if (w.is_binary_non_learned_clause() && w.get_literal() == bc.bin_lit) {
-                                w.set_learned(true);
-                                break;
-                            }
-                        }
-                        watch_list & wl2 = get_bin_wlist(~bc.bin_lit);
-                        for (watched & w : wl2) {
-                            if (w.is_binary_non_learned_clause() && w.get_literal() == l) {
-                                w.set_learned(true);
-                                break;
-                            }
-                        }
-                    }
-                    consumed[ci] = true;
-                }
-
-                // 4. Add replacement clauses
-                // Shared clause: {x, l, tail...}
-                literal_vector shared_cls;
-                shared_cls.push_back(pos_x);
-                shared_cls.push_back(l);
-                for (literal t : tail)
-                    shared_cls.push_back(t);
-
-                if (shared_cls.size() == 2) {
-                    s.mk_bin_clause(shared_cls[0], shared_cls[1], false);
-                } else {
-                    clause * new_c = s.alloc_clause(shared_cls.size(), shared_cls.data(), false);
-                    if (s.m_config.m_drat) s.m_drat.add(*new_c, status::redundant());
-                    s.m_clauses.push_back(new_c);
-                    m_use_list.insert(*new_c);
-                    m_sub_todo.insert(*new_c);
-                }
-
-                // Definition clauses: {~x, a_i}
-                for (literal a : diff_lits) {
-                    s.mk_bin_clause(neg_x, a, false);
-                }
-
-                m_num_bva += N;
-                did_something = true;
-
-                insert_elim_todo(x);
-                for (literal t : tail)
-                    insert_elim_todo(t.var());
-                insert_elim_todo(l.var());
-                for (literal a : diff_lits)
-                    insert_elim_todo(a.var());
-            }
-
-            gi = gj;
-        }
-
-        return did_something;
+        first = last = nullptr;
     }
 
+    unsigned simplifier::bva_occ_count(literal l) const {
+        unsigned cnt = m_use_list.get(l).num_irredundant();
+        cnt += num_nonlearned_bin(l);
+        return cnt;
+    }
+
+    simplifier::bva_quotient * simplifier::bva_new_quotient(bva_factoring & fctx, literal factor) {
+        SASSERT(!bva_is_marked(factor, BVA_FACTORS));
+        bva_mark(factor, BVA_FACTORS);
+
+        bva_quotient * q = alloc(bva_quotient, factor);
+        q->next = nullptr;
+        q->prev = fctx.last;
+
+        if (fctx.last) {
+            SASSERT(fctx.first);
+            q->id = fctx.last->id + 1;
+            fctx.last->next = q;
+        } else {
+            SASSERT(!fctx.first);
+            fctx.first = q;
+            q->id = 0;
+        }
+        fctx.last = q;
+
+        TRACE(sat_simplifier, tout << "bva: new quotient[" << q->id << "] factor " << factor << "\n";);
+        return q;
+    }
+
+    void simplifier::bva_release_quotients(bva_factoring & fctx) {
+        for (bva_quotient * q = fctx.first, * nxt; q; q = nxt) {
+            nxt = q->next;
+            bva_unmark(q->factor, BVA_FACTORS);
+            dealloc(q);
+        }
+        fctx.first = fctx.last = nullptr;
+    }
+
+    unsigned simplifier::bva_first_factor(bva_factoring & fctx, literal factor) {
+        SASSERT(!fctx.first);
+        bva_quotient * q = bva_new_quotient(fctx, factor);
+        clause_vector & qlauses = q->qlauses;
+
+        clause_use_list const & occs = m_use_list.get(factor);
+        for (auto it = occs.mk_iterator(); !it.at_end(); it.next()) {
+            clause & c = it.curr();
+            if (c.is_learned() || c.was_removed()) continue;
+            qlauses.push_back(&c);
+            fctx.budget -= static_cast<int>(c.size());
+        }
+
+        unsigned cnt = qlauses.size();
+        TRACE(sat_simplifier, tout << "bva: first_factor " << factor << " -> " << cnt << " clauses\n";);
+        return cnt;
+    }
+
+    // Among clauses in the last quotient, find the literal that co-occurs
+    // most frequently as the single "differing" literal in sibling clauses.
+    //
+    // For each clause C in the current quotient:
+    //   1. Mark all non-factor literals in C as QUOTIENT.
+    //   2. Find the literal with minimum occurrence count (min_lit).
+    //   3. Scan min_lit's occurrence list for clauses D of the same size
+    //      where D differs from C by exactly one literal (the "next" candidate).
+    //   4. Count how many times each candidate appears.
+    //
+    // Return the candidate with the highest count (>= 2), breaking ties
+    // by occurrence list size (prefer larger for more factoring potential).
+    literal simplifier::bva_next_factor(bva_factoring & fctx, unsigned & next_count) {
+        bva_quotient * last_q = fctx.last;
+        SASSERT(last_q);
+        clause_vector & last_clauses = last_q->qlauses;
+        svector<unsigned> & count = fctx.count;
+        svector<unsigned> & counted = fctx.counted;
+        SASSERT(counted.empty());
+
+        svector<unsigned> nounted_indices;
+        bool_vector swept;
+
+        for (clause * c : last_clauses) {
+            literal min_lit = null_literal;
+            unsigned factors_seen = 0;
+            unsigned min_occ = UINT_MAX;
+            fctx.budget--;
+
+            for (literal lit : *c) {
+                if (bva_is_marked(lit, BVA_FACTORS)) {
+                    factors_seen++;
+                    if (factors_seen > 1) break;
+                } else {
+                    bva_mark(lit, BVA_QUOTIENT);
+                    unsigned occ = bva_occ_count(lit);
+                    if (min_lit == null_literal || occ < min_occ) {
+                        min_lit = lit;
+                        min_occ = occ;
+                    }
+                }
+            }
+
+            if (factors_seen <= 1 && min_lit != null_literal) {
+                unsigned c_size = c->size();
+                clause_use_list const & min_occs = m_use_list.get(min_lit);
+                fctx.budget -= static_cast<int>(min_occs.size());
+
+                for (auto it = min_occs.mk_iterator(); !it.at_end(); it.next()) {
+                    clause & d = it.curr();
+                    if (&d == c) continue;
+                    if (d.is_learned() || d.was_removed()) continue;
+                    fctx.budget--;
+                    if (d.id() < swept.size() && swept[d.id()]) continue;
+                    if (d.size() != c_size) continue;
+
+                    literal next_candidate = null_literal;
+                    bool valid = true;
+                    for (literal lit : d) {
+                        if (bva_is_marked(lit, BVA_QUOTIENT))
+                            continue;
+                        if (bva_is_marked(lit, BVA_FACTORS)) { valid = false; break; }
+                        if (bva_is_marked(lit, BVA_NOUNTED)) { valid = false; break; }
+                        if (next_candidate != null_literal) { valid = false; break; }
+                        next_candidate = lit;
+                    }
+
+                    if (!valid || next_candidate == null_literal) continue;
+                    if (is_external(next_candidate.var())) continue;
+                    if (was_eliminated(next_candidate.var())) continue;
+                    if (value(next_candidate) != l_undef) continue;
+
+                    bva_mark(next_candidate, BVA_NOUNTED);
+                    nounted_indices.push_back(next_candidate.index());
+
+                    if (d.id() >= swept.size()) swept.resize(d.id() + 1, false);
+                    swept[d.id()] = true;
+
+                    unsigned idx = next_candidate.index();
+                    if (idx >= count.size()) count.resize(idx + 1, 0);
+                    if (count[idx] == 0) counted.push_back(idx);
+                    count[idx]++;
+                }
+
+                for (unsigned idx : nounted_indices)
+                    bva_unmark(to_literal(idx), BVA_NOUNTED);
+                nounted_indices.reset();
+            }
+
+            for (literal lit : *c)
+                bva_unmark(lit, BVA_QUOTIENT);
+
+            if (fctx.budget < 0) break;
+        }
+
+        unsigned best_count = 0;
+        literal best = null_literal;
+        if (fctx.budget >= 0) {
+            unsigned ties = 0;
+            for (unsigned idx : counted) {
+                unsigned cnt = count[idx];
+                if (cnt < best_count) continue;
+                if (cnt == best_count) { ties++; }
+                else { best_count = cnt; best = to_literal(idx); ties = 1; }
+            }
+
+            if (best_count < 2) {
+                best = null_literal;
+            } else if (ties > 1) {
+                unsigned best_occ = 0;
+                for (unsigned idx : counted) {
+                    if (count[idx] != best_count) continue;
+                    literal lit = to_literal(idx);
+                    unsigned occ = bva_occ_count(lit);
+                    if (occ > best_occ) { best_occ = occ; best = lit; }
+                }
+            }
+        }
+
+        for (unsigned idx : counted) count[idx] = 0;
+        counted.reset();
+
+        next_count = best_count;
+        return best;
+    }
+
+    void simplifier::bva_factorize_next(bva_factoring & fctx, literal next, unsigned expected_count) {
+        bva_quotient * last_q = fctx.last;
+        bva_quotient * next_q = bva_new_quotient(fctx, next);
+
+        SASSERT(last_q);
+        clause_vector & last_clauses = last_q->qlauses;
+        clause_vector & next_clauses = next_q->qlauses;
+        svector<unsigned> & matches = next_q->matches;
+
+        bool_vector swept;
+        unsigned i = 0;
+
+        for (clause * c : last_clauses) {
+            literal min_lit = null_literal;
+            unsigned factors_seen = 0;
+            unsigned min_occ = UINT_MAX;
+            fctx.budget--;
+
+            for (literal lit : *c) {
+                if (bva_is_marked(lit, BVA_FACTORS)) {
+                    factors_seen++;
+                    if (factors_seen > 1) break;
+                } else {
+                    bva_mark(lit, BVA_QUOTIENT);
+                    unsigned occ = bva_occ_count(lit);
+                    if (min_lit == null_literal || occ < min_occ) {
+                        min_lit = lit;
+                        min_occ = occ;
+                    }
+                }
+            }
+
+            if (factors_seen <= 1 && min_lit != null_literal) {
+                unsigned c_size = c->size();
+                clause_use_list const & min_occs = m_use_list.get(min_lit);
+                fctx.budget -= static_cast<int>(min_occs.size());
+
+                for (auto it = min_occs.mk_iterator(); !it.at_end(); it.next()) {
+                    clause & d = it.curr();
+                    if (&d == c) continue;
+                    if (d.is_learned() || d.was_removed()) continue;
+                    if (d.id() < swept.size() && swept[d.id()]) continue;
+                    if (d.size() != c_size) continue;
+                    fctx.budget--;
+
+                    bool valid = true;
+                    for (literal lit : d) {
+                        if (bva_is_marked(lit, BVA_QUOTIENT)) continue;
+                        if (lit != next) { valid = false; break; }
+                    }
+
+                    if (valid) {
+                        next_clauses.push_back(&d);
+                        matches.push_back(i);
+                        if (d.id() >= swept.size()) swept.resize(d.id() + 1, false);
+                        swept[d.id()] = true;
+                        break;
+                    }
+                }
+            }
+
+            for (literal lit : *c) bva_unmark(lit, BVA_QUOTIENT);
+            i++;
+        }
+
+        SASSERT(expected_count <= next_clauses.size());
+        (void)expected_count;
+    }
+
+    void simplifier::bva_flush_unmatched(bva_quotient * q) {
+        bva_quotient * prev = q->prev;
+        SASSERT(prev);
+        svector<unsigned> & q_matches = q->matches;
+        clause_vector & q_clauses = q->qlauses;
+        clause_vector & prev_clauses = prev->qlauses;
+        svector<unsigned> & prev_matches = prev->matches;
+        unsigned n = q_clauses.size();
+        SASSERT(n == q_matches.size());
+        bool prev_is_first = (prev->id == 0);
+
+        for (unsigned i = 0; i < n; i++) {
+            unsigned j = q_matches[i];
+            q_matches[i] = i;
+            SASSERT(i <= j);
+            if (!prev_is_first && j < prev_matches.size()) {
+                if (i < prev_matches.size())
+                    prev_matches[i] = prev_matches[j];
+            }
+            prev_clauses[i] = prev_clauses[j];
+        }
+
+        if (!prev_is_first) prev_matches.resize(n);
+        prev_clauses.resize(n);
+    }
+
+    simplifier::bva_quotient * simplifier::bva_best_quotient(bva_factoring & fctx, unsigned & reduction) {
+        unsigned factors = 1;
+        unsigned best_reduction = 0;
+        bva_quotient * best = nullptr;
+
+        for (bva_quotient * q = fctx.first; q; q = q->next) {
+            unsigned quotients = q->qlauses.size();
+            unsigned before = quotients * factors;
+            unsigned after = quotients + factors;
+
+            if (before > after) {
+                unsigned delta = before - after;
+                if (!best || delta > best_reduction) {
+                    best_reduction = delta;
+                    best = q;
+                }
+            }
+            factors++;
+        }
+
+        reduction = best_reduction;
+        TRACE(sat_simplifier, {
+            if (best) tout << "bva: best quotient[" << best->id << "] reduction=" << best_reduction << "\n";
+            else tout << "bva: no profitable quotient found\n";
+        });
+        return best;
+    }
+
+    bool simplifier::bva_self_subsuming_factor(bva_quotient * q) {
+        for (bva_quotient * p = q; p; p = p->prev)
+            mark_visited(p->factor);
+
+        bool found = false;
+        bva_quotient * x_q = nullptr, * y_q = nullptr;
+        for (bva_quotient * p = q; p; p = p->prev) {
+            if (is_marked(~p->factor)) {
+                found = true;
+                x_q = p;
+                for (bva_quotient * r = q; r; r = r->prev) {
+                    if (r->factor == ~p->factor && r != p) { y_q = r; break; }
+                }
+                break;
+            }
+        }
+        for (bva_quotient * p = q; p; p = p->prev)
+            unmark_visited(p->factor);
+
+        if (!found || !x_q || !y_q) return false;
+
+        TRACE(sat_simplifier, tout << "bva: self-subsuming factor " << x_q->factor << " vs " << y_q->factor << "\n";);
+
+        for (clause * c : x_q->qlauses) {
+            literal_vector resolvent;
+            for (literal lit : *c) {
+                if (lit == x_q->factor) continue;
+                resolvent.push_back(lit);
+            }
+
+            if (resolvent.size() == 1) {
+                literal unit = resolvent[0];
+                lbool val = value(unit);
+                if (val == l_undef)
+                    s.assign_scoped(unit);
+                else if (val == l_false) {
+                    s.set_conflict();
+                    return true;
+                }
+            } else if (resolvent.size() == 2) {
+                s.mk_bin_clause(resolvent[0], resolvent[1], false);
+            } else {
+                clause * new_c = s.alloc_clause(resolvent.size(), resolvent.data(), false);
+                if (s.m_config.m_drat) s.m_drat.add(*new_c, status::redundant());
+                s.m_clauses.push_back(new_c);
+                m_use_list.insert(*new_c);
+                m_sub_todo.insert(*new_c);
+            }
+        }
+        return true;
+    }
+
+    void simplifier::bva_delete_unfactored(bva_quotient * q) {
+        for (clause * c : q->qlauses) {
+            if (!c->was_removed())
+                remove_clause(*c, true);
+        }
+    }
+
+    bool simplifier::bva_apply_factoring(bva_factoring & fctx, bva_quotient * q) {
+        for (bva_quotient * p = q; p->prev; p = p->prev)
+            bva_flush_unmatched(p);
+
+        if (bva_self_subsuming_factor(q)) {
+            for (bva_quotient * p = q; p; p = p->prev)
+                bva_delete_unfactored(p);
+            return true;
+        }
+
+        bool_var x = s.mk_var(false, true);
+        literal fresh(x, false);
+        literal not_fresh(x, true);
+
+        if (m_visited.size() <= 2 * x + 1)
+            m_visited.resize(2 * (x + 1), false);
+        m_use_list.reserve(s.num_vars());
+        bva_ensure_marks(2 * (x + 1));
+
+        TRACE(sat_simplifier, {
+            tout << "bva: apply factoring, fresh var=" << x << "\n";
+            tout << "  factors:";
+            for (bva_quotient * p = q; p; p = p->prev) tout << " " << p->factor;
+            tout << "\n  quotient clauses: " << q->qlauses.size() << "\n";
+        });
+
+        for (bva_quotient * p = q; p; p = p->prev)
+            s.mk_bin_clause(fresh, p->factor, false);
+
+        for (clause * c : q->qlauses) {
+            literal_vector new_cls;
+            for (literal lit : *c) {
+                if (bva_is_marked(lit, BVA_FACTORS)) continue;
+                new_cls.push_back(lit);
+            }
+            new_cls.push_back(not_fresh);
+
+            if (new_cls.size() == 2) {
+                s.mk_bin_clause(new_cls[0], new_cls[1], false);
+            } else {
+                clause * nc = s.alloc_clause(new_cls.size(), new_cls.data(), false);
+                if (s.m_config.m_drat) s.m_drat.add(*nc, status::redundant());
+                s.m_clauses.push_back(nc);
+                m_use_list.insert(*nc);
+                m_sub_todo.insert(*nc);
+            }
+        }
+
+        for (bva_quotient * p = q; p; p = p->prev)
+            bva_delete_unfactored(p);
+
+        unsigned total_eliminated = 0;
+        for (bva_quotient * p = q; p; p = p->prev)
+            total_eliminated += p->qlauses.size();
+        m_num_bva += total_eliminated;
+
+        insert_elim_todo(x);
+        for (bva_quotient * p = q; p; p = p->prev)
+            insert_elim_todo(p->factor.var());
+        for (clause * c : q->qlauses)
+            for (literal lit : *c)
+                insert_elim_todo(lit.var());
+
+        return true;
+    }
+
+    // Legacy single-pass BVA stub (no longer called from bva()).
+    bool simplifier::try_bva(literal l, int & counter) {
+        (void)l; (void)counter;
+        return false;
+    }
+
+    // Main BVA entry point using multi-factor algorithm.
     void simplifier::bva() {
         if (!bva_enabled())
             return;
 
         bva_report rpt(*this);
-        int counter = m_bva_limit;
+        int budget = m_bva_limit;
 
-        // Iterate over all literals, trying BVA for each.
-        // Process literals with more occurrences first (more opportunity for sharing).
+        unsigned num_lits = 2 * s.num_vars();
+        m_bva_marks.reset();
+        m_bva_marks.resize(num_lits, 0);
+
+        struct lit_occ { unsigned lit_idx; unsigned occ; };
+        svector<lit_occ> schedule;
+
         unsigned num_vars = s.num_vars();
-        for (bool_var v = 0; v < num_vars && counter >= 0; ++v) {
-            checkpoint();
-            if (s.inconsistent())
-                return;
-            if (was_eliminated(v))
-                continue;
-            if (value(v) != l_undef)
-                continue;
-            if (is_external(v))
-                continue;
+        for (bool_var v = 0; v < num_vars; ++v) {
+            if (was_eliminated(v)) continue;
+            if (value(v) != l_undef) continue;
+            if (is_external(v)) continue;
 
             literal pos_l(v, false);
             literal neg_l(v, true);
+            unsigned pos_occ = bva_occ_count(pos_l);
+            unsigned neg_occ = bva_occ_count(neg_l);
 
-            try_bva(pos_l, counter);
-            if (counter < 0) break;
-            try_bva(neg_l, counter);
+            if (pos_occ >= 2) { lit_occ lo; lo.lit_idx = pos_l.index(); lo.occ = pos_occ; schedule.push_back(lo); }
+            if (neg_occ >= 2) { lit_occ lo; lo.lit_idx = neg_l.index(); lo.occ = neg_occ; schedule.push_back(lo); }
         }
+
+        std::sort(schedule.begin(), schedule.end(),
+                  [](lit_occ const & a, lit_occ const & b) {
+                      if (a.occ != b.occ) return a.occ < b.occ;
+                      return a.lit_idx < b.lit_idx;
+                  });
+
+        for (auto const & lo : schedule) {
+            if (budget < 0) break;
+            checkpoint();
+            if (s.inconsistent()) return;
+
+            literal first_lit = to_literal(lo.lit_idx);
+            if (was_eliminated(first_lit.var())) continue;
+            if (value(first_lit) != l_undef) continue;
+            if (bva_occ_count(first_lit) < 2) continue;
+
+            bva_factoring fctx;
+            fctx.budget = budget;
+
+            unsigned first_count = bva_first_factor(fctx, first_lit);
+            if (first_count > 1) {
+                for (;;) {
+                    unsigned next_count = 0;
+                    literal next = bva_next_factor(fctx, next_count);
+                    if (next == null_literal) break;
+                    if (next_count < 2) break;
+                    bva_factorize_next(fctx, next, next_count);
+                    if (fctx.budget < 0) break;
+                }
+
+                unsigned reduction = 0;
+                bva_quotient * best = bva_best_quotient(fctx, reduction);
+                if (best && reduction > 0)
+                    bva_apply_factoring(fctx, best);
+            }
+
+            budget = fctx.budget;
+            bva_release_quotients(fctx);
+        }
+
+        m_bva_marks.reset();
     }
 
     void simplifier::updt_params(params_ref const & _p) {
@@ -2533,6 +3173,9 @@ namespace sat {
         st.update("sat bca",  m_num_bca);
         st.update("sat ate",  m_num_ate);
         st.update("sat bva",  m_num_bva);
+        st.update("sat elim otf subsumption", m_num_elim_otf_sub);
+        st.update("sat elim rounds", m_num_elim_rounds);
+        st.update("sat elim gate", m_num_elim_gate);
     }
 
     void simplifier::reset_statistics() {
@@ -2547,5 +3190,8 @@ namespace sat {
         m_num_bca = 0;
         m_num_ate = 0;
         m_num_bva = 0;
+        m_num_elim_otf_sub = 0;
+        m_num_elim_rounds = 0;
+        m_num_elim_gate = 0;
     }
 };

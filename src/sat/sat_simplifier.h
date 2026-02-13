@@ -69,6 +69,23 @@ namespace sat {
         bool                   m_need_cleanup = false;
         tmp_clause             m_dummy;
 
+        // Dynamic elimination heap (CaDiCaL-style).
+        // Min-heap ordered by cached elimination cost: variables with
+        // lowest cost are extracted first.  Pure literals (cost=0)
+        // naturally get highest priority.
+        // After each variable elimination, affected neighbors are
+        // rescored and repositioned, enabling cascading eliminations
+        // that the previous static sorted vector missed entirely.
+        struct elim_cost_lt {
+            simplifier * m_simp;
+            elim_cost_lt() : m_simp(nullptr) {}
+            elim_cost_lt(simplifier * s) : m_simp(s) {}
+            bool operator()(int v1, int v2) const;
+        };
+        heap<elim_cost_lt>     m_elim_heap;
+        svector<unsigned>      m_elim_costs;      // cached elimination cost per variable
+        bool_var_set           m_elim_heap_dirty;  // variables needing heap update after elimination
+
         // simplifier extra variable fields.
         svector<char>          m_visited; // transient
 
@@ -108,6 +125,13 @@ namespace sat {
         bool                   m_bva;           // bounded variable addition
         unsigned               m_bva_limit;     // max literal visits during BVA
 
+        // Elimination bound escalation (a la CaDiCaL / GlueMiniSAT).
+        // Allows up to m_elim_bound extra clauses when eliminating a variable.
+        // After a complete elimination phase, the bound doubles: 0->1->2->4->...->max.
+        // Persistent across inprocessing rounds; reset on init_search().
+        int                    m_elim_bound;
+        int                    m_elim_bound_max;
+
         // stats
         unsigned               m_num_bce;
         unsigned               m_num_cce;
@@ -120,6 +144,8 @@ namespace sat {
         unsigned               m_num_sub_res;
         unsigned               m_num_elim_lits;
         unsigned               m_num_bva;       // clauses eliminated by BVA
+        unsigned               m_num_elim_otf_sub;  // on-the-fly self-subsumption during variable elimination
+        unsigned               m_num_elim_rounds;   // interleaved simplification rounds
 
         bool                   m_learned_in_use_lists;
         unsigned               m_old_num_elim_vars;
@@ -184,6 +210,7 @@ namespace sat {
 
         struct blocked_clause_elim;
         void elim_blocked_clauses();
+        bool elim_blocked_clauses_tracked();
 
         bool single_threaded() const; // { return s.m_config.m_num_threads == 1; }
         bool bce_enabled_base() const;
@@ -201,9 +228,69 @@ namespace sat {
         void bva();
         bool try_bva(literal l, int & counter);
 
+        // -----------------------------------------------------------
+        // Multi-factor BVA (CaDiCaL-style iterative factorization)
+        // -----------------------------------------------------------
+
+        struct bva_quotient {
+            literal              factor;
+            clause_vector        qlauses;
+            svector<unsigned>    matches;     // matches[i] = index into prev->qlauses
+            bva_quotient *       prev;
+            bva_quotient *       next;
+            unsigned             id;
+            bva_quotient(literal f) : factor(f), prev(nullptr), next(nullptr), id(0) {}
+        };
+
+        struct bva_factoring {
+            bva_quotient *      first;
+            bva_quotient *      last;
+            svector<unsigned>   count;       // per-literal count (indexed by lit index)
+            svector<unsigned>   counted;     // literal indices with nonzero count
+            int                 budget;
+            bva_factoring() : first(nullptr), last(nullptr), budget(0) {}
+            ~bva_factoring() { release_all(); }
+            void release_all();
+        };
+
+        unsigned bva_occ_count(literal l) const;
+        bva_quotient * bva_new_quotient(bva_factoring & fctx, literal factor);
+        void bva_release_quotients(bva_factoring & fctx);
+        unsigned bva_first_factor(bva_factoring & fctx, literal factor);
+        literal bva_next_factor(bva_factoring & fctx, unsigned & next_count);
+        void bva_factorize_next(bva_factoring & fctx, literal next, unsigned expected_count);
+        void bva_flush_unmatched(bva_quotient * q);
+        bva_quotient * bva_best_quotient(bva_factoring & fctx, unsigned & reduction);
+        bool bva_self_subsuming_factor(bva_quotient * q);
+        bool bva_apply_factoring(bva_factoring & fctx, bva_quotient * q);
+        void bva_delete_unfactored(bva_quotient * q);
+
+        enum bva_mark_bits { BVA_FACTORS = 1, BVA_QUOTIENT = 2, BVA_NOUNTED = 4 };
+        svector<unsigned char> m_bva_marks;
+
+        void bva_ensure_marks(unsigned idx) {
+            if (idx >= m_bva_marks.size()) m_bva_marks.resize(idx + 1, 0);
+        }
+        void bva_mark(literal l, unsigned char bit) {
+            bva_ensure_marks(l.index());
+            m_bva_marks[l.index()] |= bit;
+        }
+        void bva_unmark(literal l, unsigned char bit) {
+            if (l.index() < m_bva_marks.size()) m_bva_marks[l.index()] &= ~bit;
+        }
+        bool bva_is_marked(literal l, unsigned char bit) const {
+            unsigned idx = l.index();
+            return idx < m_bva_marks.size() && (m_bva_marks[idx] & bit) != 0;
+        }
+
         unsigned num_nonlearned_bin(literal l) const;
         unsigned get_to_elim_cost(bool_var v) const;
         void order_vars_for_elim(bool_var_vector & r);
+
+        // Dynamic elimination heap management.
+        void elim_heap_update_var(bool_var v);
+        void mark_elim_heap_dirty(bool_var v);
+        void flush_elim_heap_dirty();
         void collect_clauses(literal l, clause_wrapper_vector & r);
         clause_wrapper_vector m_pos_cls;
         clause_wrapper_vector m_neg_cls;
@@ -213,7 +300,35 @@ namespace sat {
         void add_non_learned_binary_clause(literal l1, literal l2);
         void remove_bin_clauses(literal l);
         void remove_clauses(clause_use_list const & cs, literal l);
+
+        // Gate-aware variable elimination (CaDiCaL-style).
+        // Gate detection reduces the number of resolution pairs needed during
+        // variable elimination.  If v is the output of a gate, resolvents
+        // between two gate-definition clauses are always tautological or
+        // redundant, so we only need gate-vs-non-gate resolutions.
+        enum gate_type { GATE_NONE, GATE_EQUIV, GATE_AND, GATE_ITE, GATE_XOR };
+        gate_type    m_gate_type;
+        bool_vector  m_gate_marks; // marks which clause_wrapper entries are gate clauses
+        unsigned     m_num_elim_gate; // gate-assisted eliminations counter
+
+        // Detect v <=> other from binary clauses (v, ~other) and (~v, other).
+        bool find_equivalence(bool_var v, literal & eq_lit);
+
+        // Detect AND gate: v = a1 & a2 & ... & ak.
+        bool find_and_gate(bool_var v);
+
+        // Detect ITE gate: pivot = ITE(cond, a, b) via four ternary clauses.
+        bool find_ite_gate(bool_var v);
+
+        // Detect XOR gate: pivot = a1 ^ a2 ^ ... ^ ak via 2^(k-1) clauses.
+        unsigned     m_xor_lim; // max XOR arity (default 5)
+        bool find_xor_gate(bool_var v);
+
+        // Helper: find a clause matching a literal set in occurrence lists.
+        clause * find_clause_with_lits(literal_vector const & lits);
+
         bool try_eliminate(bool_var v);
+        void increase_elim_bound();
         void elim_vars();
 
         struct blocked_cls_report;
@@ -232,7 +347,7 @@ namespace sat {
         simplifier(solver & s, params_ref const & p);
         ~simplifier();
 
-        void init_search() { m_num_calls = 0; }
+        void init_search() { m_num_calls = 0; m_elim_bound = 0; }
 
         void insert_elim_todo(bool_var v) { m_elim_todo.insert(v); }
 
