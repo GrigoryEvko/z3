@@ -91,6 +91,7 @@ namespace sat {
         unsigned           m_search_unsat_conflicts;
         bool               m_phase_sticky;
         unsigned           m_rephase_base;
+        bool               m_rephase_shuffle;
         unsigned           m_reorder_base;
         double             m_reorder_itau;
         unsigned           m_reorder_activity_scale;
@@ -110,6 +111,7 @@ namespace sat {
         unsigned           m_random_seed;
         unsigned           m_burst_search;
         bool               m_enable_pre_simplify;
+        bool               m_lucky_phase;
         unsigned           m_max_conflicts;
         unsigned           m_num_threads;
         bool               m_ddfw_search;
@@ -158,9 +160,13 @@ namespace sat {
         // backtracking
         unsigned           m_backtrack_scopes;
         unsigned           m_backtrack_init_conflicts;
+        unsigned           m_chrono_level_lim;     // CaDiCaL chronolevelim
+        bool               m_chrono_reuse_trail;   // CaDiCaL chronoreusetrail
 
         bool               m_minimize_lemmas;
+        unsigned           m_shrink;  // per-level UIP shrinking: 0=off, 1=binary only, 2=all
         bool               m_dyn_sub_res;
+        bool               m_otfs;            // on-the-fly strengthening during conflict analysis (CaDiCaL-style)
         bool               m_core_minimize;
         bool               m_core_minimize_partial;
 
@@ -182,11 +188,25 @@ namespace sat {
         // branching heuristic settings.
         branching_heuristic m_branching_heuristic;
         bool               m_anti_exploration;
+
+        // Dual-mode (stable/focused) search -- CaDiCaL-style.
+        bool               m_dual_mode;
+        unsigned           m_stabilize_initial;
+
+        // CaDiCaL-style reason-side literal bumping for VSIDS
+        bool               m_bump_reason;
+        unsigned           m_bump_reason_depth;
+        unsigned           m_bump_reason_limit;
+        unsigned           m_bump_reason_rate;
         double             m_step_size_init;
         double             m_step_size_dec;
         double             m_step_size_min;
         double             m_reward_multiplier;
         double             m_reward_offset;
+
+        // eager subsumption of recently learned clauses (CaDiCaL-style)
+        bool               m_eager_subsume;
+        unsigned           m_eager_subsume_limit;
 
         // simplifier configurations used outside of sat_simplifier
         bool               m_elim_vars;

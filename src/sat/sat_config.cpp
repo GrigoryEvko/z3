@@ -71,6 +71,7 @@ namespace sat {
             throw sat_param_exception("invalid phase selection strategy: always_false, always_true, basic_caching, caching, random");
 
         m_rephase_base      = p.rephase_base();
+        m_rephase_shuffle   = p.rephase_shuffle();
         m_reorder_base      = p.reorder_base();
         m_reorder_itau      = p.reorder_itau();
         m_activity_scale  = p.reorder_activity_scale();
@@ -93,7 +94,8 @@ namespace sat {
         
         m_burst_search    = p.burst_search();
         m_enable_pre_simplify  = p.enable_pre_simplify();
-        
+        m_lucky_phase     = p.lucky_phase();
+
         m_max_conflicts   = p.max_conflicts();
         m_num_threads     = p.threads();
         m_ddfw_search     = p.ddfw_search();
@@ -173,7 +175,7 @@ namespace sat {
         m_gc_initial      = p.gc_initial();
         m_gc_increment    = p.gc_increment();
         m_gc_small_lbd    = p.gc_small_lbd();
-        m_gc_k            = std::min(255u, p.gc_k());
+        m_gc_k            = std::min(31u, p.gc_k());
         m_gc_burst        = p.gc_burst();
         m_gc_defrag       = p.gc_defrag();
 
@@ -181,8 +183,11 @@ namespace sat {
 
         m_backtrack_scopes = p.backtrack_scopes();
         m_backtrack_init_conflicts = p.backtrack_conflicts();
+        m_chrono_level_lim = p.backtrack_chrono_level_lim();
+        m_chrono_reuse_trail = p.backtrack_reuse_trail();
 
         m_minimize_lemmas = p.minimize_lemmas();
+        m_shrink          = p.shrink();
         m_core_minimize   = p.core_minimize();
         m_core_minimize_partial   = p.core_minimize_partial();
         m_drat_check_unsat  = p.drat_check_unsat();
@@ -201,6 +206,7 @@ namespace sat {
         m_drat_binary     = p.drat_binary();
         m_drat_activity   = p.drat_activity();
         m_dyn_sub_res     = p.dyn_sub_res();
+        m_otfs            = p.otfs();
 
         // Parameters used in Liang, Ganesh, Poupart, Czarnecki AAAI 2016.
         m_branching_heuristic = BH_VSIDS;
@@ -212,6 +218,12 @@ namespace sat {
             throw sat_param_exception("invalid branching heuristic: accepted heuristics are 'vsids' or 'chb'");
 
         m_anti_exploration = p.branching_anti_exploration();
+        m_dual_mode = p.dual_mode();
+        m_stabilize_initial = p.dual_mode_stabilize_initial();
+        m_bump_reason       = p.branching_bump_reason();
+        m_bump_reason_depth = p.branching_bump_reason_depth();
+        m_bump_reason_limit = p.branching_bump_reason_limit();
+        m_bump_reason_rate  = p.branching_bump_reason_rate();
         m_step_size_init = 0.40;
         m_step_size_dec  = 0.000001;
         m_step_size_min  = 0.06;
@@ -249,6 +261,9 @@ namespace sat {
         
         m_card_solver = p.cardinality_solver();
         m_xor_solver = false; // prevent users from playing with this option
+
+        m_eager_subsume       = p.eager_subsume();
+        m_eager_subsume_limit = p.eager_subsume_limit();
 
         sat_simplifier_params ssp(_p);
         m_elim_vars = ssp.elim_vars();
