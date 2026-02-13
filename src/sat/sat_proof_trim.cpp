@@ -141,8 +141,9 @@ namespace sat {
         }            
         s.m_trail.shrink(j);
         // verbose_stream() << "trail after " << s.m_trail << "\n";
-        s.m_inconsistent = false; 
+        s.m_inconsistent = false;
         s.m_qhead = s.m_trail.size();
+        s.m_qhead_binary = s.m_trail.size();
         s.propagate(false);
     }
 
@@ -188,6 +189,7 @@ namespace sat {
             s.propagate(false);
             if (!s.inconsistent()) {
                 s.m_qhead = 0;
+                s.m_qhead_binary = 0;
                 s.propagate(false);
             }
             if (!s.inconsistent())

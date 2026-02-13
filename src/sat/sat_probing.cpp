@@ -86,14 +86,14 @@ namespace sat {
             s.assign_scoped(l);
             m_counter--;
             unsigned old_tr_sz = s.m_trail.size();
-            s.propagate(false);
+            s.propagate_probing();
             if (s.inconsistent()) {
                 TRACE(sat, tout << "probe failed: " << ~l << "\n";);
                 // ~l must be true
                 s.drat_explain_conflict();
                 s.pop(1);
                 s.assign_scoped(~l);
-                s.propagate(false);
+                s.propagate_probing();
                 return false;
             }
             // collect literals that were assigned after assigning l
@@ -116,7 +116,7 @@ namespace sat {
                 m_num_assigned++;
             }
         }
-        s.propagate(false);
+        s.propagate_probing();
         return !s.inconsistent();
     }
 
@@ -130,7 +130,7 @@ namespace sat {
         s.assign_scoped(l);
         TRACE(sat, tout << "probing " << l << "\n";);
         unsigned old_tr_sz = s.m_trail.size();
-        s.propagate(false);
+        s.propagate_probing();
         if (s.inconsistent()) {
             // ~l must be true
             TRACE(sat, tout << "probe failed: " << ~l << "\n";
@@ -138,7 +138,7 @@ namespace sat {
             s.drat_explain_conflict();
             s.pop(1);
             s.assign_scoped(~l);
-            s.propagate(false);
+            s.propagate_probing();
             m_num_assigned++;
             return;
         }
