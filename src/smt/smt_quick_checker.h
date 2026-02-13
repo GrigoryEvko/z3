@@ -78,12 +78,13 @@ namespace smt {
         ast_manager &        m_manager;
         collector            m_collector;
         expr_ref_vector      m_new_exprs;
-        vector<enode_vector> m_candidate_vectors; 
+        vector<enode_vector> m_candidate_vectors;
         check_cache          m_check_cache;
         canonize_cache       m_canonize_cache;
         unsigned             m_num_bindings;
         ptr_vector<enode>    m_bindings;
-        
+        unsigned             m_budget;
+
         bool all_args(app * a, bool is_true);
         bool any_arg(app * a, bool is_true);
         bool check_core(expr * n, bool is_true);
@@ -91,9 +92,10 @@ namespace smt {
         bool check_quantifier(quantifier * n, bool is_true);
         expr * canonize(expr * n);
         bool process_candidates(quantifier * q, bool unsat);
-        
+
     public:
         quick_checker(context & c);
+        bool has_budget() const { return m_budget > 0; }
         bool instantiate_unsat(quantifier * q);
         bool instantiate_not_sat(quantifier * q);
         bool instantiate_not_sat(quantifier * q, unsigned num_candidates, expr * const * candidates);

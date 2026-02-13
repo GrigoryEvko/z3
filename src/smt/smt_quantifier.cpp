@@ -134,6 +134,8 @@ namespace smt {
         ptr_vector<quantifier>                 m_quantifiers;
         scoped_ptr<quantifier_manager_plugin>  m_plugin;
         unsigned                               m_num_instances = 0;
+        unsigned                               m_qc_skip_count = 0;
+        unsigned                               m_qc_skip_threshold = 0;
 
         imp(quantifier_manager & wrapper, context & ctx, smt_params & p, quantifier_manager_plugin * plugin):
             m_wrapper(wrapper),
@@ -323,6 +325,8 @@ namespace smt {
 
         void init_search_eh() {
             m_num_instances = 0;
+            m_qc_skip_count = 0;
+            m_qc_skip_threshold = 0;
             for (quantifier * q : m_quantifiers) {
                 get_stat(q)->reset_num_instances_curr_search();
             }
@@ -379,22 +383,43 @@ namespace smt {
                 return true;
             if (m_quantifiers.empty())
                 return true;
+            // Exponential back-off: skip invocations that are unlikely to find
+            // new instances, avoiding repeated overhead on hard queries.
+            if (m_qc_skip_count < m_qc_skip_threshold) {
+                ++m_qc_skip_count;
+                return true;
+            }
+            m_qc_skip_count = 0;
             IF_VERBOSE(10, verbose_stream() << "quick checking quantifiers (unsat)...\n";);
             quick_checker mc(m_context);
             bool result = true;
-            for (quantifier* q : m_quantifiers) 
+            for (quantifier* q : m_quantifiers) {
+                if (!mc.has_budget())
+                    break;
                 if (check_quantifier(q) && mc.instantiate_unsat(q))
                     result = false;
+            }
             if (m_params.m_qi_quick_checker == MC_UNSAT || !result) {
+                if (!result)
+                    m_qc_skip_threshold = 0;
+                else
+                    m_qc_skip_threshold = std::min(m_qc_skip_threshold + 1, 16u);
                 m_qi_queue.instantiate();
                 return result;
             }
             // MC_NO_SAT is too expensive (it creates too many irrelevant instances).
             // we should use MBQI=true instead.
             IF_VERBOSE(10, verbose_stream() << "quick checking quantifiers (not sat)...\n";);
-            for (quantifier* q : m_quantifiers) 
+            for (quantifier* q : m_quantifiers) {
+                if (!mc.has_budget())
+                    break;
                 if (check_quantifier(q) && mc.instantiate_not_sat(q))
                     result = false;
+            }
+            if (!result)
+                m_qc_skip_threshold = 0;
+            else
+                m_qc_skip_threshold = std::min(m_qc_skip_threshold + 1, 16u);
             m_qi_queue.instantiate();
             return result;
         }
@@ -408,7 +433,7 @@ namespace smt {
                     result = presult;
                 if (m_context.can_propagate())
                     result = FC_CONTINUE;
-                if (result == FC_DONE && !m_params.m_qi_lazy_quick_checker && !quick_check_quantifiers())
+                if (result == FC_DONE && m_params.m_qi_quick_checker != MC_NO && !quick_check_quantifiers())
                     result = FC_CONTINUE;
                 return result;
             }

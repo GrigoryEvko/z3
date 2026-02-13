@@ -67,7 +67,7 @@ namespace smt {
             if (is_var(arg)) {
                 unsigned idx = to_var(arg)->get_idx();
                 if (idx >= m_num_vars)
-                    return;
+                    continue;
                 if (m_already_found[idx] && m_conservative) {
                     enode_set & s  = m_candidates[idx];
                     enode_set & ns = m_tmp_candidates[idx];
@@ -152,7 +152,8 @@ namespace smt {
         m_context(c),
         m_manager(c.get_manager()),
         m_collector(c),
-        m_new_exprs(m_manager) {
+        m_new_exprs(m_manager),
+        m_budget(5000) {
     }
 
     /**
@@ -208,18 +209,35 @@ namespace smt {
             szs.push_back(sz);
             it.push_back(0);
         }
+
+        // Guard against combinatorial explosion: compute the Cartesian product
+        // size and bail out if it exceeds a reasonable bound. Each iteration
+        // involves canonizing expressions and model evaluation, so we keep
+        // the limit conservative.
+        uint64_t product_size = 1;
+        for (unsigned i = 0; i < szs.size(); ++i) {
+            product_size *= szs[i];
+            if (product_size > 1000) {
+                TRACE(quick_checker, tout << "skipping quick check: product size > 1000\n";);
+                return false;
+            }
+        }
+
         TRACE(quick_checker_sizes, tout << mk_pp(q, m_manager) << "\n"; for (unsigned i = 0; i < szs.size(); ++i) tout << szs[i] << " "; tout << "\n";);
-        TRACE(quick_checker_candidates, 
+        TRACE(quick_checker_candidates,
               tout << "candidates:\n";
               for (unsigned i = 0; i < m_num_bindings; ++i) {
                   enode_vector & v           = m_candidate_vectors[i];
-                  for (enode * n : v) 
+                  for (enode * n : v)
                       tout << "#" << n->get_owner_id() << " ";
                   tout << "\n";
               });
         bool result = false;
         m_bindings.reserve(m_num_bindings+1, 0);
         do {
+            if (m_budget == 0)
+                break;
+            --m_budget;
             for (unsigned i = 0; i < m_num_bindings; ++i)
                 m_bindings[m_num_bindings - i - 1] = m_candidate_vectors[i][it[i]];
             if (!m_context.contains_instance(q, m_num_bindings, m_bindings.data())) {
@@ -233,10 +251,10 @@ namespace smt {
                     is_candidate = !check_quantifier(q, true);
                 if (is_candidate) {
                     TRACE(quick_checker, tout << "found new candidate\n";);
-                    TRACE(quick_checker_sizes, tout << "found new candidate\n"; 
+                    TRACE(quick_checker_sizes, tout << "found new candidate\n";
                           for (unsigned i = 0; i < m_num_bindings; ++i) tout << "#" << m_bindings[i]->get_owner_id() << " "; tout << "\n";);
                     unsigned max_generation = get_max_generation(m_num_bindings, m_bindings.data());
-                    if (m_context.add_instance(q, nullptr /* no pattern was used */, m_num_bindings, m_bindings.data(), nullptr, 
+                    if (m_context.add_instance(q, nullptr /* no pattern was used */, m_num_bindings, m_bindings.data(), nullptr,
                                                max_generation,
                                                0,  // min_top_generation is only available for instances created by the MAM
                                                0,  // max_top_generation is only available for instances created by the MAM
