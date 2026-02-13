@@ -33,6 +33,9 @@ namespace sat {
         m_frozen(false),
         m_reinit_stack(false),
         m_tier(TIER2),
+        m_garbage(false),
+        m_reason(false),
+        m_covered(false),
         m_inact_rounds(0),
         m_glue(255),
         m_psm(255) {
@@ -188,12 +191,16 @@ namespace sat {
         size_t size = clause::get_obj_size(other.size());
         void * mem = m_allocator.allocate(size);
         clause * cls = new (mem) clause(m_id_gen.mk(), other.size(), other.m_lits, other.is_learned());
-        cls->m_reinit_stack = other.on_reinit_stack();
-        cls->m_glue   = other.glue();
-        cls->m_psm    = other.psm();
-        cls->m_frozen = other.frozen();
-        cls->m_tier   = other.m_tier;
-        cls->m_approx = other.approx();
+        cls->m_reinit_stack  = other.on_reinit_stack();
+        cls->m_glue          = other.glue();
+        cls->m_psm           = other.psm();
+        cls->m_frozen        = other.frozen();
+        cls->m_tier          = other.m_tier;
+        cls->m_garbage       = other.m_garbage;
+        cls->m_reason        = other.m_reason;
+        cls->m_covered       = other.m_covered;
+        cls->m_inact_rounds  = other.m_inact_rounds;
+        cls->m_approx        = other.approx();
         return cls;
     }
 
@@ -203,6 +210,20 @@ namespace sat {
         size_t size = clause::get_obj_size(cls->m_capacity);
         cls->~clause();
         m_allocator.deallocate(size, cls);
+    }
+
+    void clause_allocator::free_clause_memory(clause * cls) {
+        size_t size = clause::get_obj_size(cls->m_capacity);
+        cls->~clause();
+        m_allocator.deallocate(size, cls);
+    }
+
+    void clause_allocator::recycle_id(clause * cls) {
+        m_id_gen.recycle(cls->id());
+    }
+
+    unsigned clause_allocator::mk_id() {
+        return m_id_gen.mk();
     }
 
     std::ostream & operator<<(std::ostream & out, clause const & c) {

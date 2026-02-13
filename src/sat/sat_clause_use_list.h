@@ -97,6 +97,18 @@ namespace sat {
         
         bool check_invariant() const;
 
+        // Move clause to front of underlying vector (CaDiCaL move-to-front heuristic).
+        // When a "killing" clause is found (one that prevents blocking), moving it to
+        // front ensures it is checked first next time, enabling faster early abort.
+        void move_to_front(clause & c) {
+            for (unsigned i = 0; i < m_clauses.size(); ++i) {
+                if (m_clauses[i] == &c) {
+                    if (i > 0) std::swap(m_clauses[0], m_clauses[i]);
+                    return;
+                }
+            }
+        }
+
         // iterate & compress
         class iterator {            
             clause_vector & m_clauses;

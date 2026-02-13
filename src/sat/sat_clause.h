@@ -39,6 +39,7 @@ namespace sat {
 
     class clause {
         friend class clause_allocator;
+        friend class solver;
         friend class tmp_clause;
         unsigned           m_id;
         unsigned           m_size;
@@ -51,7 +52,10 @@ namespace sat {
         unsigned           m_frozen:1;
         unsigned           m_reinit_stack:1;
         unsigned           m_tier:2;         // clause tier: 0=TIER2, 1=TIER1, 2=CORE
-        unsigned           m_inact_rounds:8;
+        unsigned           m_garbage:1;      // marked for lazy GC (CaDiCaL-style mark-then-collect)
+        unsigned           m_reason:1;       // protected as reason clause during GC
+        unsigned           m_covered:1;      // CCE already tried on this clause (CaDiCaL-style)
+        unsigned           m_inact_rounds:5; // inactivity rounds for gc_dyn_psm (max 31)
         unsigned           m_glue:8;
         unsigned           m_psm:8;  // transient field used during gc
         literal            m_lits[0];
@@ -63,6 +67,8 @@ namespace sat {
         unsigned id() const { return m_id; }
         unsigned size() const { return m_size; }
         unsigned capacity() const { return m_capacity; }
+        static size_t obj_size(unsigned num_lits) { return sizeof(clause) + num_lits * sizeof(literal); }
+        size_t bytes() const { return obj_size(m_size); }
         literal & operator[](unsigned idx) { SASSERT(idx < m_size); return m_lits[idx]; }
         literal const & operator[](unsigned idx) const { SASSERT(idx < m_size); return m_lits[idx]; }
         bool is_learned() const { return m_learned; }
@@ -88,7 +94,7 @@ namespace sat {
         void mark_used() { m_used = true; }
         void unmark_used() { m_used = false; }
         bool was_used() const { return m_used; }
-        void inc_inact_rounds() { if (m_inact_rounds < 255) m_inact_rounds++; }
+        void inc_inact_rounds() { if (m_inact_rounds < 31) m_inact_rounds++; }
         void reset_inact_rounds() { m_inact_rounds = 0; }
         unsigned inact_rounds() const { return m_inact_rounds; }
         bool frozen() const { return m_frozen; }
@@ -116,6 +122,22 @@ namespace sat {
 
         bool on_reinit_stack() const { return m_reinit_stack; }
         void set_reinit_stack(bool f) { m_reinit_stack = f; }
+
+        // Covered clause flag (CaDiCaL-style): tracks whether CCE has been
+        // attempted on this clause. Avoids retrying clauses already known
+        // not to be coverable within the same simplification epoch.
+        bool is_covered() const { return m_covered; }
+        void set_covered(bool f) { m_covered = f; }
+
+        // Lazy GC flags (CaDiCaL-style mark-then-collect):
+        //   m_garbage: clause is logically deleted, pending physical collection.
+        //   m_reason:  clause is a current reason clause, protected during GC.
+        //   collectible(): garbage AND not protected as reason => safe to free.
+        bool is_garbage() const { return m_garbage; }
+        void set_garbage(bool f) { m_garbage = f; }
+        bool is_reason() const { return m_reason; }
+        void set_reason(bool f) { m_reason = f; }
+        bool collectible() const { return m_garbage && !m_reason; }
     };
 
     std::ostream & operator<<(std::ostream & out, clause_vector const & cs);
@@ -160,6 +182,9 @@ namespace sat {
         clause *      mk_clause(unsigned num_lits, literal const * lits, bool learned);
         clause *      copy_clause(clause const& other);
         void          del_clause(clause * cls);
+        void          recycle_id(clause * cls);
+        unsigned      mk_id();
+        void          free_clause_memory(clause * cls);
     };
 
     /**

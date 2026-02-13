@@ -123,6 +123,7 @@ namespace sat {
         virtual bool is_blocked(literal l, ext_constraint_idx) { return false; }
         virtual bool check_model(model const& m) const { return true; }
         virtual void gc_vars(unsigned num_vars) {}
+        virtual void compact_vars(unsigned const* var_map, unsigned new_num_vars) {}
         virtual bool should_research(sat::literal_vector const& core) { return false;}
         virtual void add_assumptions(literal_set& ext_assumptions) {}
         virtual bool tracking_assumptions() { return false; }

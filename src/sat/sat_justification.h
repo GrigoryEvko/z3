@@ -30,6 +30,7 @@ namespace sat {
         justification(unsigned lvl, ext_justification_idx idx, kind k):m_level(lvl), m_val1(idx), m_val2(k) {}
         unsigned val1() const { return static_cast<unsigned>(m_val1); }
     public:
+        justification():m_level(0), m_val1(0), m_val2(NONE) {}
         justification(unsigned lvl):m_level(lvl), m_val1(0), m_val2(NONE) {}
         explicit justification(unsigned lvl, literal l):m_level(lvl), m_val1(l.to_uint()), m_val2(BINARY) {}
 
