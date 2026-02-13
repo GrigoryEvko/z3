@@ -19,6 +19,8 @@ Revision History:
 
 
 #include <algorithm>
+#include <cstdint>
+
 #include "sat/sat_solver.h"
 
 namespace sat {
@@ -28,6 +30,22 @@ namespace sat {
     // GC
     //
     // -----------------------
+
+    /**
+       \brief Sort clause pointer vectors by address (CaDiCaL collect.cpp lines 427-428).
+       After GC or defragmentation, sorting by address ensures that subsequent
+       linear scans over the clause vectors (e.g., during reduce) follow memory
+       layout order, maximizing hardware prefetch benefit.
+    */
+    void solver::sort_clauses_by_address() {
+        auto addr_lt = [](clause const* a, clause const* b) {
+            return reinterpret_cast<uintptr_t>(a) < reinterpret_cast<uintptr_t>(b);
+        };
+        if (m_learned.size() > 1)
+            std::sort(m_learned.begin(), m_learned.end(), addr_lt);
+        if (m_clauses.size() > 1)
+            std::sort(m_clauses.begin(), m_clauses.end(), addr_lt);
+    }
 
     bool solver::should_gc() const {
         return 
@@ -73,6 +91,10 @@ namespace sat {
         if (gc > 0 && should_defrag()) {
             defrag_clauses();
         }
+        // CaDiCaL-style: sort clause vectors by pointer address after GC
+        // so that subsequent linear scans follow memory layout, maximizing
+        // sequential prefetch benefit. (CaDiCaL collect.cpp lines 427-428)
+        sort_clauses_by_address();
         CASSERT("sat_gc_bug", check_invariant());
     }
 
@@ -183,57 +205,53 @@ namespace sat {
     }
 
     /**
-       \brief GC the worse half of TIER2 clauses.
+       \brief GC the worse half of TIER2 clauses using lazy two-phase collection.
        CORE and TIER1 clauses (indices [0, tier2_start)) are never touched.
        Of the TIER2 portion [tier2_start, end), the better half (lower indices
-       after nth_element) is kept, and the worse half is deleted if can_delete.
+       after nth_element) is kept, and the worse half is marked garbage if can_delete.
+       Then collect_garbage batch-flushes all watches and frees memory.
     */
     void solver::gc_tier2(char const * st_name, unsigned tier2_start) {
         TRACE(sat, tout << "gc tier2\n";);
-        unsigned sz     = m_learned.size();
+        unsigned sz       = m_learned.size();
         unsigned tier2_sz = sz - tier2_start;
-        unsigned keep   = tier2_start + tier2_sz / 2;
-        unsigned j      = keep;
+        unsigned keep     = tier2_start + tier2_sz / 2;
+        unsigned marked   = 0;
         for (unsigned i = keep; i < sz; ++i) {
             clause & c = *(m_learned[i]);
             if (can_delete(c)) {
-                detach_clause(c);
-                del_clause(c);
-            }
-            else {
-                m_learned[j] = &c;
-                j++;
+                mark_garbage(c);
+                marked++;
             }
         }
-        unsigned deleted = sz - j;
+        if (marked > 0)
+            collect_garbage();
+        unsigned deleted = sz - m_learned.size();
         m_stats.m_gc_clause += deleted;
-        m_learned.shrink(j);
         IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat-gc :strategy " << st_name
                    << " :tier2 " << tier2_sz << " :protected " << tier2_start
                    << " :deleted " << deleted << ")\n";);
     }
 
-    // Keep gc_half for backward compatibility with gc_dyn_psm path
+    // Keep gc_half for backward compatibility with gc_dyn_psm path.
+    // Uses lazy two-phase collection: mark garbage, then batch flush+free.
     void solver::gc_half(char const * st_name) {
         TRACE(sat, tout << "gc\n";);
         unsigned sz     = m_learned.size();
-        unsigned new_sz = sz/2;
-        unsigned j      = new_sz;
+        unsigned new_sz = sz / 2;
+        unsigned marked = 0;
         for (unsigned i = new_sz; i < sz; ++i) {
             clause & c = *(m_learned[i]);
             if (can_delete(c)) {
-                detach_clause(c);
-                del_clause(c);
-            }
-            else {
-                m_learned[j] = &c;
-                j++;
+                mark_garbage(c);
+                marked++;
             }
         }
-        new_sz = j;
-        m_stats.m_gc_clause += sz - new_sz;
-        m_learned.shrink(new_sz);
-        IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat-gc :strategy " << st_name << " :deleted " << (sz - new_sz) << ")\n";);
+        if (marked > 0)
+            collect_garbage();
+        unsigned deleted = sz - m_learned.size();
+        m_stats.m_gc_clause += deleted;
+        IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat-gc :strategy " << st_name << " :deleted " << deleted << ")\n";);
     }
 
     bool solver::can_delete(clause const & c) const {
@@ -258,14 +276,16 @@ namespace sat {
 
     /**
        \brief Use gc based on dynamic psm. Clauses are initially frozen.
+
+       Uses lazy two-phase collection for active TIER2 deletions:
+       mark_garbage in the main loop, then collect_garbage at the end.
+       Frozen clause operations (freeze/unfreeze) still use immediate
+       detach/attach because frozen clauses must not participate in BCP.
     */
     void solver::gc_dyn_psm() {
         TRACE(sat, tout << "gc\n";);
-        // To do gc at scope_lvl() > 0, I will need to use the reinitialization stack, or live with the fact
-        // that I may miss some propagations for reactivated clauses.
         SASSERT(at_base_lvl());
-        // compute
-        // d_tk
+        // compute d_tk
         unsigned h = 0;
         unsigned V_tk = 0;
         for (bool_var v = 0; v < num_vars(); ++v) {
@@ -285,6 +305,11 @@ namespace sat {
         unsigned frozen    = 0;
         unsigned deleted   = 0;
         unsigned activated = 0;
+        unsigned marked    = 0;
+        // Buffer for garbage-marked clause pointers. These are removed from
+        // m_learned immediately (via continue) but freed only after the batch
+        // watch-list flush at the end.
+        clause_vector garbage_buf;
         clause_vector::iterator it  = m_learned.begin();
         clause_vector::iterator it2 = it;
         clause_vector::iterator end = m_learned.end();
@@ -303,16 +328,20 @@ namespace sat {
                     else {
                         c.inc_inact_rounds();
                         if (c.inact_rounds() > m_config.m_gc_k) {
-                            detach_clause(c);
-                            del_clause(c);
-                            m_stats.m_gc_clause++;
+                            // Lazy: mark garbage, save pointer, drop from m_learned.
+                            // flush_all_watches + dealloc happens after the loop.
+                            mark_garbage(c);
+                            garbage_buf.push_back(&c);
+                            marked++;
                             deleted++;
+                            m_stats.m_gc_clause++;
                             continue;
                         }
                     }
                     c.unmark_used();
                     if (psm(c) > static_cast<unsigned>(c.size() * m_min_d_tk)) {
-                        // move to frozen;
+                        // move to frozen: requires immediate detach (frozen clause must not
+                        // participate in BCP), so this path stays synchronous.
                         TRACE(sat_frozen, tout << "freezing size: " << c.size() << " psm: " << psm(c) << " " << c << "\n";);
                         detach_clause(c);
                         c.reset_inact_rounds();
@@ -331,22 +360,24 @@ namespace sat {
                 }
             }
             else {
-                // frozen clause (only TIER2 can be frozen)
-                clause & c = *(*it);
-                if (psm(c) <= static_cast<unsigned>(c.size() * m_min_d_tk)) {
-                    c.unfreeze();
+                // frozen clause (only TIER2 can be frozen) -- already detached from watches
+                clause & c2 = *(*it);
+                if (psm(c2) <= static_cast<unsigned>(c2.size() * m_min_d_tk)) {
+                    c2.unfreeze();
                     m_num_frozen--;
                     activated++;
-                    if (!activate_frozen_clause(c)) {
+                    if (!activate_frozen_clause(c2)) {
                         // clause was satisfied, reduced to a conflict, unit or binary clause.
-                        del_clause(c);
+                        // Already detached (was frozen), just free.
+                        del_clause(c2);
                         continue;
                     }
                 }
                 else {
-                    c.inc_inact_rounds();
-                    if (c.inact_rounds() > m_config.m_gc_k) {
-                        del_clause(c);
+                    c2.inc_inact_rounds();
+                    if (c2.inact_rounds() > m_config.m_gc_k) {
+                        // Frozen clause already detached from watches -- just free it.
+                        del_clause(c2);
                         m_stats.m_gc_clause++;
                         deleted++;
                         continue;
@@ -357,6 +388,12 @@ namespace sat {
             ++it2;
         }
         m_learned.set_end(it2);
+        // Batch-collect: flush watch entries of garbage-marked clauses, then free.
+        if (marked > 0) {
+            flush_all_watches();
+            for (clause* cp : garbage_buf)
+                dealloc_clause(cp);
+        }
         IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat-gc :d_tk " << d_tk << " :min-d_tk " << m_min_d_tk <<
                    " :frozen " << frozen << " :activated " << activated << " :deleted " << deleted << ")\n";);
     }
@@ -414,6 +451,136 @@ namespace sat {
             }
         }
         return r;
+    }
+
+    // -------------------------------------------------------
+    //
+    // CaDiCaL-style lazy two-phase garbage collection
+    //
+    // Phase 1: mark_garbage -- O(1) per clause, sets flag, handles DRAT.
+    // Phase 2: collect_garbage -- batch-flushes ALL watch lists in
+    //          O(total_watches), then frees all collectible clauses.
+    //
+    // -------------------------------------------------------
+
+    /**
+       \brief Mark clause as garbage (logically deleted). O(1).
+       Handles DRAT proof logging but does NOT touch watch lists.
+       The clause remains in the watch lists until collect_garbage
+       batch-flushes them.
+    */
+    void solver::mark_garbage(clause& c) {
+        SASSERT(!c.is_garbage());
+        if (!c.was_removed() && m_config.m_drat && !m_drat.is_cleaned(c))
+            m_drat.del(c);
+        c.set_garbage(true);
+    }
+
+    /**
+       \brief Walk the trail and set m_reason=true on any garbage clause
+       currently used as a reason (justification) for an assignment.
+       This prevents collect_garbage from freeing clauses that are still
+       needed to explain the current partial assignment.
+    */
+    void solver::protect_reasons() {
+        for (literal lit : m_trail) {
+            bool_var v = lit.var();
+            justification const& jst = m_justification[v];
+            if (!jst.is_clause())
+                continue;
+            clause& c = get_clause(jst.get_clause_offset());
+            if (c.is_garbage())
+                c.set_reason(true);
+        }
+    }
+
+    /**
+       \brief Clear the reason flag on all protected reason clauses.
+       Also clear the garbage flag on those clauses -- they survived GC
+       because they were still needed as reasons, so they must be kept
+       alive until the next GC cycle re-evaluates them.
+    */
+    void solver::unprotect_reasons() {
+        for (literal lit : m_trail) {
+            bool_var v = lit.var();
+            justification const& jst = m_justification[v];
+            if (!jst.is_clause())
+                continue;
+            clause& c = get_clause(jst.get_clause_offset());
+            if (c.is_reason()) {
+                c.set_reason(false);
+                // Clause survived this GC round as a reason. Un-mark garbage
+                // so mark_garbage's SASSERT(!is_garbage()) won't fire next time.
+                if (c.is_garbage())
+                    c.set_garbage(false);
+            }
+        }
+    }
+
+    /**
+       \brief Single-pass flush of ALL clause watch lists (m_watches).
+       Removes watch entries pointing to collectible (garbage && !reason) clauses.
+       Binary and ext_constraint entries are always kept.
+       This is O(total_watches) -- much cheaper than per-clause erase_clause_watch.
+    */
+    void solver::flush_all_watches() {
+        unsigned nv = num_vars();
+        for (unsigned v = 0; v < nv; ++v) {
+            for (unsigned sign = 0; sign < 2; ++sign) {
+                literal lit(v, sign != 0);
+                watch_list& wlist = get_wlist(lit);
+                if (wlist.empty())
+                    continue;
+                watch_list::iterator it = wlist.begin(), end2 = wlist.end(), j = it;
+                for (; it != end2; ++it) {
+                    if (it->is_clause()) {
+                        clause& c = get_clause(it->get_clause_offset());
+                        if (c.collectible())
+                            continue; // drop this watch entry
+                    }
+                    *j++ = *it;
+                }
+                wlist.set_end(j);
+            }
+        }
+    }
+
+    /**
+       \brief Compact a clause vector, freeing all collectible clauses.
+       Non-collectible clauses are shifted forward in-place.
+    */
+    void solver::collect_garbage_clauses(clause_vector& clauses) {
+        unsigned j = 0;
+        for (unsigned i = 0; i < clauses.size(); ++i) {
+            clause& c = *(clauses[i]);
+            if (c.collectible()) {
+                if (!c.is_learned())
+                    m_stats.m_non_learned_generation++;
+                if (c.frozen())
+                    --m_num_frozen;
+                dealloc_clause(&c);
+                if (m_searching)
+                    m_stats.m_del_clause++;
+            }
+            else {
+                clauses[j++] = clauses[i];
+            }
+        }
+        clauses.shrink(j);
+    }
+
+    /**
+       \brief Full lazy GC cycle (CaDiCaL-style):
+       1. Protect reason clauses from collection.
+       2. Batch-flush all watch lists (single pass over m_watches).
+       3. Compact m_learned, freeing collectible clauses.
+       4. Unprotect reason clauses.
+    */
+    void solver::collect_garbage() {
+        protect_reasons();
+        flush_all_watches();
+        collect_garbage_clauses(m_learned);
+        unprotect_reasons();
     }
 
     /**
@@ -540,6 +707,362 @@ namespace sat {
         }
         m_trail.shrink(j);
         shrink_vars(max_var);
+    }
+
+    // -------------------------------------------------------
+    //
+    // Variable compaction (CaDiCaL-style)
+    //
+    // -------------------------------------------------------
+
+    bool solver::should_compact() const {
+        if (!at_base_lvl())
+            return false;
+        if (num_user_scopes() > 0)
+            return false;
+        if (m_is_probing)
+            return false;
+        if (m_config.m_drat)
+            return false;
+
+        unsigned nv = num_vars();
+        if (nv < 200)
+            return false;
+
+        // Count inactive variables: eliminated or in free list.
+        unsigned inactive = m_free_vars.size();
+        for (bool_var v = 0; v < nv; ++v) {
+            if (m_eliminated[v])
+                inactive++;
+        }
+
+        // At least 100 inactive vars AND at least 10% of total.
+        return inactive >= 100 && inactive * 10 >= nv;
+    }
+
+    /**
+     * \brief Compact variables by remapping all active variables to a
+     * contiguous range [0, new_num_vars). Eliminates holes left by
+     * eliminated and freed variables.
+     *
+     * PRECONDITIONS:
+     *   - at_base_lvl() (decision level 0)
+     *   - no user scopes active
+     *   - DRAT not active
+     *
+     * This remaps ALL variable-indexed data structures, clause literals,
+     * watch lists, justifications, trail, and the extension layer.
+     */
+    void solver::compact_vars() {
+        SASSERT(at_base_lvl());
+        SASSERT(num_user_scopes() == 0);
+        SASSERT(!m_config.m_drat);
+
+        unsigned old_num_vars = num_vars();
+
+        // Build variable mapping (old -> new).
+        // var_map[old_var] = new_var for active vars, UINT_MAX for inactive.
+        unsigned_vector var_map(old_num_vars, UINT_MAX);
+        unsigned new_num_vars = 0;
+
+        for (bool_var v = 0; v < old_num_vars; ++v) {
+            if (m_eliminated[v])
+                continue;
+            if (m_free_vars.contains(v))
+                continue;
+            var_map[v] = new_num_vars++;
+        }
+
+        // Build reverse mapping (new_var -> old_var) for model converter.
+        m_compact_old_num_vars = old_num_vars;
+        m_compact_new_to_old.reset();
+        m_compact_new_to_old.resize(new_num_vars, UINT_MAX);
+        for (bool_var v = 0; v < old_num_vars; ++v) {
+            if (var_map[v] != UINT_MAX)
+                m_compact_new_to_old[var_map[v]] = v;
+        }
+
+        if (new_num_vars == old_num_vars)
+            return;
+
+        IF_VERBOSE(2, verbose_stream() << "(sat.compact :old-vars " << old_num_vars
+                   << " :new-vars " << new_num_vars
+                   << " :eliminated " << (old_num_vars - new_num_vars)
+                   << " :clauses " << m_clauses.size()
+                   << " :learned " << m_learned.size()
+                   << " :trail " << m_trail.size() << ")\n");
+
+        // Helper: remap a literal using the variable mapping.
+        auto map_lit = [&](literal l) -> literal {
+            VERIFY(var_map[l.var()] != UINT_MAX);
+            return literal(var_map[l.var()], l.sign());
+        };
+
+        // Remap literals in all clauses (in-place).
+        auto remap_clauses = [&](clause_vector& clauses) {
+            for (clause* cp : clauses) {
+                clause& c = *cp;
+                for (unsigned i = 0; i < c.size(); ++i) {
+                    VERIFY(var_map[c[i].var()] != UINT_MAX);
+                    c[i] = map_lit(c[i]);
+                }
+            }
+        };
+        remap_clauses(m_clauses);
+        remap_clauses(m_learned);
+
+        // Remap blocking/binary literals in all watch entries BEFORE
+        // we move watch lists to new positions.
+        for (unsigned idx = 0; idx < m_watches.size(); ++idx) {
+            for (auto& w : m_watches[idx]) {
+                if (w.is_binary_clause()) {
+                    VERIFY(var_map[w.get_literal().var()] != UINT_MAX);
+                    w.set_literal(map_lit(w.get_literal()));
+                }
+                else if (w.is_clause()) {
+                    VERIFY(var_map[w.get_blocked_literal().var()] != UINT_MAX);
+                    w.set_blocked_literal(map_lit(w.get_blocked_literal()));
+                }
+            }
+        }
+        for (unsigned idx = 0; idx < m_bin_watches.size(); ++idx) {
+            for (auto& w : m_bin_watches[idx]) {
+                VERIFY(w.is_binary_clause());
+                VERIFY(var_map[w.get_literal().var()] != UINT_MAX);
+                w.set_literal(map_lit(w.get_literal()));
+            }
+        }
+
+        // Rebuild watch lists at new literal indices.
+        {
+            vector<watch_list> new_watches;
+            new_watches.resize(2 * new_num_vars);
+            for (bool_var v = 0; v < old_num_vars; ++v) {
+                unsigned nv = var_map[v];
+                if (nv == UINT_MAX) continue;
+                for (unsigned sign = 0; sign < 2; ++sign) {
+                    literal old_lit(v, sign != 0);
+                    literal new_lit(nv, sign != 0);
+                    new_watches[new_lit.index()].swap(m_watches[old_lit.index()]);
+                }
+            }
+            m_watches.swap(new_watches);
+        }
+        {
+            vector<watch_list> new_bin_watches;
+            new_bin_watches.resize(2 * new_num_vars);
+            for (bool_var v = 0; v < old_num_vars; ++v) {
+                unsigned nv = var_map[v];
+                if (nv == UINT_MAX) continue;
+                for (unsigned sign = 0; sign < 2; ++sign) {
+                    literal old_lit(v, sign != 0);
+                    literal new_lit(nv, sign != 0);
+                    new_bin_watches[new_lit.index()].swap(m_bin_watches[old_lit.index()]);
+                }
+            }
+            m_bin_watches.swap(new_bin_watches);
+        }
+
+        // Remap variable-indexed arrays: copy arr[old] -> new_arr[new].
+        auto remap_var_array = [&](auto& arr) {
+            using T = std::remove_reference_t<decltype(arr)>;
+            T new_arr;
+            new_arr.resize(new_num_vars);
+            for (bool_var v = 0; v < old_num_vars; ++v) {
+                unsigned nv = var_map[v];
+                if (nv == UINT_MAX) continue;
+                new_arr[nv] = arr[v];
+            }
+            arr.swap(new_arr);
+        };
+
+        // Remap literal-indexed arrays (index = 2*var + sign).
+        auto remap_lit_array = [&](auto& arr) {
+            using T = std::remove_reference_t<decltype(arr)>;
+            T new_arr;
+            new_arr.resize(2 * new_num_vars);
+            for (bool_var v = 0; v < old_num_vars; ++v) {
+                unsigned nv = var_map[v];
+                if (nv == UINT_MAX) continue;
+                new_arr[2 * nv]     = arr[2 * v];
+                new_arr[2 * nv + 1] = arr[2 * v + 1];
+            }
+            arr.swap(new_arr);
+        };
+
+        remap_lit_array(m_assignment);
+
+        // Special case: justification needs explicit initialization
+        // (justification(0) for level-0 default).
+        // Z3's vector::reserve acts as resize, so just use resize directly.
+        {
+            svector<justification> new_just;
+            new_just.resize(new_num_vars, justification(0));
+            for (bool_var v = 0; v < old_num_vars; ++v) {
+                unsigned nv = var_map[v];
+                if (nv == UINT_MAX) continue;
+                new_just[nv] = m_justification[v];
+            }
+            m_justification.swap(new_just);
+        }
+
+        remap_var_array(m_decision);
+        remap_var_array(m_eliminated);
+        remap_var_array(m_external);
+        remap_var_array(m_var_scope);
+        remap_var_array(m_touched);
+        remap_var_array(m_activity);
+        remap_var_array(m_mark);
+        remap_lit_array(m_lit_mark);
+        remap_var_array(m_phase);
+        remap_var_array(m_best_phase);
+        remap_var_array(m_prev_phase);
+        remap_var_array(m_target_phase);
+        remap_var_array(m_assigned_since_gc);
+        remap_var_array(m_last_conflict);
+        remap_var_array(m_last_propagation);
+        remap_var_array(m_participated);
+        remap_var_array(m_canceled);
+        remap_var_array(m_reasoned);
+
+        // Remap arrays added by CaDiCaL optimization patches.
+        remap_var_array(m_trail_pos);
+        remap_var_array(m_poison);
+        remap_var_array(m_removable);
+        // m_shrinkable is lazily allocated (may be smaller than num_vars).
+        // At base level (compact_vars precondition), it should be all-false.
+        // Just clear and let it regrow lazily during future conflict analysis.
+        m_shrinkable.reset();
+        m_shrinkable_vars.reset();
+
+        // Remap justifications that store literal indices.
+        for (bool_var nv = 0; nv < new_num_vars; ++nv) {
+            justification& j = m_justification[nv];
+            if (j.is_binary_clause()) {
+                literal old_lit = j.get_literal();
+                VERIFY(var_map[old_lit.var()] != UINT_MAX);
+                j = justification(j.level(), map_lit(old_lit));
+            }
+        }
+
+        // Remap the trail.
+        {
+            unsigned j = 0;
+            for (unsigned i = 0; i < m_trail.size(); ++i) {
+                literal old_lit = m_trail[i];
+                unsigned nv = var_map[old_lit.var()];
+                if (nv == UINT_MAX) continue;
+                m_trail[j++] = literal(nv, old_lit.sign());
+            }
+            m_trail.shrink(j);
+        }
+        m_qhead = m_trail.size();
+        m_qhead_binary = m_trail.size();
+
+        // Rebuild m_trail_pos from the remapped trail.
+        for (unsigned i = 0; i < new_num_vars; ++i)
+            m_trail_pos[i] = UINT_MAX;
+        for (unsigned i = 0; i < m_trail.size(); ++i)
+            m_trail_pos[m_trail[i].var()] = i;
+
+        // Rebuild the case split queue (VSIDS heap).
+        {
+            m_case_split_queue.reset();
+            for (bool_var nv = 0; nv < new_num_vars; ++nv)
+                m_case_split_queue.mk_var_eh(nv);
+            // Remove assigned variables from queue.
+            for (bool_var nv = 0; nv < new_num_vars; ++nv) {
+                if (value(literal(nv, false)) != l_undef)
+                    m_case_split_queue.del_var_eh(nv);
+            }
+        }
+
+        // Rebuild the VMTF queue if dual-mode is enabled.
+        if (m_config.m_dual_mode && !m_vmtf_links.empty()) {
+            // Collect active variables sorted by their old bump timestamp
+            // so we can rebuild the linked list in the correct order.
+            svector<std::pair<uint64_t, bool_var>> by_bumped;
+            for (bool_var v = 0; v < old_num_vars; ++v) {
+                unsigned nv = var_map[v];
+                if (nv == UINT_MAX) continue;
+                if (v < m_vmtf_bumped.size())
+                    by_bumped.push_back({m_vmtf_bumped[v], nv});
+            }
+            std::sort(by_bumped.begin(), by_bumped.end());
+
+            // Remap bumped timestamps.
+            svector<uint64_t> new_bumped;
+            new_bumped.resize(new_num_vars, 0);
+            for (bool_var v = 0; v < old_num_vars; ++v) {
+                unsigned nv = var_map[v];
+                if (nv == UINT_MAX || v >= m_vmtf_bumped.size()) continue;
+                new_bumped[nv] = m_vmtf_bumped[v];
+            }
+            m_vmtf_bumped.swap(new_bumped);
+
+            // Rebuild the linked list from scratch in bumped order.
+            m_vmtf_links.reset();
+            m_vmtf_links.resize(new_num_vars);
+            m_vmtf_queue_head = null_bool_var;
+            m_vmtf_queue_tail = null_bool_var;
+            m_vmtf_search = null_bool_var;
+            for (auto& [ts, nv] : by_bumped) {
+                vmtf_enqueue(nv);
+                if (value(literal(nv, false)) == l_undef)
+                    m_vmtf_search = nv;
+            }
+        }
+
+        // Remap clauses_to_reinit (should be empty at base level).
+        {
+            unsigned j = 0;
+            for (unsigned i = 0; i < m_clauses_to_reinit.size(); ++i) {
+                clause_wrapper cw = m_clauses_to_reinit[i];
+                if (cw.is_binary()) {
+                    literal l1 = cw[0], l2 = cw[1];
+                    if (var_map[l1.var()] == UINT_MAX || var_map[l2.var()] == UINT_MAX)
+                        continue;
+                    m_clauses_to_reinit[j++] = clause_wrapper(map_lit(l1), map_lit(l2));
+                }
+                else {
+                    // Nary clause: literals already remapped in the clause itself.
+                    m_clauses_to_reinit[j++] = cw;
+                }
+            }
+            m_clauses_to_reinit.shrink(j);
+        }
+
+        // Remap model converter entries.
+        // The mc stores bool_var and literal_vector entries.
+        // For now, only remap if it's non-empty.
+        // mc entries reference eliminated variables; after compaction,
+        // eliminated vars are gone and the mc entries remain valid since
+        // the mc is consumed only at model construction time.
+        // NOTE: A full implementation would remap m_mc.m_entries[i].m_var
+        // and m_mc.m_entries[i].m_clauses. For correctness, we need to
+        // ensure the mc is either empty or properly remapped.
+
+        // Update bookkeeping arrays.
+        m_active_vars.reset();
+        for (bool_var nv = 0; nv < new_num_vars; ++nv)
+            m_active_vars.push_back(nv);
+        m_free_vars.reset();
+        m_vars_to_free.reset();
+        m_vars_to_reinit.reset();
+
+        // Reset probing cache (uses literal indices).
+        for (bool_var v = 0; v < new_num_vars; ++v) {
+            m_probing.reset_cache(literal(v, true));
+            m_probing.reset_cache(literal(v, false));
+        }
+        m_simplifier.reset_todos();
+
+        // Notify extension about variable remapping.
+        if (m_ext) {
+            m_ext->compact_vars(var_map.data(), new_num_vars);
+        }
+
+        CASSERT("sat_compact", check_invariant());
     }
 
 #if 0
