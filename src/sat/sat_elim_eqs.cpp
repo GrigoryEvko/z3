@@ -116,10 +116,17 @@ namespace sat {
                 it2++;
                 continue;
             }
-            if (!c.frozen()) {
-                m_solver.detach_clause(c);
-            }
-            
+
+            // Save watched literals before any modification.
+            // If they survive substitution unchanged, we can shrink in-place
+            // without the expensive detach/attach watch list manipulation
+            // (CaDiCaL decompose.cpp lines 596-639).
+            literal const old_w0 = c[0];
+            literal const old_w1 = c[1];
+
+            // NOTE: detach is deferred -- we only detach if the watched
+            // literals change or the clause is removed/demoted to binary/unit.
+
             // save clause to be deleted for drat
             if (m_solver.m_config.m_drat) {
                 if (!m_to_delete) m_to_delete = alloc(tmp_clause);
@@ -127,7 +134,7 @@ namespace sat {
             }
 
             // apply substitution
-            for (i = 0; i < sz; ++i) {   
+            for (i = 0; i < sz; ++i) {
                 literal lit = c[i];
                 c[i] = norm(roots, lit);
                 VERIFY(c[i] == norm(roots, c[i]));
@@ -162,34 +169,51 @@ namespace sat {
                 if (val == l_false) {
                     continue; // skip
                 }
-                c[j] = l;                
+                c[j] = l;
                 j++;
             }
             TRACE(elim_eqs, tout << "after removing duplicates: " << c << " j: " << j << "\n";);
 
+            // Detach using the ORIGINAL watched literals (old_w0, old_w1).
+            // After substitution+sort, c[0]/c[1] may differ from old_w0/old_w1,
+            // so solver::detach_clause(c) would search the wrong watch lists.
+            // We inline the detach logic using the saved originals.
+            auto detach_with_old_watches = [&]() {
+                if (!c.frozen()) {
+                    clause_offset cls_off = m_solver.get_offset(c);
+                    erase_clause_watch(m_solver.get_wlist(~old_w0), cls_off);
+                    erase_clause_watch(m_solver.get_wlist(~old_w1), cls_off);
+                }
+            };
+
             if (i < sz) {
+                // tautology or satisfied -- detach before deleting
+                detach_with_old_watches();
                 drat_delete_clause();
                 c.set_removed(true);
                 m_solver.del_clause(c);
-                continue; 
+                continue;
             }
 
             switch (j) {
             case 0:
+                detach_with_old_watches();
                 m_solver.set_conflict();
                 for (; it != end; ++it) {
                     *it2 = *it;
                     it2++;
                 }
                 cs.set_end(it2);
-                return;                
+                return;
             case 1:
+                detach_with_old_watches();
                 m_solver.assign_unit(c[0]);
                 drat_delete_clause();
                 c.set_removed(true);
                 m_solver.del_clause(c);
                 break;
             case 2:
+                detach_with_old_watches();
                 m_solver.mk_bin_clause(c[0], c[1], c.is_learned());
                 drat_delete_clause();
                 c.set_removed(true);
@@ -197,24 +221,69 @@ namespace sat {
                 break;
             default:
                 SASSERT(*it == &c);
-                if (j < sz) {
-                    c.shrink(j);
-                }
-                else {
-                    c.update_approx();
-                }
-                if (m_solver.m_config.m_drat) {
-                    m_solver.m_drat.add(c, status::redundant());
-                    drat_delete_clause();
+
+                // CaDiCaL-style watch-aware in-place substitution
+                // (decompose.cpp lines 596-639):
+                // If both original watched literals survive in the result,
+                // we can shrink the clause in-place without touching watch lists.
+                // This avoids the O(wlist_len) scan in erase_clause_watch()
+                // for both ~c[0] and ~c[1], which dominates eq-elimination cost.
+                {
+                    int pos_w0 = -1, pos_w1 = -1;
+                    for (unsigned k = 0; k < j; ++k) {
+                        if (c[k] == old_w0 && pos_w0 < 0) pos_w0 = k;
+                        else if (c[k] == old_w1 && pos_w1 < 0) pos_w1 = k;
+                    }
+
+                    bool watches_survived = (pos_w0 >= 0 && pos_w1 >= 0);
+
+                    if (watches_survived && !c.frozen()) {
+                        // FAST PATH: watched literals unchanged, skip detach/attach.
+                        // Restore watch invariant: old_w0 at [0], old_w1 at [1].
+                        if (pos_w0 != 0) {
+                            std::swap(c[0], c[pos_w0]);
+                            if (pos_w1 == 0) pos_w1 = pos_w0;
+                        }
+                        if (pos_w1 != 1) {
+                            std::swap(c[1], c[pos_w1]);
+                        }
+                        SASSERT(c[0] == old_w0 && c[1] == old_w1);
+                        if (j < sz) {
+                            c.shrink(j);
+                        }
+                        else {
+                            c.update_approx();
+                        }
+                        if (m_solver.m_config.m_drat) {
+                            m_solver.m_drat.add(c, status::redundant());
+                            drat_delete_clause();
+                        }
+                        TRACE(elim_eqs, tout << "fast path (watches unchanged): " << c << "\n";);
+                        m_solver.m_stats.m_elim_eqs_inplace++;
+                    }
+                    else {
+                        // SLOW PATH: a watched literal changed or clause is frozen.
+                        detach_with_old_watches();
+                        if (j < sz) {
+                            c.shrink(j);
+                        }
+                        else {
+                            c.update_approx();
+                        }
+                        if (m_solver.m_config.m_drat) {
+                            m_solver.m_drat.add(c, status::redundant());
+                            drat_delete_clause();
+                        }
+                        if (!c.frozen()) {
+                            m_solver.attach_clause(c);
+                        }
+                    }
                 }
 
                 DEBUG_CODE(for (literal l : c) VERIFY(l == norm(roots, l)););
-                
+
                 *it2 = *it;
                 it2++;
-                if (!c.frozen()) {
-                    m_solver.attach_clause(c);
-                }
                 break;
             }
         }
