@@ -44,7 +44,9 @@ Revision History:
 #include "sat/sat_drat.h"
 #include "sat/sat_parallel.h"
 #include "sat/sat_local_search.h"
+#include "sat/sat_probsat.h"
 #include "sat/sat_solver_core.h"
+#include "sat/sat_arena.h"
 
 namespace pb {
     class solver;
@@ -69,6 +71,7 @@ namespace sat {
         unsigned m_gc_clause;
         unsigned m_del_clause;
         unsigned m_minimized_lits;
+        unsigned m_shrunken_lits;
         unsigned m_dyn_sub_res;
         unsigned m_non_learned_generation;
         unsigned m_blocked_corr_sets;
@@ -77,6 +80,11 @@ namespace sat {
         unsigned m_units;
         unsigned m_backtracks;
         unsigned m_backjumps;
+        unsigned m_chrono_backtracks;
+        unsigned m_trail_reuse;
+        unsigned m_elim_eqs_inplace;   // SCC eq-elim clauses shrunk in-place (watches unchanged)
+        unsigned m_eager_subsumed;
+        unsigned m_otfs_strengthened;
         stats() { reset(); }
         void reset();
         void collect_statistics(statistics & st) const;
@@ -100,6 +108,7 @@ namespace sat {
         drat                    m_drat;          // DRAT for generating proofs
         clause_allocator        m_cls_allocator[2];
         bool                    m_cls_allocator_idx;
+        arena                   m_arena;
         random_gen              m_rand;
         cleaner                 m_cleaner;
         model                   m_model;        
@@ -126,6 +135,7 @@ namespace sat {
         vector<watch_list>      m_bin_watches; // binary clause watches (separated for fast BCP)
         svector<lbool>          m_assignment;
         svector<justification>  m_justification; 
+        unsigned_vector         m_trail_pos;     // trail index at which each variable was assigned
         bool_vector             m_decision;
         bool_vector             m_mark;
         bool_vector             m_lit_mark;
@@ -145,10 +155,41 @@ namespace sat {
         svector<uint64_t>       m_reasoned;
         int                     m_action;
         double                  m_step_size;
+
+        // VMTF (Variable Move To Front) queue for focused mode.
+        // Doubly-linked list ordered by bump timestamp; most recently
+        // bumped variable is at the tail (m_vmtf_queue_tail).
+        struct vmtf_link {
+            bool_var prev = null_bool_var;
+            bool_var next = null_bool_var;
+        };
+        svector<vmtf_link>      m_vmtf_links;
+        svector<uint64_t>       m_vmtf_bumped;       // per-variable bump timestamp
+        bool_var                m_vmtf_queue_head = null_bool_var;
+        bool_var                m_vmtf_queue_tail = null_bool_var;
+        bool_var                m_vmtf_search = null_bool_var;      // hint: most recently bumped unassigned
+        uint64_t                m_vmtf_counter = 0;
+
+        // Dual-mode (stable/focused) search state -- CaDiCaL-style.
+        bool                    m_stable_mode = false;
+        uint64_t                m_stabilize_limit = 0;
+        uint64_t                m_stabilize_inc = 0;
+        uint64_t                m_stabilize_last_ticks = 0;
+        unsigned                m_stab_phases = 0;
+
+        // Reluctant doubling (Knuth/Luby) for stable-mode restarts.
+        uint64_t                m_reluctant_u = 1;
+        uint64_t                m_reluctant_v = 1;
+        uint64_t                m_reluctant_period = 512;
+        uint64_t                m_reluctant_countdown = 512;
+        bool                    m_reluctant_triggered = false;
+
         // phase
-        bool_vector             m_phase; 
+        bool_vector             m_phase;
         bool_vector             m_best_phase;
         bool_vector             m_prev_phase;
+        svector<lbool>          m_target_phase;     // CaDiCaL-style: deepest conflict-free assignment
+        unsigned                m_target_assigned = 0; // trail depth of target phase snapshot
         bool                    m_new_best_phase = false;
         svector<char>           m_assigned_since_gc;
         search_state            m_search_state; 
@@ -161,9 +202,18 @@ namespace sat {
         unsigned                m_rephase_lim;
         unsigned                m_rephase_inc;
         backoff                 m_rephase;
+        // CaDiCaL-style rephase strategy stats
+        unsigned                m_rephase_original      = 0;
+        unsigned                m_rephase_inverted      = 0;
+        unsigned                m_rephase_flipping      = 0;
+        unsigned                m_rephase_random        = 0;
+        unsigned                m_rephase_best          = 0;
+        unsigned                m_rephase_walk          = 0;
+        unsigned                m_conflicts_at_last_walk = 0;
         backoff                 m_reorder;
         var_queue<svector<double>> m_case_split_queue;
         unsigned                m_qhead;
+        unsigned                m_qhead_binary; // binary-only propagation pointer for probing
         unsigned                m_scope_lvl;
         unsigned                m_search_lvl;
         ema                     m_fast_glue_avg;
@@ -203,6 +253,7 @@ namespace sat {
 
         class lookahead*        m_cuber;
         class i_local_search*   m_local_search;
+        probsat                 m_probsat;              // lightweight in-place ProbSAT walker for rephase walk
 
         statistics              m_aux_stats;        
 
@@ -226,6 +277,7 @@ namespace sat {
         friend class local_search;
         friend class ddfw_wrapper;
         friend class prob;
+        friend class probsat;
         friend class unit_walk;
         friend struct mk_stat;
         friend class elim_vars;
@@ -292,10 +344,20 @@ namespace sat {
         inline clause_allocator& cls_allocator() { return m_cls_allocator[m_cls_allocator_idx]; }
         inline clause_allocator const& cls_allocator() const { return m_cls_allocator[m_cls_allocator_idx]; }
         inline clause * alloc_clause(unsigned num_lits, literal const * lits, bool learned) { return cls_allocator().mk_clause(num_lits, lits, learned); }
-        inline void dealloc_clause(clause* c) { cls_allocator().del_clause(c); }
+        inline void dealloc_clause(clause* c) {
+            if (m_arena.contains(c)) {
+                cls_allocator().recycle_id(c);
+                c->~clause();
+            }
+            else {
+                cls_allocator().del_clause(c);
+            }
+        }
         struct cmp_activity;
+        clause* arena_copy_clause(clause& src);
         void defrag_clauses();
         bool should_defrag();
+        void sort_clauses_by_address();
         bool memory_pressure();
         void del_clause(clause & c);
         clause * mk_clause_core(unsigned num_lits, literal * lits, sat::status st);
@@ -483,7 +545,12 @@ namespace sat {
         bool propagate_literal(literal l, bool update);
         void propagate_clause(clause& c, bool update, unsigned assign_level, clause_offset cls_off);
         void set_watch(clause& c, unsigned idx, clause_offset cls_off);
-        
+
+        // Dual-pointer propagation for probing (CaDiCaL-style)
+        bool propagate_binary_only();
+        bool propagate_long_one();
+        bool propagate_probing();
+
         // -----------------------
         //
         // Search
@@ -539,6 +606,19 @@ namespace sat {
         unsigned m_restart_next_out = 0;
         unsigned m_conflicts_since_restart = 0;
         bool     m_force_conflict_analysis = false;
+        // CaDiCaL-style reason-side literal bumping state
+        double   m_decisions_per_conflict = 0.0;
+        unsigned m_decisions_at_last_conflict = 0;
+        int64_t  m_bump_reason_delay = 0;
+        int64_t  m_bump_reason_delay_interval = 0;
+
+        // CaDiCaL-style tick-based cost accounting for restart scheduling.
+        // Counts work units (variable lookups during minimization, literals
+        // propagated) so that expensive minimization phases are not invisible
+        // to the restart heuristic.
+        uint64_t m_search_ticks = 0;
+        uint64_t m_ticks_at_last_restart = 0;
+
         unsigned m_simplifications = 0;
         unsigned m_restart_threshold = 0;
         unsigned m_luby_idx = 0;
@@ -554,11 +634,37 @@ namespace sat {
         bool guess(bool_var next);
         bool decide();
         bool_var next_var();
+
+        // VMTF queue operations (implemented in sat_dual_mode.cpp)
+        void vmtf_init_var(bool_var v);
+        void vmtf_bump(bool_var v);
+        bool_var vmtf_next_decision();
+        void vmtf_dequeue(bool_var v);
+        void vmtf_enqueue(bool_var v);
+        void vmtf_update_search(bool_var v);
+
+        // Dual-mode switching (implemented in sat_dual_mode.cpp)
+        bool stabilizing();
+        void reluctant_tick();
+        bool reluctant_triggered();
+        void reluctant_enable();
         lbool bounded_search();
         lbool basic_search();
         lbool search();
         lbool final_check();
         void init_search();
+        lbool try_lucky_phases();
+        lbool lucky_undo(lbool res);
+        bool  lucky_assign_propagate(literal lit);
+        bool  lucky_backtrack_flip(literal dec);
+        lbool lucky_trivially_false();
+        lbool lucky_trivially_true();
+        lbool lucky_forward_false();
+        lbool lucky_forward_true();
+        lbool lucky_backward_false();
+        lbool lucky_backward_true();
+        lbool lucky_positive_horn();
+        lbool lucky_negative_horn();
         
         literal_vector m_min_core;
         bool           m_min_core_valid { false };
@@ -584,7 +690,7 @@ namespace sat {
         unsigned restart_level(bool to_base);
         void log_stats();
         bool should_cancel();
-        bool should_restart() const;
+        bool should_restart();
         void set_next_restart();
         void update_activity(bool_var v, double p);
         bool reached_max_conflicts();
@@ -596,8 +702,10 @@ namespace sat {
         lbool do_prob_search(unsigned num_lits, literal const* lits);
         lbool invoke_local_search(unsigned num_lits, literal const* lits);
         void  bounded_local_search();
+        void  warmup_phases();
+        bool  warmup_propagate(literal l);
         lbool do_unit_walk();
-        struct scoped_ls; 
+        struct scoped_ls;
 
         // -----------------------
         //
@@ -620,6 +728,24 @@ namespace sat {
         unsigned psm(clause const & c) const;
         bool can_delete(clause const & c) const;
         bool can_delete3(literal l1, literal l2, literal l3) const;
+
+        // CaDiCaL-style lazy two-phase garbage collection:
+        //   Phase 1: mark_garbage sets a flag in O(1) per clause (no watch work).
+        //   Phase 2: collect_garbage batch-flushes all watch lists, then frees.
+        void mark_garbage(clause& c);
+        void protect_reasons();
+        void unprotect_reasons();
+        void flush_all_watches();
+        void collect_garbage_clauses(clause_vector& clauses);
+        void collect_garbage();
+
+        // Dynamic tier boundary recomputation (CaDiCaL-style glue histogram).
+        uint64_t       m_glue_histogram[64] = {};
+        unsigned       m_tier1_glue_limit = 2;
+        unsigned       m_tier2_glue_limit = 6;
+        unsigned       m_tier_recompute_count = 0;
+        unsigned       m_next_tier_recompute = 1000;
+        void           recompute_tier_boundaries();
 
         // gc for lemmas in the reinit-stack
         void gc_reinit_stack(unsigned num_scopes);
@@ -655,9 +781,11 @@ namespace sat {
         literal_vector m_ext_antecedents;
         bool use_backjumping(unsigned num_scopes) const;
         bool allow_backtracking() const;
+        unsigned determine_backtrack_level(unsigned backjump_lvl);
         bool resolve_conflict();
         lbool resolve_conflict_core();
         void learn_lemma_and_backjump();
+        void eager_subsume(clause& new_cls);
         inline unsigned update_max_level(literal lit, unsigned lvl2, bool& unique_max) {
             unsigned lvl1 = lvl(lit);
             if (lvl1 < lvl2) return lvl2;
@@ -670,8 +798,10 @@ namespace sat {
         void process_antecedent_for_unsat_core(literal antecedent);
         void process_consequent_for_unsat_core(literal consequent, justification const& js);
         void fill_ext_antecedents(literal consequent, justification js, bool probing);
+        void on_the_fly_strengthen(clause& c, literal pivot, clause_offset cls_off);
         unsigned skip_literals_above_conflict_level();
         void updt_phase_of_vars();
+        void update_target_phase();
         void updt_phase_counters();
         void do_toggle_search_state();
         bool should_toggle_search_state();
@@ -679,6 +809,15 @@ namespace sat {
         bool is_two_phase() const;
         bool should_rephase();
         void do_rephase();
+        // CaDiCaL-style rephase strategies
+        char rephase_original();
+        char rephase_inverted();
+        char rephase_flipping();
+        char rephase_random();
+        char rephase_best();
+        char rephase_walk();
+        bool run_probsat(unsigned max_flips = 0);
+        void shuffle_activity_on_rephase();
         bool should_reorder();
         void do_reorder();
         svector<char> m_diff_levels;
@@ -691,6 +830,21 @@ namespace sat {
         bool_var_vector   m_unmark;
         level_approx_set  m_lvl_set;
         literal_vector    m_lemma_min_stack;
+        // poison/removable memoization for clause minimization (CaDiCaL technique)
+        bool_vector       m_poison;       // var proven non-removable in current minimization
+        bool_vector       m_removable;    // var proven removable in current minimization
+        bool_var_vector   m_minimized_vars; // vars with poison/removable set, for bulk cleanup
+
+        // CaDiCaL-style per-level seen tracking for early abort in minimization
+        struct level_info {
+            unsigned seen_count;  // how many variables seen during conflict analysis on this level
+            unsigned min_trail;   // smallest trail position of any seen variable on this level
+            level_info() : seen_count(0), min_trail(UINT_MAX) {}
+            void reset() { seen_count = 0; min_trail = UINT_MAX; }
+        };
+        svector<level_info>  m_level_info;      // indexed by decision level
+        unsigned_vector      m_active_levels;    // levels touched during analysis, for cleanup
+        void reset_level_info();
         bool process_antecedent_for_minimization(literal antecedent);
         bool implied_by_marked(literal lit);
         void reset_unmark(unsigned old_size);
@@ -698,7 +852,15 @@ namespace sat {
         bool minimize_lemma();
         bool minimize_lemma_binres();
         void reset_lemma_var_marks();
+        void clear_minimized_lits();
         bool dyn_sub_res();
+
+        // per-level UIP clause shrinking (CaDiCaL technique)
+        bool_vector       m_shrinkable;
+        bool_var_vector   m_shrinkable_vars;
+        void shrink_lemma();
+        int  shrink_literal(literal lit, unsigned blevel, bool resolve_large);
+        bool shrink_block(unsigned block_begin, unsigned block_end);
 
         // -----------------------
         //
@@ -720,6 +882,16 @@ namespace sat {
         svector<bin_clause> m_user_bin_clauses;
 
         void gc_vars(bool_var max_var);
+
+        // Variable compaction: remap all variables to a dense range,
+        // eliminating holes from eliminated/fixed variables.
+        bool should_compact() const;
+        void compact_vars();
+
+        // Reverse variable mapping for model converter after compaction.
+        // Maps new_var -> old_var so the model can be expanded to old size.
+        unsigned_vector m_compact_new_to_old;
+        unsigned        m_compact_old_num_vars = 0;
 
         // -----------------------
         //
@@ -821,6 +993,10 @@ namespace sat {
         void update_lrb_reasoned();
 
         void update_lrb_reasoned(literal lit);
+
+        // CaDiCaL-style reason-side literal bumping for VSIDS.
+        void bump_reason_literals();
+        void bump_reason_literals_recursive(literal lit, unsigned depth_limit, unsigned& bump_count, unsigned bump_limit);
 
         // -----------------------
         //

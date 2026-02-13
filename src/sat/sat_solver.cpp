@@ -32,6 +32,7 @@ Revision History:
 #include "sat/sat_lookahead.h"
 #include "sat/sat_ddfw_wrapper.h"
 #include "sat/sat_prob.h"
+#include "sat/sat_probsat.h"
 #include "sat/sat_anf_simplifier.h"
 #if defined(_MSC_VER) && !defined(_M_ARM) && !defined(_M_ARM64)
 # include <xmmintrin.h>
@@ -82,6 +83,7 @@ namespace sat {
         m_activity_inc(1.0),
         m_case_split_queue(m_activity),
         m_qhead(0),
+        m_qhead_binary(0),
         m_scope_lvl(0),
         m_search_lvl(0),
         m_fast_glue_avg(),
@@ -95,6 +97,7 @@ namespace sat {
         init_reason_unknown();
         updt_params(p);
         m_best_phase_size         = 0;
+        m_target_assigned         = 0;
         m_conflicts_since_gc      = 0;
         m_conflicts_since_init    = 0;
         m_next_simplify           = 0;
@@ -150,8 +153,11 @@ namespace sat {
         m_var_scope.reset();
         m_activity.reset();
         m_mark.reset();
+        m_poison.reset();
+        m_removable.reset();
         m_lit_mark.reset();
         m_best_phase.reset();
+        m_target_phase.reset();
         m_phase.reset();
         m_prev_phase.reset();
         m_assigned_since_gc.reset();
@@ -163,6 +169,7 @@ namespace sat {
         m_case_split_queue.reset();
         m_simplifier.reset_todos();
         m_qhead = 0;
+        m_qhead_binary = 0;
         m_trail.reset();
         m_scopes.reset();
         mk_var(false, false);
@@ -256,9 +263,15 @@ namespace sat {
                 m_best_phase[v] = src.m_best_phase[v];
             }
         }
+        m_target_assigned = src.m_target_assigned;
+        if (m_target_assigned > 0) {
+            for (bool_var v = 0; v < num_vars(); ++v) {
+                m_target_phase[v] = src.m_target_phase[v];
+            }
+        }
 
         m_user_scope_literals.reset();
-        for (auto lit : src.m_user_scope_literals) 
+        for (auto lit : src.m_user_scope_literals)
             assign_unit(~lit);
 
         m_mc = src.m_mc;
@@ -279,6 +292,7 @@ namespace sat {
         m_assignment[2*v] = l_undef;
         m_assignment[2*v+1] = l_undef;
         m_justification[v] = justification(UINT_MAX);
+        m_trail_pos[v] = UINT_MAX;
         m_decision[v] = dvar;
         m_eliminated[v] = false;
         m_external[v] = ext;
@@ -286,11 +300,14 @@ namespace sat {
         m_touched[v] = 0;
         m_activity[v] = 0.0;
         m_mark[v] = false;
+        m_poison[v] = false;
+        m_removable[v] = false;
         m_lit_mark[2*v] = false;
         m_lit_mark[2*v+1] = false;
         m_phase[v] = false;
         m_best_phase[v] = false;
         m_prev_phase[v] = false;
+        m_target_phase[v] = l_undef;
         m_assigned_since_gc[v] = false;
         m_last_conflict[v] = 0;        
         m_last_propagation[v] = 0;
@@ -298,6 +315,8 @@ namespace sat {
         m_canceled[v] = 0;
         m_reasoned[v] = 0;
         m_case_split_queue.mk_var_eh(v);
+        if (m_config.m_dual_mode)
+            vmtf_init_var(v);
         m_simplifier.insert_elim_todo(v);
     }
 
@@ -322,6 +341,7 @@ namespace sat {
         m_assignment.push_back(l_undef);
         m_assignment.push_back(l_undef);
         m_justification.push_back(justification(UINT_MAX));
+        m_trail_pos.push_back(UINT_MAX);
         m_decision.push_back(dvar);
         m_eliminated.push_back(false);
         m_external.push_back(ext);
@@ -329,11 +349,14 @@ namespace sat {
         m_touched.push_back(0);
         m_activity.push_back(0.0);
         m_mark.push_back(false);
+        m_poison.push_back(false);
+        m_removable.push_back(false);
         m_lit_mark.push_back(false);
         m_lit_mark.push_back(false);
         m_phase.push_back(false);
         m_best_phase.push_back(false);
         m_prev_phase.push_back(false);
+        m_target_phase.push_back(l_undef);
         m_assigned_since_gc.push_back(false);
         m_last_conflict.push_back(0);
         m_last_propagation.push_back(0);
@@ -341,6 +364,8 @@ namespace sat {
         m_canceled.push_back(0);
         m_reasoned.push_back(0);
         m_case_split_queue.mk_var_eh(v);
+        if (m_config.m_dual_mode)
+            vmtf_init_var(v);
         m_simplifier.insert_elim_todo(v);
         SASSERT(!was_eliminated(v));
         return v;
@@ -684,41 +709,55 @@ namespace sat {
         return m_defrag_threshold == 0 && m_config.m_gc_defrag;
     }
 
+    clause* solver::arena_copy_clause(clause& src) {
+        size_t bytes = src.bytes();
+        char* dst = m_arena.copy(reinterpret_cast<char const*>(&src), bytes);
+        clause* c = reinterpret_cast<clause*>(dst);
+        c->m_capacity = src.size();
+        return c;
+    }
+
     void solver::defrag_clauses() {
         m_defrag_threshold = 2;
         if (memory_pressure()) return;
         pop(scope_lvl());
-        IF_VERBOSE(2, verbose_stream() << "(sat-defrag)\n");
-        clause_allocator& alloc = m_cls_allocator[!m_cls_allocator_idx];
-        ptr_vector<clause> new_clauses, new_learned;
-        for (clause* c : m_clauses) c->unmark_used();
-        for (clause* c : m_learned) c->unmark_used();
+        IF_VERBOSE(2, verbose_stream() << "(sat-defrag-arena)\n");
+
+        size_t total_bytes = 0;
+        for (clause* c : m_clauses) {
+            total_bytes += c->bytes();
+            c->unmark_used();
+        }
+        for (clause* c : m_learned) {
+            total_bytes += c->bytes();
+            c->unmark_used();
+        }
+        m_arena.prepare(total_bytes);
 
         svector<bool_var> vars;
         for (unsigned i = 0; i < num_vars(); ++i) vars.push_back(i);
         std::stable_sort(vars.begin(), vars.end(), cmp_activity(*this));
-        literal_vector lits;
-        for (bool_var v : vars) lits.push_back(literal(v, false)), lits.push_back(literal(v, true));
-        // walk clauses, reallocate them in an order that defragments memory and creates locality.
-        for (literal lit : lits) {
-            watch_list& wlist = m_watches[lit.index()];
-            for (watched& w : wlist) {
-                if (w.is_clause()) {
+
+        ptr_vector<clause> new_clauses, new_learned;
+        for (bool_var v : vars) {
+            for (unsigned sign = 0; sign < 2; ++sign) {
+                literal lit = literal(v, sign != 0);
+                watch_list& wlist = m_watches[lit.index()];
+                for (watched& w : wlist) {
+                    if (!w.is_clause()) continue;
                     clause& c1 = get_clause(w);
                     clause_offset offset;
                     if (c1.was_used()) {
                         offset = c1.get_new_offset();
                     }
                     else {
-                        clause* c2 = alloc.copy_clause(c1); 
+                        clause* c2 = arena_copy_clause(c1);
                         c1.mark_used();
-                        if (c1.is_learned()) {
+                        if (c1.is_learned())
                             new_learned.push_back(c2);
-                        }
-                        else {
+                        else
                             new_clauses.push_back(c2);
-                        }
-                        offset = get_offset(*c2);
+                        offset = cls_allocator().get_offset(c2);
                         c1.set_new_offset(offset);
                     }
                     w = watched(w.get_blocked_literal(), offset);
@@ -726,27 +765,29 @@ namespace sat {
             }
         }
 
-        // reallocate ternary clauses.
         for (clause* c : m_clauses) {
-            if (!c->was_used()) {
-                SASSERT(c->size() == 3);
-                new_clauses.push_back(alloc.copy_clause(*c));
-            }
-            dealloc_clause(c);
+            if (!c->was_used())
+                new_clauses.push_back(arena_copy_clause(*c));
+        }
+        for (clause* c : m_learned) {
+            if (!c->was_used())
+                new_learned.push_back(arena_copy_clause(*c));
         }
 
-        for (clause* c : m_learned) {
-            if (!c->was_used()) {
-                SASSERT(c->size() == 3);
-                new_learned.push_back(alloc.copy_clause(*c));
-            }
-            dealloc_clause(c);
+        for (clause* c : m_clauses) {
+            if (!m_arena.contains(c))
+                cls_allocator().free_clause_memory(c);
         }
+        for (clause* c : m_learned) {
+            if (!m_arena.contains(c))
+                cls_allocator().free_clause_memory(c);
+        }
+
         m_clauses.swap(new_clauses);
         m_learned.swap(new_learned);
-
-        cls_allocator().finalize();
-        m_cls_allocator_idx = !m_cls_allocator_idx;
+        m_arena.swap();
+        m_cls_allocator[0].finalize();
+        m_cls_allocator[1].finalize();
 
         reinit_assumptions();
     }
@@ -911,7 +952,7 @@ namespace sat {
         SASSERT(value(~l) == l_undef);
         TRACE(sat_assign_core, tout << l << " " << j << "\n";);
         if (j.level() == 0) {
-            if (m_config.m_drat) 
+            if (m_config.m_drat)
                 drat_log_unit(l, j);
             if (!m_trim)
                 j = justification(0); // erase justification for level 0
@@ -925,6 +966,7 @@ namespace sat {
         m_justification[v]         = j;
         m_phase[v]                 = !l.sign();
         m_assigned_since_gc[v]     = true;
+        m_trail_pos[v]             = m_trail.size();
         m_trail.push_back(l);
         
         switch (m_config.m_branching_heuristic) {
@@ -1015,6 +1057,11 @@ namespace sat {
     bool solver::propagate(bool update) {
         unsigned qhead = m_qhead;
         bool r = propagate_core(update);
+        // CaDiCaL-style tick accounting: each propagated literal is one tick
+        // of search work.  CaDiCaL weighs by cache lines touched per watch
+        // list; we approximate with a flat per-literal cost which is sufficient
+        // to detect expensive propagation phases.
+        m_search_ticks += (m_qhead - qhead);
         if (m_config.m_branching_heuristic == BH_CHB) {
             update_chb_activity(r, qhead);
         }
@@ -1031,10 +1078,10 @@ namespace sat {
             assign_core(c[0], justification(assign_level, cls_off)); 
             if (update && c.is_learned() && c.glue() > 2 && num_diff_levels_below(c.size(), c.begin(), c.glue() - 1, glue)) {
                 c.set_glue(glue);
-                // Promote tier when glue improves
-                if (glue <= 2 && !c.is_core())
+                // Promote tier when glue improves (dynamic boundaries)
+                if (glue <= m_tier1_glue_limit && !c.is_core())
                     c.set_tier(clause::CORE);
-                else if (glue <= 6 && c.is_tier2())
+                else if (glue <= m_tier2_glue_limit && c.is_tier2())
                     c.set_tier(clause::TIER1);
             }
     }
@@ -1243,6 +1290,225 @@ namespace sat {
         return true;
     }
 
+
+    // -----------------------------------------------------------------------
+    // Dual-pointer probing propagation (CaDiCaL-style)
+    //
+    // During probing, binary clause propagation is much cheaper than long
+    // clause propagation (no pointer chasing into clause memory). By draining
+    // all binary implications to quiescence before touching any long clause,
+    // we often find conflicts without ever paying the cost of long clause
+    // watches. This is the key insight from the CaDiCaL/CPAIOR'13 paper on
+    // tree-based look-ahead.
+    //
+    // m_qhead_binary: advances over trail entries for binary-only propagation
+    // m_qhead:        advances over trail entries for long clause propagation
+    //
+    // Invariant: m_qhead <= m_qhead_binary <= m_trail.size()
+    // -----------------------------------------------------------------------
+
+    bool solver::propagate_binary_only() {
+        while (m_qhead_binary < m_trail.size()) {
+            literal l = m_trail[m_qhead_binary];
+            m_qhead_binary++;
+            literal not_l = ~l;
+            unsigned curr_level = lvl(l);
+
+            watch_list& bin_wlist = m_bin_watches[l.index()];
+            m_probing.dec(bin_wlist.size());
+            for (auto const& w : bin_wlist) {
+                literal l1 = w.get_literal();
+                switch (value(l1)) {
+                case l_false:
+                    set_conflict(justification(curr_level, not_l), ~l1);
+                    return false;
+                case l_undef:
+                    m_stats.m_bin_propagate++;
+                    assign_core(l1, justification(curr_level, not_l));
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+        return !m_inconsistent;
+    }
+
+    bool solver::propagate_long_one() {
+        SASSERT(m_qhead < m_trail.size());
+        bool keep;
+
+        literal l = m_trail[m_qhead];
+        m_qhead++;
+        literal not_l = ~l;
+        unsigned curr_level = lvl(l);
+
+        watch_list& wlist = m_watches[l.index()];
+        m_probing.dec(wlist.size());
+        watch_list::iterator it  = wlist.begin();
+        watch_list::iterator it2 = it;
+        watch_list::iterator end = wlist.end();
+#define PROBE_CONFLICT_CLEANUP() {              \
+            for (; it != end; ++it, ++it2)      \
+                *it2 = *it;                     \
+            wlist.set_end(it2);                 \
+        }
+        for (; it != end; ++it) {
+            switch (it->get_kind()) {
+            case watched::BINARY:
+                UNREACHABLE();
+                *it2 = *it;
+                it2++;
+                break;
+            case watched::CLAUSE: {
+                if (value(it->get_blocked_literal()) == l_true) {
+                    *it2 = *it;
+                    it2++;
+                    break;
+                }
+                clause_offset cls_off = it->get_clause_offset();
+                clause& c = get_clause(cls_off);
+                if (c[0] == not_l)
+                    std::swap(c[0], c[1]);
+
+                if (c.was_removed() || c.size() == 1 || c[1] != not_l) {
+                    *it2 = *it;
+                    it2++;
+                    break;
+                }
+                if (value(c[0]) == l_true) {
+                    it2->set_clause(c[0], cls_off);
+                    it2++;
+                    break;
+                }
+                VERIFY(c[1] == not_l);
+
+                unsigned sz = c.size();
+
+                if (value(c[0]) == l_undef) {
+                    for (unsigned i = 2; i < sz; ++i) {
+                        literal lit = c[i];
+                        switch (value(lit)) {
+                        case l_true:
+                            it2->set_clause(lit, cls_off);
+                            it2++;
+                            goto probe_end_clause_case;
+                        case l_undef:
+                            set_watch(c, i, cls_off);
+                            goto probe_end_clause_case;
+                        default:
+                            break;
+                        }
+                    }
+                    unsigned assign_level = curr_level;
+                    unsigned max_index = 1;
+                    for (unsigned i = 2; i < sz; ++i) {
+                        unsigned level = lvl(c[i]);
+                        if (level > assign_level) {
+                            assign_level = level;
+                            max_index = i;
+                        }
+                    }
+                    if (max_index != 1) {
+                        set_watch(c, max_index, cls_off);
+                    }
+                    else {
+                        *it2 = *it;
+                        it2++;
+                    }
+                    m_stats.m_propagate++;
+                    c.mark_used();
+                    assign_core(c[0], justification(assign_level, cls_off));
+                }
+                else {
+                    SASSERT(value(c[0]) == l_false);
+                    unsigned undef_index = 0;
+                    unsigned assign_level = std::max(curr_level, lvl(c[0]));
+                    unsigned num_undef = 0;
+
+                    for (unsigned i = 2; i < sz && num_undef <= 1; ++i) {
+                        literal lit = c[i];
+                        switch (value(lit)) {
+                        case l_true:
+                            it2->set_clause(lit, cls_off);
+                            it2++;
+                            goto probe_end_clause_case;
+                        case l_undef:
+                            undef_index = i;
+                            ++num_undef;
+                            break;
+                        case l_false: {
+                            unsigned level = lvl(lit);
+                            if (level > assign_level) {
+                                assign_level = level;
+                            }
+                            break;
+                        }
+                        }
+                    }
+
+                    if (undef_index != 0) {
+                        set_watch(c, undef_index, cls_off);
+                        if (num_undef == 1) {
+                            std::swap(c[0], c[1]);
+                            m_stats.m_propagate++;
+                            c.mark_used();
+                            assign_core(c[0], justification(assign_level, cls_off));
+                        }
+                        goto probe_end_clause_case;
+                    }
+
+                    c.mark_used();
+                    PROBE_CONFLICT_CLEANUP();
+                    set_conflict(justification(assign_level, cls_off));
+                    return false;
+                }
+            probe_end_clause_case:
+                break;
+            }
+            case watched::EXT_CONSTRAINT:
+                SASSERT(m_ext);
+                keep = m_ext->propagated(l, it->get_ext_constraint_idx());
+                if (m_inconsistent) {
+                    if (!keep) {
+                        ++it;
+                    }
+                    PROBE_CONFLICT_CLEANUP();
+                    return false;
+                }
+                if (keep) {
+                    *it2 = *it;
+                    it2++;
+                }
+                break;
+            default:
+                UNREACHABLE();
+                break;
+            }
+        }
+        wlist.set_end(it2);
+#undef PROBE_CONFLICT_CLEANUP
+        return true;
+    }
+
+    bool solver::propagate_probing() {
+        m_qhead_binary = m_qhead;
+        while (true) {
+            if (m_qhead_binary < m_trail.size()) {
+                if (!propagate_binary_only())
+                    return false;
+            }
+            else if (m_qhead < m_trail.size()) {
+                if (!propagate_long_one())
+                    return false;
+            }
+            else {
+                break;
+            }
+        }
+        return !m_inconsistent;
+    }
+
     void solver::display_lookahead_scores(std::ostream& out) {
         lookahead lh(*this);
         lh.display_lookahead_scores(out);
@@ -1359,9 +1625,15 @@ namespace sat {
                 return l_undef;
             }
 
-            if (m_config.m_phase == PS_LOCAL_SEARCH && m_ext) {                
+            // CaDiCaL-style lucky phase detection
+            {
+                lbool lucky = try_lucky_phases();
+                if (lucky != l_undef)
+                    return lucky;
+            }
+
+            if (m_config.m_phase == PS_LOCAL_SEARCH && m_ext) {
                 bounded_local_search();
-                // exit(0);
             }
 
             log_stats();
@@ -1374,6 +1646,7 @@ namespace sat {
                 
                 pop_reinit(scope_lvl());
                 m_conflicts_since_restart = 0;
+                m_ticks_at_last_restart = m_search_ticks;
                 m_restart_threshold = m_config.m_restart_initial;
             }
 
@@ -1422,6 +1695,10 @@ namespace sat {
     };
 
     void solver::bounded_local_search() {
+        // CaDiCaL-style warmup: propagate all variables using current phases
+        // to give local search a propagation-consistent starting assignment.
+        warmup_phases();
+
         if (m_ext) {
             IF_VERBOSE(0, verbose_stream() << "WARNING: local search with theories is in testing mode\n");
             do_restart(true);
@@ -1429,6 +1706,7 @@ namespace sat {
             verbose_stream() << r << "\n";
             if (r == l_true) {
                 m_conflicts_since_restart = 0;
+                m_ticks_at_last_restart = m_search_ticks;
                 m_conflicts_since_gc = 0;
                 m_next_simplify = std::max(m_next_simplify, m_conflicts_since_init + 1);
             }
@@ -1456,6 +1734,7 @@ namespace sat {
 
             if (r == l_true) {
                 m_conflicts_since_restart = 0;
+                m_ticks_at_last_restart = m_search_ticks;
                 m_conflicts_since_gc = 0;
                 m_next_simplify = std::max(m_next_simplify, m_conflicts_since_init + 1);
             }
@@ -1485,6 +1764,7 @@ namespace sat {
         }
     }
 
+    // run_probsat() is defined later in the rephase section (CaDiCaL-style walker).
 
     lbool solver::invoke_local_search(unsigned num_lits, literal const* lits) {
         literal_vector _lits(num_lits, lits);
@@ -1741,6 +2021,14 @@ namespace sat {
                 return next;
         }
 
+        // In focused mode, use the VMTF queue instead of the VSIDS heap.
+        if (m_config.m_dual_mode && !m_stable_mode) {
+            next = vmtf_next_decision();
+            if (next != null_bool_var)
+                return next;
+            // Fall through to VSIDS if VMTF queue is exhausted (shouldn't happen).
+        }
+
         while (!m_case_split_queue.empty()) {
             if (m_config.m_anti_exploration) {
                 next = m_case_split_queue.min_var();
@@ -1749,7 +2037,7 @@ namespace sat {
                     set_activity(next, m_activity[next] * decay_pow095(age));
                     m_canceled[next] = m_stats.m_conflict;
                     next = m_case_split_queue.min_var();
-                    age = m_stats.m_conflict - m_canceled[next];                    
+                    age = m_stats.m_conflict - m_canceled[next];
                 }
             }
             next = m_case_split_queue.next_var();
@@ -1765,12 +2053,18 @@ namespace sat {
         
         if (lphase != l_undef)
             return lphase == l_true;
+
+        // CaDiCaL-style target phase: prefer recorded conflict-free assignment.
+        lbool tp = m_target_phase.get(next, l_undef);
+
         switch (m_config.m_phase) {
         case PS_ALWAYS_TRUE:
             return true;
         case PS_ALWAYS_FALSE:
             return false;
         case PS_BASIC_CACHING:
+            if (tp != l_undef)
+                return tp == l_true;
             return m_phase[next];
         case PS_FROZEN:
             return m_best_phase[next];
@@ -1778,6 +2072,8 @@ namespace sat {
         case PS_LOCAL_SEARCH:
             if (m_search_state == s_unsat)
                 return m_phase[next];
+            if (tp != l_undef)
+                return tp == l_true;
             return m_best_phase[next];
         case PS_RANDOM:
             return (m_rand() % 2) == 0;
@@ -2045,14 +2341,18 @@ namespace sat {
         m_search_sat_conflicts    = m_config.m_search_sat_conflicts;
         m_search_next_toggle      = m_search_unsat_conflicts;
         m_best_phase_size         = 0;
+        m_target_assigned         = 0;
 
         m_reorder.lo              = m_config.m_reorder_base;
         m_rephase.base            = m_config.m_rephase_base;
         m_rephase_lim             = 0;
         m_rephase_inc             = 0;
-        m_local_search_lim.base   = 500;        
+        m_conflicts_at_last_walk  = 0;
+        m_local_search_lim.base   = 500;
 
         m_conflicts_since_restart = 0;
+        m_search_ticks            = 0;
+        m_ticks_at_last_restart   = 0;
         m_force_conflict_analysis = false;
         m_restart_threshold       = m_config.m_restart_initial;
         m_luby_idx                = 1;
@@ -2067,6 +2367,13 @@ namespace sat {
         m_min_d_tk                = 1.0;
         m_search_lvl              = 0;
 
+        // Reset dynamic tier boundary state.
+        memset(m_glue_histogram, 0, sizeof(m_glue_histogram));
+        m_tier1_glue_limit        = 2;
+        m_tier2_glue_limit        = 6;
+        m_tier_recompute_count    = 0;
+        m_next_tier_recompute     = 1000;
+
         if (m_learned.size() <= 2*m_clauses.size())
             m_conflicts_since_gc      = 0;
         m_restart_next_out        = 0;
@@ -2080,6 +2387,16 @@ namespace sat {
         m_mc.init_search(*this);
         if (m_ext)
             m_ext->init_search();
+
+        // Initialize dual-mode (stable/focused) search state.
+        if (m_config.m_dual_mode) {
+            m_stable_mode = false;
+            m_stab_phases = 0;
+            m_stabilize_inc = 0;
+            m_stabilize_last_ticks = 0;
+            m_stabilize_limit = m_config.m_stabilize_initial;
+            reluctant_enable();
+        }
         TRACE(sat, display(tout););
     }
 
@@ -2158,6 +2475,12 @@ namespace sat {
         reinit_assumptions();
         if (inconsistent()) return;
 
+        // Variable compaction: remap variables to eliminate holes
+        // left by variable elimination during simplification.
+        if (should_compact()) {
+            compact_vars();
+        }
+
         if (m_next_simplify == 0) {
             m_next_simplify = m_config.m_next_simplify1;
         }
@@ -2213,12 +2536,34 @@ namespace sat {
         m_model.reset();
         m_model_is_current = true;
         unsigned num = num_vars();
-        m_model.resize(num, l_undef);
-        for (bool_var v = 0; v < num; ++v) {
-            if (!was_eliminated(v)) {
-                m_model[v] = value(v);
-                m_phase[v] = value(v) == l_true;
-                m_best_phase[v] = value(v) == l_true;
+        if (m_compact_old_num_vars > 0) {
+            // After compaction, the model converter still references old
+            // variable indices. Create a model large enough for both old
+            // and new indices. Populate old-index slots for active vars
+            // so the model converter can see correct values.
+            // Disable solver reference in model converter to avoid
+            // out-of-bounds access on is_assumption/is_external.
+            m_mc.set_solver(nullptr);
+            m_model.resize(m_compact_old_num_vars, l_undef);
+            for (bool_var nv = 0; nv < num; ++nv) {
+                if (!was_eliminated(nv)) {
+                    lbool val = value(nv);
+                    unsigned old_v = m_compact_new_to_old[nv];
+                    if (old_v != UINT_MAX)
+                        m_model[old_v] = val;
+                    m_phase[nv] = val == l_true;
+                    m_best_phase[nv] = val == l_true;
+                }
+            }
+        }
+        else {
+            m_model.resize(num, l_undef);
+            for (bool_var v = 0; v < num; ++v) {
+                if (!was_eliminated(v)) {
+                    m_model[v] = value(v);
+                    m_phase[v] = value(v) == l_true;
+                    m_best_phase[v] = value(v) == l_true;
+                }
             }
         }
         TRACE(sat_mc_bug, m_mc.display(tout););
@@ -2232,20 +2577,22 @@ namespace sat {
         }
 #endif
 
-        if (m_clone) {
+        // After compaction, model is indexed by old var indices for the model
+        // converter. check_clauses uses new-index literals, so skip it.
+        if (m_clone && m_compact_old_num_vars == 0) {
             IF_VERBOSE(10, verbose_stream() << "\"checking model\"\n";);
             if (!check_clauses(m_model)) {
                 throw solver_exception("check model failed");
             }
         }
-        
+
         if (m_config.m_drat) {
             m_drat.check_model(m_model);
         }
 
         m_mc(m_model);
 
-        if (m_clone && !check_clauses(m_model)) {
+        if (m_clone && m_compact_old_num_vars == 0 && !check_clauses(m_model)) {
             IF_VERBOSE(1, verbose_stream() << "failure checking clauses on transformed model\n";);
             IF_VERBOSE(10, m_mc.display(verbose_stream()));
             IF_VERBOSE(1, for (bool_var v = 0; v < num; ++v) verbose_stream() << v << ": " << m_model[v] << "\n";);
@@ -2332,13 +2679,36 @@ namespace sat {
         return ok;
     }
 
-    bool solver::should_restart() const {
-        if (m_conflicts_since_restart <= m_restart_threshold) return false;
+    bool solver::should_restart() {
         if (scope_lvl() < 2 + search_lvl()) return false;
         if (m_case_split_queue.empty()) return false;
+
+        // Check for dual-mode switching before evaluating restart condition.
+        // stabilizing() may toggle m_stable_mode and swap EMA averages.
+        if (m_config.m_dual_mode)
+            stabilizing();
+
+        // CaDiCaL-style tick-based restart forcing: if the total search work
+        // (propagation + minimization) since the last restart greatly exceeds
+        // what conflicts alone would suggest, force a restart.  This prevents
+        // expensive minimization phases from silently delaying restarts and
+        // phase switches.  The threshold is 64 ticks per expected conflict --
+        // if we burn more than restart_threshold*64 ticks without enough
+        // conflicts, the solver is doing expensive work that should trigger
+        // a restart consideration.
+        uint64_t ticks_since_restart = m_search_ticks - m_ticks_at_last_restart;
+        bool tick_forced = ticks_since_restart > static_cast<uint64_t>(m_restart_threshold) * 64;
+
+        // In stable mode with dual-mode, use reluctant doubling for restart timing.
+        if (m_config.m_dual_mode && m_stable_mode) {
+            if (!tick_forced && !m_reluctant_triggered) return false;
+            return true;
+        }
+
+        if (!tick_forced && m_conflicts_since_restart <= m_restart_threshold) return false;
         if (m_config.m_restart != RS_EMA) return true;
-        return 
-            m_fast_glue_avg + search_lvl() <= scope_lvl() && 
+        return
+            m_fast_glue_avg + search_lvl() <= scope_lvl() &&
             m_config.m_restart_margin * m_slow_glue_avg <= m_fast_glue_avg;
     }
 
@@ -2426,31 +2796,37 @@ namespace sat {
     }
 
     unsigned solver::restart_level(bool to_base) {
-        SASSERT(!m_case_split_queue.empty());
-        if (to_base || scope_lvl() == search_lvl()) 
-            return scope_lvl() - search_lvl();        
-        else {
-            bool_var next = m_case_split_queue.min_var();
+        if (to_base || scope_lvl() == search_lvl())
+            return scope_lvl() - search_lvl();
 
-            // Implementations of Marijn's idea of reusing the 
-            // trail when the next decision literal has lower precedence.
-            // pop trail from top
+        // In focused mode, always restart to base -- VMTF trail reuse
+        // requires careful handling of bumped timestamps vs. scope literals.
+        // CaDiCaL does not reuse trail in focused (queue) mode.
+        if (m_config.m_dual_mode && !m_stable_mode)
+            return scope_lvl() - search_lvl();
+
+        if (m_case_split_queue.empty())
+            return scope_lvl() - search_lvl();
+
+        bool_var next = m_case_split_queue.min_var();
+        // Implementations of Marijn's idea of reusing the
+        // trail when the next decision literal has lower precedence.
+        // pop trail from top
 #if 0
-            unsigned n = 0;
-            do {
-                bool_var prev = scope_literal(scope_lvl() - n - 1).var();
-                if (m_case_split_queue.more_active(prev, next)) break;                
-                ++n;
-            }
-            while (n < scope_lvl() - search_lvl());
-            return n;
-#endif
-            // pop trail from bottom
-            unsigned n = search_lvl();
-            for (; n < scope_lvl() && m_case_split_queue.more_active(scope_literal(n).var(), next); ++n) {
-            }
-            return n - search_lvl();
+        unsigned n = 0;
+        do {
+            bool_var prev = scope_literal(scope_lvl() - n - 1).var();
+            if (m_case_split_queue.more_active(prev, next)) break;
+            ++n;
         }
+        while (n < scope_lvl() - search_lvl());
+        return n;
+#endif
+        // pop trail from bottom
+        unsigned n = search_lvl();
+        for (; n < scope_lvl() && m_case_split_queue.more_active(scope_literal(n).var(), next); ++n) {
+        }
+        return n - search_lvl();
     }
 
     void solver::update_activity(bool_var v, double p) {
@@ -2460,6 +2836,10 @@ namespace sat {
 
     void solver::set_next_restart() {
         m_conflicts_since_restart = 0;
+        m_ticks_at_last_restart = m_search_ticks;
+        // Consume the reluctant trigger after a restart in stable mode.
+        if (m_config.m_dual_mode && m_stable_mode)
+            m_reluctant_triggered = false;
         switch (m_config.m_restart) {
         case RS_GEOMETRIC:
             m_restart_threshold = static_cast<unsigned>(m_restart_threshold * m_config.m_restart_factor);
@@ -2487,6 +2867,76 @@ namespace sat {
     //
     // -----------------------
 
+    /**
+     * Recompute dynamic tier boundaries from the glue usage histogram.
+     *
+     * CaDiCaL-style: iterate glue values from 1 upward, accumulating usage counts.
+     * tier1 = glue where accumulated usage reaches 50% of total (top-half most-used).
+     * tier2 = glue where accumulated usage reaches 90% of total.
+     * Clamp: tier1 >= 2, tier2 >= tier1 + 1.
+     *
+     * After recomputation, double the interval (up to 2^16 = 65536 conflicts).
+     */
+    void solver::recompute_tier_boundaries() {
+        m_tier_recompute_count++;
+
+        // Schedule next recomputation with exponentially growing interval.
+        unsigned delta = m_tier_recompute_count >= 16 ? (1u << 16) : (1u << m_tier_recompute_count);
+        m_next_tier_recompute = m_conflicts_since_init + delta;
+
+        // Sum total usage across all glue values.
+        uint64_t total = 0;
+        for (unsigned g = 0; g < 64; g++)
+            total += m_glue_histogram[g];
+
+        // If no usage data yet, keep defaults.
+        if (total == 0) {
+            m_tier1_glue_limit = 2;
+            m_tier2_glue_limit = 6;
+            return;
+        }
+
+        uint64_t tier1_threshold = total / 2;      // 50%
+        uint64_t tier2_threshold = total * 9 / 10;  // 90%
+
+        unsigned new_tier1 = 1;
+        unsigned new_tier2 = 1;
+
+        // Find tier1 boundary: glue where accumulated usage reaches 50%.
+        uint64_t accumulated = m_glue_histogram[0];
+        unsigned g = 1;
+        for (; g < 64; g++) {
+            accumulated += m_glue_histogram[g];
+            if (accumulated >= tier1_threshold) {
+                new_tier1 = g;
+                break;
+            }
+        }
+
+        // Continue from where tier1 left off to find tier2 boundary at 90%.
+        for (; g < 64; g++) {
+            accumulated += m_glue_histogram[g];
+            if (accumulated >= tier2_threshold) {
+                new_tier2 = g;
+                break;
+            }
+        }
+
+        // Clamp minimums.
+        if (new_tier1 < 2)
+            new_tier1 = 2;
+        if (new_tier2 < new_tier1 + 1)
+            new_tier2 = new_tier1 + 1;
+
+        m_tier1_glue_limit = new_tier1;
+        m_tier2_glue_limit = new_tier2;
+
+        TRACE(sat, tout << "recompute_tier_boundaries: tier1=" << m_tier1_glue_limit
+              << " tier2=" << m_tier2_glue_limit
+              << " total_usage=" << total
+              << " next_recompute=" << m_next_tier_recompute << "\n";);
+    }
+
     bool solver::resolve_conflict() {
         while (true) {
             lbool r = resolve_conflict_core();
@@ -2506,10 +2956,18 @@ namespace sat {
         m_conflicts_since_gc++;
         m_stats.m_conflict++;
         if (m_step_size > m_config.m_step_size_min)
-            m_step_size -= m_config.m_step_size_dec;        
+            m_step_size -= m_config.m_step_size_dec;
+
+        // In stable mode, tick the reluctant doubling counter on every conflict.
+        if (m_config.m_dual_mode && m_stable_mode)
+            reluctant_tick();
+
+        // Periodically recompute dynamic tier boundaries from glue usage histogram.
+        if (m_conflicts_since_init >= m_next_tier_recompute)
+            recompute_tier_boundaries();
 
         bool unique_max;
-        m_conflict_lvl = get_max_lvl(m_not_l, m_conflict, unique_max);        
+        m_conflict_lvl = get_max_lvl(m_not_l, m_conflict, unique_max);
         justification js = m_conflict;
 
         if (m_conflict_lvl <= 1 && (!m_assumptions.empty() || 
@@ -2547,6 +3005,7 @@ namespace sat {
             switch (m_ext->resolve_conflict()) {
             case l_true:                
                 learn_lemma_and_backjump();
+                reset_level_info();
                 return l_undef;
             case l_undef:
                 break;
@@ -2596,6 +3055,9 @@ namespace sat {
                 // TIER1 clauses are promoted to CORE.
                 if (c.is_learned() && !c.is_core())
                     c.promote_tier();
+                // Track glue usage for dynamic tier boundary recomputation.
+                if (c.is_learned())
+                    m_glue_histogram[std::min(c.glue(), 63u)]++;
                 unsigned i = 0;
                 if (consequent != null_literal) {
                     SASSERT(c[0] == consequent || c[1] == consequent);
@@ -2610,6 +3072,28 @@ namespace sat {
                 unsigned sz = c.size();
                 for (; i < sz; ++i)
                     process_antecedent(~c[i], num_marks);
+                // OTFS: On-the-fly strengthening (CaDiCaL-style).
+                // After resolving against this clause, check if the resolvent is
+                // smaller than the antecedent. If so, the pivot literal is redundant
+                // in the antecedent and can be removed.
+                // resolvent_size = num_marks (conflict-level) + lemma.size()-1 (below-level)
+                // antecedent_size must EXCLUDE level-0 literals (they are not part of
+                // the resolvent since process_antecedent skips level-0 vars).
+                // We only apply to the non-initial clauses (consequent != null_literal means
+                // this is a reason clause, not the conflict clause itself) and non-binary clauses.
+                // Skip when DRAT proofs are enabled (proof tracking for OTFS is complex).
+                if (m_config.m_otfs && !m_config.m_drat &&
+                    consequent != null_literal && sz > 2) {
+                    // Compute antecedent_size excluding level-0 literals (matching CaDiCaL).
+                    unsigned antecedent_size = 0;
+                    for (unsigned k = 0; k < sz; ++k)
+                        if (lvl(c[k]) > 0)
+                            antecedent_size++;
+                    unsigned resolvent_size = num_marks + (m_lemma.size() - 1);
+                    if (antecedent_size > 2 && resolvent_size < antecedent_size) {
+                        on_the_fly_strengthen(c, consequent, js.get_clause_offset());
+                    }
+                }
                 break;
             }
             case justification::EXT_JUSTIFICATION: {
@@ -2657,8 +3141,39 @@ namespace sat {
 
         m_lemma[0] = ~consequent;
         learn_lemma_and_backjump();
+        reset_level_info();
 
         return l_undef;
+    }
+
+    void solver::eager_subsume(clause& new_cls) {
+        SASSERT(new_cls.is_learned());
+        unsigned new_sz = new_cls.size();
+        if (new_sz == 0) return;
+        for (literal l : new_cls) m_lit_mark[l.index()] = true;
+        unsigned limit = m_config.m_eager_subsume_limit;
+        unsigned checked = 0;
+        unsigned j = m_learned.size();
+        for (unsigned i = m_learned.size(); i-- > 0 && checked < limit; ) {
+            clause* d = m_learned[i];
+            if (d == &new_cls) continue;
+            ++checked;
+            if (!d->is_learned() || !can_delete(*d)) continue;
+            unsigned needed = new_sz;
+            for (literal l : *d) {
+                if (m_lit_mark[l.index()])
+                    if (--needed == 0) break;
+            }
+            if (needed > 0) continue;
+            TRACE(sat, tout << "eager subsume: " << new_cls << " subsumes " << *d << "\n";);
+            ++m_stats.m_eager_subsumed;
+            detach_clause(*d);
+            del_clause(*d);
+            --j;
+            if (i < j) m_learned[i] = m_learned[j];
+        }
+        if (j < m_learned.size()) m_learned.shrink(j);
+        for (literal l : new_cls) m_lit_mark[l.index()] = false;
     }
 
     void solver::learn_lemma_and_backjump() {
@@ -2670,6 +3185,10 @@ namespace sat {
             return;
         }
         
+        // Per-level UIP clause shrinking (CaDiCaL technique).
+        if (m_config.m_shrink > 0 && m_lemma.size() > 2)
+            shrink_lemma();
+
         if (m_config.m_minimize_lemmas) {
             minimize_lemma();
             reset_lemma_var_marks();
@@ -2704,34 +3223,33 @@ namespace sat {
         m_fast_glue_avg.update(glue);
         m_slow_glue_avg.update(glue);
     
-        // compute whether to use backtracking or backjumping
-        unsigned num_scopes = m_scope_lvl - backjump_lvl;
-        
-        if (use_backjumping(num_scopes)) {
+        // CaDiCaL-style backtrack level determination with trail reuse.
+        unsigned actual_bt_lvl = determine_backtrack_level(backjump_lvl);
+        unsigned num_scopes = m_scope_lvl - actual_bt_lvl;
+        if (actual_bt_lvl == backjump_lvl)
             ++m_stats.m_backjumps;
-            pop_reinit(num_scopes);
-        }
-        else {
-            TRACE(sat, tout << "backtrack " << (m_scope_lvl - backtrack_lvl + 1) << " scopes\n";);
+        else
             ++m_stats.m_backtracks;
-            pop_reinit(m_scope_lvl - backtrack_lvl + 1);
-        }
+        pop_reinit(num_scopes);
         clause * lemma = mk_clause_core(m_lemma.size(), m_lemma.data(), sat::status::redundant());
         if (lemma) {
             lemma->set_glue(glue);
-            // Assign tier based on glue (LBD):
-            //   glue <= 2 => CORE (never deleted)
-            //   glue <= 6 => TIER1 (protected from routine GC)
-            //   else      => TIER2 (aggressively GC'd)
-            if (glue <= 2)
+            // Assign tier based on glue (LBD) using dynamic boundaries:
+            //   glue <= tier1_glue_limit => CORE (never deleted)
+            //   glue <= tier2_glue_limit => TIER1 (protected from routine GC)
+            //   else                     => TIER2 (aggressively GC'd)
+            if (glue <= m_tier1_glue_limit)
                 lemma->set_tier(clause::CORE);
-            else if (glue <= 6)
+            else if (glue <= m_tier2_glue_limit)
                 lemma->set_tier(clause::TIER1);
             else
                 lemma->set_tier(clause::TIER2);
         }
         if (m_par && lemma) {
             m_par->share_clause(*this, *lemma);
+        }
+        if (lemma && m_config.m_eager_subsume) {
+            eager_subsume(*lemma);
         }
         m_lemma.reset();
         TRACE(sat_conflict_detail, tout << "consistent " << (!m_inconsistent) << " scopes: " << scope_lvl() << " backtrack: " << backtrack_lvl << " backjump: " << backjump_lvl << "\n";);
@@ -2747,6 +3265,36 @@ namespace sat {
 
     bool solver::allow_backtracking() const {
         return m_conflicts_since_init > m_config.m_backtrack_init_conflicts;
+    }
+
+    unsigned solver::determine_backtrack_level(unsigned backjump_lvl) {
+        unsigned current_lvl = m_scope_lvl;
+        if (backjump_lvl >= current_lvl - 1) return backjump_lvl;
+        if (!allow_backtracking()) {
+            unsigned gap = current_lvl - backjump_lvl;
+            return (gap <= m_config.m_backtrack_scopes) ? backjump_lvl : current_lvl - 1;
+        }
+        if (backjump_lvl < search_lvl()) return backjump_lvl;
+        unsigned gap = current_lvl - backjump_lvl;
+        if (gap > m_config.m_chrono_level_lim) {
+            ++m_stats.m_chrono_backtracks;
+            return current_lvl - 1;
+        }
+        if (m_config.m_chrono_reuse_trail && backjump_lvl + 1 < m_scopes.size()) {
+            unsigned ts = m_scopes[backjump_lvl + 1].m_trail_lim;
+            unsigned te = m_trail.size();
+            if (ts < te) {
+                double ba = -1.0; unsigned bp = ts;
+                for (unsigned i = ts; i < te; ++i) {
+                    double a = m_activity[m_trail[i].var()];
+                    if (a > ba) { ba = a; bp = i; }
+                }
+                unsigned r = backjump_lvl;
+                while (r < current_lvl - 1 && r + 1 < m_scopes.size() && m_scopes[r + 1].m_trail_lim <= bp) r++;
+                if (r > backjump_lvl) { ++m_stats.m_trail_reuse; return r; }
+            }
+        }
+        return backjump_lvl;
     }
 
     void solver::process_antecedent_for_unsat_core(literal antecedent) {
@@ -2956,6 +3504,11 @@ namespace sat {
         TRACE(sat_verbose, tout << "process " << var << "@" << var_lvl << " marked " << is_marked(var) << " conflict " << m_conflict_lvl << "\n";);
         if (!is_marked(var) && var_lvl > 0) {
             mark(var);
+            // In focused mode, bump via VMTF queue (move-to-front).
+            // In stable mode (or no dual mode), use the standard VSIDS/CHB bump.
+            if (m_config.m_dual_mode && !m_stable_mode) {
+                vmtf_bump(var);
+            }
             switch (m_config.m_branching_heuristic) {
             case BH_VSIDS:
                 inc_activity(var);
@@ -2966,6 +3519,17 @@ namespace sat {
             default:
                 break;
             }
+
+            // CaDiCaL-style per-level seen tracking for minimization early abort.
+            if (var_lvl >= m_level_info.size())
+                m_level_info.resize(var_lvl + 1);
+            level_info& li = m_level_info[var_lvl];
+            if (li.seen_count++ == 0)
+                m_active_levels.push_back(var_lvl);
+            unsigned tpos = m_trail_pos[var];
+            if (tpos < li.min_trail)
+                li.min_trail = tpos;
+
             if (var_lvl == m_conflict_lvl)
                 num_marks++;
             else
@@ -2973,6 +3537,129 @@ namespace sat {
         }
     }
 
+
+    /**
+       \brief On-the-fly strengthening (OTFS): remove pivot from clause c
+       during conflict analysis. When the resolvent is smaller than the
+       antecedent clause c, the antecedent can be strengthened by removing
+       the resolved-away pivot literal.
+       Based on CaDiCaL's on_the_fly_strengthen (analyze.cpp:770-865).
+    */
+    void solver::on_the_fly_strengthen(clause& c, literal pivot, clause_offset cls_off) {
+        SASSERT(c.size() > 2);
+        SASSERT(c.contains(pivot));
+
+        unsigned old_sz = c.size();
+
+        // Find pivot position in clause.
+        unsigned pivot_pos = UINT_MAX;
+        for (unsigned i = 0; i < old_sz; ++i) {
+            if (c[i] == pivot) {
+                pivot_pos = i;
+                break;
+            }
+        }
+        SASSERT(pivot_pos != UINT_MAX);
+
+        bool pivot_was_watched = (pivot_pos == 0 || pivot_pos == 1);
+
+        if (old_sz == 3) {
+            // Shrinking ternary to binary: collect remaining literals.
+            literal remaining[2];
+            unsigned j = 0;
+            for (unsigned i = 0; i < 3; ++i) {
+                if (i != pivot_pos)
+                    remaining[j++] = c[i];
+            }
+            SASSERT(j == 2);
+
+            // Remove clause watches for both watched literals.
+            erase_clause_watch(get_wlist(~c[0]), cls_off);
+            erase_clause_watch(get_wlist(~c[1]), cls_off);
+
+            // Add binary watches.
+            bool learned = c.is_learned();
+            get_bin_wlist(~remaining[0]).push_back(watched(remaining[1], learned));
+            get_bin_wlist(~remaining[1]).push_back(watched(remaining[0], learned));
+
+            // Update justification: propagated literal now justified by binary clause.
+            literal propagated = null_literal;
+            for (unsigned i = 0; i < 2; ++i) {
+                if (value(remaining[i]) == l_true) {
+                    propagated = remaining[i];
+                    break;
+                }
+            }
+            if (propagated != null_literal) {
+                literal other = (remaining[0] == propagated) ? remaining[1] : remaining[0];
+                m_justification[propagated.var()] = justification(lvl(propagated), ~other);
+            }
+
+            c.set_removed(true);
+            m_stats.m_otfs_strengthened++;
+            return;
+        }
+
+        // General case: clause size > 3, shrinking by one literal.
+        if (pivot_was_watched) {
+            unsigned other_watched_pos = (pivot_pos == 0) ? 1 : 0;
+            literal other_watched = c[other_watched_pos];
+
+            // Remove watch from ~pivot's list.
+            erase_clause_watch(get_wlist(~pivot), cls_off);
+
+            // Pick highest-level non-watched literal as replacement.
+            unsigned best_pos = 2;
+            unsigned best_lvl = lvl(c[2]);
+            for (unsigned i = 3; i < old_sz; ++i) {
+                unsigned l = lvl(c[i]);
+                if (l > best_lvl) {
+                    best_lvl = l;
+                    best_pos = i;
+                }
+            }
+
+            literal replacement = c[best_pos];
+            c[pivot_pos] = replacement;
+            if (best_pos != old_sz - 1)
+                c[best_pos] = c[old_sz - 1];
+            c.shrink(old_sz - 1);
+
+            // Add watch for ~replacement.
+            literal block_lit = c[c.size() >> 1];
+            get_wlist(~replacement).push_back(watched(block_lit, cls_off));
+
+            // Update blocked literal in the other watch.
+            watch_list& owlist = get_wlist(~other_watched);
+            for (auto& w : owlist) {
+                if (w.is_clause() && w.get_clause_offset() == cls_off) {
+                    w.set_blocked_literal(block_lit);
+                    break;
+                }
+            }
+        }
+        else {
+            // Pivot not watched (position >= 2): swap with last and shrink.
+            if (pivot_pos != old_sz - 1)
+                std::swap(c[pivot_pos], c[old_sz - 1]);
+            c.shrink(old_sz - 1);
+
+            // Update blocked literal in both watch lists.
+            literal new_block = c[c.size() >> 1];
+            for (unsigned w = 0; w < 2; ++w) {
+                watch_list& wl = get_wlist(~c[w]);
+                for (auto& we : wl) {
+                    if (we.is_clause() && we.get_clause_offset() == cls_off) {
+                        we.set_blocked_literal(new_block);
+                        break;
+                    }
+                }
+            }
+        }
+
+        c.mark_used();
+        m_stats.m_otfs_strengthened++;
+    }
 
     /**
        \brief js is an external justification. Collect its antecedents and store at m_ext_antecedents.
@@ -2993,9 +3680,31 @@ namespace sat {
         return is_two_phase() && m_search_state == s_sat;
     }
 
+    // CaDiCaL-style target phase update.
+    // Records the phase assignment at the deepest conflict-free trail prefix.
+    // On every conflict, the trail up to the conflicting decision level is
+    // conflict-free. If this prefix is deeper than any previously seen, we
+    // snapshot the current variable assignments as the target phase.
+    // This provides a "guided restart" effect: after restart, the solver
+    // rebuilds the same conflict-free prefix and extends it further each time.
+    void solver::update_target_phase() {
+        unsigned from_lvl = m_conflict_lvl;
+        unsigned no_conflict_until = from_lvl == 0 ? 0 : m_scopes[from_lvl - 1].m_trail_lim;
+        if (no_conflict_until > m_target_assigned) {
+            m_target_assigned = no_conflict_until;
+            for (unsigned i = 0; i < no_conflict_until; ++i) {
+                literal  lit = m_trail[i];
+                bool_var v   = lit.var();
+                m_target_phase[v] = lit.sign() ? l_false : l_true;
+            }
+            IF_VERBOSE(12, verbose_stream() << "target trail: " << no_conflict_until << "\n");
+        }
+    }
+
     void solver::updt_phase_of_vars() {
         if (m_config.m_phase == PS_FROZEN)
             return;
+        update_target_phase();
         unsigned from_lvl = m_conflict_lvl;
         unsigned head = from_lvl == 0 ? 0 : m_scopes[from_lvl - 1].m_trail_lim;
         unsigned sz   = m_trail.size();
@@ -3052,58 +3761,225 @@ namespace sat {
 
     bool solver::should_rephase() {
         return m_conflicts_since_init > m_rephase_lim;
-//        return m_rephase.should_apply(m_conflicts_since_init);
+    }
+
+    // -----------------------------------------------------------------------
+    // CaDiCaL-style rephase strategies
+    // -----------------------------------------------------------------------
+
+    // Set all phases to the default initial value (false = negative polarity).
+    char solver::rephase_original() {
+        m_rephase_original++;
+        for (auto& p : m_phase) p = false;
+        IF_VERBOSE(12, verbose_stream() << "(rephase :type original :count " << m_rephase_original << ")\n");
+        return 'O';
+    }
+
+    // Set all phases to the inverted default (true = positive polarity).
+    char solver::rephase_inverted() {
+        m_rephase_inverted++;
+        for (auto& p : m_phase) p = true;
+        IF_VERBOSE(12, verbose_stream() << "(rephase :type inverted :count " << m_rephase_inverted << ")\n");
+        return 'I';
+    }
+
+    // Flip every phase individually.
+    char solver::rephase_flipping() {
+        m_rephase_flipping++;
+        for (auto& p : m_phase) p = !p;
+        IF_VERBOSE(12, verbose_stream() << "(rephase :type flipping :count " << m_rephase_flipping << ")\n");
+        return 'F';
+    }
+
+    // Set all phases randomly.
+    // Uses a local RNG seeded from the solver's RNG (like CaDiCaL's rephase_random
+    // which creates a local Random from opts.seed + count) to avoid perturbing
+    // the main solver RNG stream used by other heuristics.
+    char solver::rephase_random() {
+        m_rephase_random++;
+        random_gen rng(m_rand());
+        for (auto& p : m_phase) p = (rng() % 2) == 0;
+        IF_VERBOSE(12, verbose_stream() << "(rephase :type random :count " << m_rephase_random << ")\n");
+        return '#';
+    }
+
+    // Copy best-phase assignment into current phase (CaDiCaL: rephase_best).
+    char solver::rephase_best() {
+        m_rephase_best++;
+        if (m_best_phase_size > 0) {
+            for (unsigned i = 0; i < m_phase.size(); ++i)
+                m_phase[i] = m_best_phase[i];
+        }
+        IF_VERBOSE(12, verbose_stream() << "(rephase :type best :count " << m_rephase_best
+                   << " :best_depth " << m_best_phase_size << ")\n");
+        return 'B';
+    }
+
+    // Run in-place ProbSAT walker with effort-proportional budget.
+    // The walker writes results directly to m_phase and m_best_phase
+    // via probsat::export_best.
+    // When max_flips == 0 (default), compute budget from CDCL conflict delta.
+    bool solver::run_probsat(unsigned max_flips) {
+        if (max_flips == 0) {
+            // Compute walk budget proportional to CDCL conflicts since last walk.
+            // CaDiCaL uses walkeffort=80 (per mille): budget = delta_ticks * 0.08
+            // Minimum 5000 to ensure meaningful exploration; max 500000 to bound latency.
+            unsigned conflicts_delta = m_conflicts_since_init - m_conflicts_at_last_walk;
+            m_conflicts_at_last_walk = m_conflicts_since_init;
+            uint64_t raw_budget = static_cast<uint64_t>(conflicts_delta) * static_cast<uint64_t>(num_vars()) / 1000;
+            max_flips = std::max(5000u, std::min(500000u,
+                static_cast<unsigned>(std::min(raw_budget, static_cast<uint64_t>(UINT_MAX)))));
+        }
+        return m_probsat(*this, max_flips);
+    }
+
+    // Trigger local search 'walk' to find a phase assignment that minimizes
+    // the number of falsified clauses. This is the CaDiCaL rephase_walk analog.
+    //
+    // CaDiCaL reference: rephase.cpp:100-109, walk.cpp:1048-1086
+    //   - Backtracks to level 0
+    //   - Runs walk_round with budget = delta_ticks * walkeffort * 1e-3
+    //   - walk saves best assignment to phases.saved
+    //
+    // In Z3 we use the lightweight in-place ProbSAT walker (sat_probsat.cpp)
+    // which operates directly on the solver's clause pool without copying.
+    char solver::rephase_walk() {
+        m_rephase_walk++;
+
+        // Backtrack to decision level 0 (CaDiCaL's backtrack() in walk())
+        if (scope_lvl() > search_lvl())
+            pop_reinit(scope_lvl() - search_lvl());
+
+        // Run ProbSAT walk -- writes results directly to m_phase and m_best_phase
+        run_probsat();
+
+        IF_VERBOSE(12, verbose_stream() << "(rephase :type walk :count " << m_rephase_walk << ")\n");
+        return 'W';
     }
 
     void solver::do_rephase() {
+        char type = 0;
+        unsigned count = m_rephase.count;
+
         switch (m_config.m_phase) {
         case PS_ALWAYS_TRUE:
             for (auto& p : m_phase) p = true;
+            type = 'T';
             break;
         case PS_ALWAYS_FALSE:
             for (auto& p : m_phase) p = false;
+            type = '0';
             break;
         case PS_FROZEN:
-            break;
-        case PS_BASIC_CACHING:
-            switch (m_rephase.count % 4) {
-            case 0:
-                for (auto& p : m_phase) p = (m_rand() % 2) == 0;
-                break;
-            case 1:
-                for (auto& p : m_phase) p = false;
-                break;
-            case 2:
-                for (auto& p : m_phase) p = !p;
-                break;
-            default:
-                break;
-            }
-            break;
-        case PS_SAT_CACHING:
-            if (m_search_state == s_sat) 
-                for (unsigned i = 0; i < m_phase.size(); ++i) 
-                    m_phase[i] = m_best_phase[i];  
+            type = 'Z';
             break;
         case PS_RANDOM:
-            for (auto& p : m_phase) p = (m_rand() % 2) == 0;
+            type = rephase_random();
             break;
-        case PS_LOCAL_SEARCH:
-            if (m_search_state == s_sat) {
-                if (m_rand() % 2 == 0)
-                    bounded_local_search();
-                for (unsigned i = 0; i < m_phase.size(); ++i) 
-                    m_phase[i] = m_best_phase[i];              
-            }
 
+        case PS_BASIC_CACHING:
+            // CaDiCaL stable+walk schedule (rephase.cpp:287-316):
+            //   original, inverted, (best, walk, original, best, walk, inverted)^w
+            //
+            // Matches CaDiCaL exactly: primes both polarity extremes first,
+            // then alternates exploitation (best), exploration (walk), and
+            // polarity resets (original/inverted) in a repeating 6-cycle.
+            if (count == 0)
+                type = rephase_original();
+            else if (count == 1)
+                type = rephase_inverted();
+            else {
+                switch ((count - 2) % 6) {
+                case 0: type = rephase_best();     break;
+                case 1: type = rephase_walk();     break;
+                case 2: type = rephase_original(); break;
+                case 3: type = rephase_best();     break;
+                case 4: type = rephase_walk();     break;
+                case 5: type = rephase_inverted(); break;
+                default: UNREACHABLE();            break;
+                }
+            }
             break;
+
+        case PS_SAT_CACHING:
+        case PS_LOCAL_SEARCH:
+            // CaDiCaL-style rich rephasing schedule with walk integration.
+            //
+            // Schedule: original, inverted, (best, WALK, original, best, WALK, inverted)^\omega
+            //
+            // This matches CaDiCaL's stable+walk pattern (rephase.cpp:287-316):
+            //   count 0: original
+            //   count 1: inverted
+            //   count 2+: 6-cycle of best, walk, original, best, walk, inverted
+            //
+            // Walk runs every 3rd rephase in the repeating cycle, providing
+            // local-search-guided phase hints via the lightweight in-place ProbSAT
+            // walker. No DDFW clause copying -- operates directly on solver state.
+            //
+            // Unlike the old PS_LOCAL_SEARCH which had a 50% random skip and only
+            // ran in s_sat state, this always executes on schedule regardless of
+            // search state, matching CaDiCaL's unconditional walk trigger.
+            if (count == 0)
+                type = rephase_original();
+            else if (count == 1)
+                type = rephase_inverted();
+            else {
+                switch ((count - 2) % 6) {
+                case 0: type = rephase_best();     break;
+                case 1: type = rephase_walk();     break;
+                case 2: type = rephase_original(); break;
+                case 3: type = rephase_best();     break;
+                case 4: type = rephase_walk();     break;
+                case 5: type = rephase_inverted(); break;
+                default: UNREACHABLE();            break;
+                }
+            }
+            break;
+
         default:
             UNREACHABLE();
             break;
         }
+
+        IF_VERBOSE(12, verbose_stream() << "(rephase :round " << count << " :type " << type << ")\n");
+
+        // CaDiCaL-style: shuffle variable activities after rephasing for
+        // search diversification (rephase.cpp lines 397-399).
+        if (m_config.m_rephase_shuffle)
+            shuffle_activity_on_rephase();
+
+        // Reset target phase depth on rephase to allow re-discovery of a new
+        // deepest conflict-free assignment (following CaDiCaL's approach).
+        m_target_assigned = 0;
+
+        // Arithmetically increasing rephase interval (CaDiCaL: delta = rephaseint * (total+1))
         m_rephase_inc += m_config.m_rephase_base;
         m_rephase_lim += m_rephase_inc;
         m_rephase.inc(m_conflicts_since_init, num_clauses());
+    }
+
+    // CaDiCaL-style activity perturbation after rephasing.
+    // Multiplies each unassigned variable's activity by a random factor
+    // in [0.9, 1.1), providing mild diversification of the variable
+    // ordering without destroying the overall learned score ranking.
+    // This is lighter than do_reorder() which does a full softmax
+    // redistribution; here we just jitter the existing scores.
+    void solver::shuffle_activity_on_rephase() {
+        for (bool_var v = num_vars(); v-- > 0; ) {
+            if (was_eliminated(v) || value(v) != l_undef)
+                continue;
+            // Generate a random factor in [0.9, 1.1):
+            //   m_rand() returns [0, 0x7fff], so r/max is in [0,1].
+            //   factor = 0.9 + 0.2 * (r / max_value)
+            double r = static_cast<double>(m_rand()) / static_cast<double>(random_gen::max_value());
+            double factor = 0.9 + 0.2 * r;
+            double old_act = m_activity[v];
+            double new_act = old_act * factor;
+            if (new_act != old_act) {
+                m_activity[v] = new_act;
+                m_case_split_queue.activity_changed_eh(v, new_act > old_act);
+            }
+        }
     }
 
     bool solver::should_reorder() {
@@ -3232,6 +4108,12 @@ namespace sat {
         bool_var var = antecedent.var();
         unsigned var_lvl = lvl(var);
         if (!is_marked(var) && var_lvl > 0) {
+            // cached success: var already proven removable in this minimization round
+            if (m_removable[var])
+                return true;
+            // cached failure: var already proven non-removable in this minimization round
+            if (m_poison[var])
+                return false;
             if (m_lvl_set.may_contain(var_lvl)) {
                 mark(var);
                 m_unmark.push_back(var);
@@ -3252,28 +4134,56 @@ namespace sat {
        as soon as we find a literal assigned in a level that is not in lvl_set.
     */
     bool solver::implied_by_marked(literal lit) {
-        m_lemma_min_stack.reset();  // avoid recursive function
-        m_lemma_min_stack.push_back(lit);
+        m_lemma_min_stack.reset();
         unsigned old_size = m_unmark.size();
+        bool_var initial_var = lit.var();
+
+        // CaDiCaL early-abort heuristics A and B at depth 0.
+        {
+            unsigned v0_lvl = lvl(initial_var);
+            if (v0_lvl > 0 && v0_lvl < m_level_info.size()) {
+                level_info const& li = m_level_info[v0_lvl];
+                // (A) Knuth: only one literal seen on this level => essential.
+                if (li.seen_count < 2)
+                    return false;
+                // (B) Assigned at or before earliest seen => not implied.
+                if (m_trail_pos[initial_var] <= li.min_trail)
+                    return false;
+            }
+        }
+
+        m_lemma_min_stack.push_back(lit);
+        unsigned steps = 0;
 
         while (!m_lemma_min_stack.empty()) {
+            // Heuristic C: work limit (CaDiCaL minimizedepth default 1000).
+            if (steps++ > 1000)
+                goto fail;
+            // CaDiCaL-style tick: each variable explored during minimization
+            // is one unit of search work (minimize.cpp:36 in CaDiCaL).
+            ++m_search_ticks;
             lit = m_lemma_min_stack.back();
             bool_var var = lit.var();
             m_lemma_min_stack.pop_back();
+
+            // Heuristic B at depth > 0.
+            {
+                unsigned var_lvl = lvl(var);
+                if (var_lvl > 0 && var_lvl < m_level_info.size()) {
+                    if (m_trail_pos[var] <= m_level_info[var_lvl].min_trail)
+                        goto fail;
+                }
+            }
+
             justification const& js   = m_justification[var];
             switch(js.get_kind()) {
             case justification::NONE:
-                // it is a decision variable from a previous scope level
-                if (lvl(var) > 0) {
-                    reset_unmark(old_size);
-                    return false;
-                }
+                if (lvl(var) > 0)
+                    goto fail;
                 break;
             case justification::BINARY:
-                if (!process_antecedent_for_minimization(~(js.get_literal()))) {
-                    reset_unmark(old_size);
-                    return false;
-                }
+                if (!process_antecedent_for_minimization(~(js.get_literal())))
+                    goto fail;
                 break;
             case justification::CLAUSE: {
                 clause & c = get_clause(js);
@@ -3283,18 +4193,14 @@ namespace sat {
                 }
                 else {
                     SASSERT(c[1].var() == var);
-                    if (!process_antecedent_for_minimization(~c[0])) {
-                        reset_unmark(old_size);
-                        return false;
-                    }
+                    if (!process_antecedent_for_minimization(~c[0]))
+                        goto fail;
                     i = 2;
                 }
                 unsigned sz = c.size();
                 for (; i < sz; ++i) {
-                    if (!process_antecedent_for_minimization(~c[i])) {
-                        reset_unmark(old_size);
-                        return false;
-                    }
+                    if (!process_antecedent_for_minimization(~c[i]))
+                        goto fail;
                 }
                 break;
             }
@@ -3302,10 +4208,8 @@ namespace sat {
                 literal consequent(var, value(var) == l_false);
                 fill_ext_antecedents(consequent, js, false);
                 for (literal l : m_ext_antecedents) {
-                    if (!process_antecedent_for_minimization(l)) {
-                        reset_unmark(old_size);
-                        return false;
-                    }
+                    if (!process_antecedent_for_minimization(l))
+                        goto fail;
                 }
                 break;
             }
@@ -3313,10 +4217,26 @@ namespace sat {
                 UNREACHABLE();
                 break;
             }
-            TRACE(sat_conflict, 
+            TRACE(sat_conflict,
                   display_justification(tout << var << " ",js) << "\n";);
         }
+        // success: cache all newly explored vars as removable
+        for (unsigned i = old_size; i < m_unmark.size(); ++i) {
+            bool_var v = m_unmark[i];
+            if (!m_removable[v]) {
+                m_removable[v] = true;
+                m_minimized_vars.push_back(v);
+            }
+        }
         return true;
+
+    fail:
+        reset_unmark(old_size);
+        if (!m_poison[initial_var]) {
+            m_poison[initial_var] = true;
+            m_minimized_vars.push_back(initial_var);
+        }
+        return false;
     }
 
     /**
@@ -3328,6 +4248,13 @@ namespace sat {
         for(unsigned i = old_size; i < curr_size; ++i)
             reset_mark(m_unmark[i]);
         m_unmark.shrink(old_size);
+    }
+
+
+    void solver::reset_level_info() {
+        for (unsigned lvl : m_active_levels)
+            m_level_info[lvl].reset();
+        m_active_levels.reset();
     }
 
     /**
@@ -3373,6 +4300,155 @@ namespace sat {
         return num_reduced > 0;
     }
 
+    // -----------------------------------------------------------------------
+    // Per-level UIP clause shrinking (CaDiCaL technique)
+    // -----------------------------------------------------------------------
+
+    int solver::shrink_literal(literal lit, unsigned blevel, bool resolve_large) {
+        bool_var v = lit.var();
+        unsigned v_lvl = lvl(v);
+        if (v_lvl == 0) return 0;
+        if (m_shrinkable.get(v, false)) return 0;
+        if (v_lvl != blevel) {
+            // v_lvl < blevel: lower-level literal, check if implied by lemma.
+            // v_lvl > blevel: can happen with chronological backtracking
+            //   (out-of-order trail entries). Treat the same as lower-level.
+            if (is_marked(v)) return 0;
+            if (v_lvl < blevel && implied_by_marked(lit)) return 0;
+            return -1;
+        }
+        m_shrinkable[v] = true;
+        m_shrinkable_vars.push_back(v);
+        return 1;
+    }
+
+    bool solver::shrink_block(unsigned block_begin, unsigned block_end) {
+        SASSERT(block_end > block_begin);
+        SASSERT(m_shrinkable_vars.empty());
+        unsigned blevel = lvl(m_lemma[block_begin]);
+        bool resolve_large = (m_config.m_shrink >= 2);
+        unsigned max_tp = 0;
+        unsigned open = 0;
+        for (unsigned i = block_begin; i <= block_end; ++i) {
+            bool_var v = m_lemma[i].var();
+            unsigned tpos = m_trail_pos[v];
+            if (tpos > max_tp) max_tp = tpos;
+            m_shrinkable[v] = true;
+            m_shrinkable_vars.push_back(v);
+            open++;
+        }
+        bool failed = false;
+        unsigned pos = max_tp;
+        int uip_pos = -1;
+        while (!failed) {
+            while (pos < m_trail.size()) {
+                bool_var v = m_trail[pos].var();
+                if (m_shrinkable.get(v, false) && lvl(v) == blevel) break;
+                if (pos == 0) { failed = true; break; }
+                pos--;
+            }
+            if (failed) break;
+            literal trail_lit = m_trail[pos];
+            bool_var v = trail_lit.var();
+            open--;
+            if (open == 0) { uip_pos = pos; break; }
+            justification js = m_justification[v];
+            switch (js.get_kind()) {
+            case justification::NONE:
+                failed = true;
+                break;
+            case justification::BINARY: {
+                int r = shrink_literal(~js.get_literal(), blevel, resolve_large);
+                if (r < 0) failed = true;
+                else if (r > 0) open++;
+                break;
+            }
+            case justification::CLAUSE: {
+                if (!resolve_large) { failed = true; break; }
+                clause & c = get_clause(js);
+                for (unsigned ci = 0; ci < c.size(); ++ci) {
+                    if (c[ci] == trail_lit) continue;
+                    int r = shrink_literal(~c[ci], blevel, resolve_large);
+                    if (r < 0) { failed = true; break; }
+                    if (r > 0) open++;
+                }
+                break;
+            }
+            case justification::EXT_JUSTIFICATION: {
+                if (!resolve_large) { failed = true; break; }
+                fill_ext_antecedents(trail_lit, js, false);
+                for (literal l : m_ext_antecedents) {
+                    int r = shrink_literal(l, blevel, resolve_large);
+                    if (r < 0) { failed = true; break; }
+                    if (r > 0) open++;
+                }
+                break;
+            }
+            default: failed = true; break;
+            }
+            if (pos == 0 && !failed && open > 0) failed = true;
+            if (!failed && pos > 0) pos--;
+        }
+        for (bool_var w : m_shrinkable_vars) m_shrinkable[w] = false;
+        m_shrinkable_vars.reset();
+        if (failed || uip_pos < 0) return false;
+        literal uip = ~m_trail[uip_pos];
+        m_lemma[block_begin] = uip;
+        bool_var uip_var = uip.var();
+        if (!is_marked(uip_var)) mark(uip_var);
+        unsigned shrunken = 0;
+        for (unsigned i = block_begin + 1; i <= block_end; ++i) {
+            literal old_lit = m_lemma[i];
+            if (is_marked(old_lit.var())) reset_mark(old_lit.var());
+            m_lemma[i] = null_literal;
+            shrunken++;
+        }
+        m_stats.m_shrunken_lits += shrunken;
+        return true;
+    }
+
+    void solver::shrink_lemma() {
+        unsigned sz = m_lemma.size();
+        if (sz <= 2) return;
+        m_shrinkable.reserve(num_vars(), false);
+        // Populate m_lvl_set so that implied_by_marked (called from
+        // shrink_literal for lower-level literals) can use the level
+        // filter in process_antecedent_for_minimization.
+        updt_lemma_lvl_set();
+        std::sort(m_lemma.data() + 1, m_lemma.data() + sz,
+            [this](literal a, literal b) {
+                unsigned la = lvl(a), lb = lvl(b);
+                if (la != lb) return la > lb;
+                return m_trail_pos[a.var()] > m_trail_pos[b.var()];
+            });
+        unsigned total_shrunken = 0;
+        unsigned i = 1;
+        while (i < sz) {
+            unsigned blvl = lvl(m_lemma[i]);
+            if (blvl == 0) break;
+            unsigned bstart = i, bend = i;
+            while (bend + 1 < sz && lvl(m_lemma[bend + 1]) == blvl) bend++;
+            if (bend > bstart) {
+                if (shrink_block(bstart, bend))
+                    total_shrunken += (bend - bstart);
+            }
+            i = bend + 1;
+        }
+        // Clean up marks and memoization state accumulated by implied_by_marked
+        // calls inside shrink_literal. Without this, minimize_lemma's
+        // SASSERT(m_unmark.empty()) would fire, and stale removable/poison
+        // flags would contaminate the subsequent minimization pass.
+        reset_unmark(0);
+        clear_minimized_lits();
+
+        if (total_shrunken == 0) return;
+        unsigned j = 1;
+        for (i = 1; i < sz; ++i)
+            if (m_lemma[i] != null_literal)
+                m_lemma[j++] = m_lemma[i];
+        m_lemma.shrink(j);
+    }
+
     /**
        \brief Minimize the number of literals in m_lemma. The main idea is to remove
        literals that are implied by other literals in m_lemma and/or literals
@@ -3397,9 +4473,21 @@ namespace sat {
         }
 
         reset_unmark(0);
+        clear_minimized_lits();
         m_lemma.shrink(j);
         m_stats.m_minimized_lits += sz - j;
         return j < sz;
+    }
+
+    /**
+       \brief Bulk-clear poison and removable flags set during minimization.
+    */
+    void solver::clear_minimized_lits() {
+        for (bool_var v : m_minimized_vars) {
+            m_poison[v] = false;
+            m_removable[v] = false;
+        }
+        m_minimized_vars.reset();
     }
 
     /**
@@ -3407,7 +4495,7 @@ namespace sat {
     */
     void solver::reset_lemma_var_marks() {
         if (m_config.m_branching_heuristic == BH_VSIDS) {
-            update_lrb_reasoned();
+            bump_reason_literals();
         }        
         literal_vector::iterator it  = m_lemma.begin();
         literal_vector::iterator end = m_lemma.end();
@@ -3424,10 +4512,13 @@ namespace sat {
         SASSERT(!is_marked(m_lemma[0].var()));
         mark(m_lemma[0].var());
         for (unsigned i = m_lemma.size(); i-- > 0; ) {
+            // CaDiCaL-style tick: reason-side bumping traverses clauses,
+            // analogous to analyze.cpp:370 in CaDiCaL.
+            ++m_search_ticks;
             justification js = m_justification[m_lemma[i].var()];
             switch (js.get_kind()) {
             case justification::NONE:
-                break;                    
+                break;
             case justification::BINARY:
                 update_lrb_reasoned(js.get_literal());
                 break;
@@ -3461,6 +4552,100 @@ namespace sat {
             m_reasoned[v]++;
             inc_activity(v);
             m_lemma.push_back(lit);
+        }
+    }
+
+    // CaDiCaL-style reason-side literal bumping for VSIDS (analyze.cpp:342-424).
+    void solver::bump_reason_literals() {
+        if (!m_config.m_bump_reason || m_config.m_branching_heuristic != BH_VSIDS || m_lemma.empty())
+            return;
+        unsigned decisions_this = m_stats.m_decision - m_decisions_at_last_conflict;
+        m_decisions_at_last_conflict = m_stats.m_decision;
+        m_decisions_per_conflict += 1e-4 * (decisions_this - m_decisions_per_conflict);
+        if (m_decisions_per_conflict > m_config.m_bump_reason_rate)
+            return;
+        if (m_bump_reason_delay > 0) { m_bump_reason_delay--; return; }
+        unsigned depth_limit = m_config.m_bump_reason_depth;
+        SASSERT(depth_limit > 0);
+        unsigned saved_sz = m_lemma.size();
+        unsigned bump_limit = saved_sz * m_config.m_bump_reason_limit;
+        unsigned bump_count = 0;
+        SASSERT(!is_marked(m_lemma[0].var()));
+        mark(m_lemma[0].var());
+        for (unsigned i = 0; i < saved_sz && bump_count <= bump_limit; ++i)
+            bump_reason_literals_recursive(m_lemma[i], depth_limit, bump_count, bump_limit);
+        bool limit_exhausted = (bump_count > bump_limit);
+        if (limit_exhausted) {
+            for (unsigned i = m_lemma.size(); i-- > saved_sz; ) {
+                SASSERT(is_marked(m_lemma[i].var()));
+                reset_mark(m_lemma[i].var());
+            }
+            m_lemma.shrink(saved_sz);
+            m_bump_reason_delay_interval++;
+        } else {
+            for (unsigned i = m_lemma.size(); i-- > saved_sz; )
+                inc_activity(m_lemma[i].var());
+            for (unsigned i = m_lemma.size(); i-- > saved_sz; ) {
+                SASSERT(is_marked(m_lemma[i].var()));
+                reset_mark(m_lemma[i].var());
+            }
+            m_lemma.shrink(saved_sz);
+            m_bump_reason_delay_interval /= 2;
+        }
+        m_bump_reason_delay = m_bump_reason_delay_interval;
+        reset_mark(m_lemma[0].var());
+    }
+
+    void solver::bump_reason_literals_recursive(literal lit, unsigned depth_limit,
+                                                 unsigned& bump_count, unsigned bump_limit) {
+        SASSERT(depth_limit > 0);
+        // CaDiCaL-style tick: reason-side recursive bumping (analyze.cpp:370).
+        ++m_search_ticks;
+        bool_var v = lit.var();
+        if (!lvl(v)) return;
+        justification js = m_justification[v];
+        switch (js.get_kind()) {
+        case justification::NONE: return;
+        case justification::BINARY: {
+            literal other = js.get_literal();
+            bool_var ov = other.var();
+            if (!is_marked(ov) && lvl(ov) > 0) {
+                mark(ov); m_lemma.push_back(other); bump_count++;
+                if (depth_limit >= 2 && bump_count <= bump_limit)
+                    bump_reason_literals_recursive(~other, depth_limit - 1, bump_count, bump_limit);
+            }
+            break;
+        }
+        case justification::CLAUSE: {
+            clause & c = get_clause(js);
+            for (literal l : c) {
+                if (l == lit || l == ~lit) continue;
+                bool_var lv = l.var();
+                if (!is_marked(lv) && lvl(lv) > 0) {
+                    mark(lv); m_lemma.push_back(l); bump_count++;
+                    if (bump_count > bump_limit) break;
+                    if (depth_limit >= 2)
+                        bump_reason_literals_recursive(~l, depth_limit - 1, bump_count, bump_limit);
+                    if (bump_count > bump_limit) break;
+                }
+            }
+            break;
+        }
+        case justification::EXT_JUSTIFICATION: {
+            fill_ext_antecedents(~lit, js, true);
+            for (literal l : m_ext_antecedents) {
+                bool_var lv = l.var();
+                if (!is_marked(lv) && lvl(lv) > 0) {
+                    mark(lv); m_lemma.push_back(l); bump_count++;
+                    if (bump_count > bump_limit) break;
+                    if (depth_limit >= 2)
+                        bump_reason_literals_recursive(~l, depth_limit - 1, bump_count, bump_limit);
+                    if (bump_count > bump_limit) break;
+                }
+            }
+            break;
+        }
+        default: break;
         }
     }
 
@@ -3670,6 +4855,7 @@ namespace sat {
         m_bin_watches.shrink(2*v);
         m_assignment.shrink(2*v);
         m_justification.shrink(v);
+        m_trail_pos.shrink(v);
         m_decision.shrink(v);
         m_eliminated.shrink(v);
         m_external.shrink(v);
@@ -3677,10 +4863,13 @@ namespace sat {
         m_touched.shrink(v);
         m_activity.shrink(v);
         m_mark.shrink(v);
+        m_poison.shrink(v);
+        m_removable.shrink(v);
         m_lit_mark.shrink(2*v);
         m_phase.shrink(v);
         m_best_phase.shrink(v);
         m_prev_phase.shrink(v);
+        m_target_phase.shrink(v);
         m_assigned_since_gc.shrink(v);
         m_simplifier.reset_todos();
     }
@@ -3723,6 +4912,8 @@ namespace sat {
             m_assignment[(~l).index()] = l_undef;
             SASSERT(value(v) == l_undef);
             m_case_split_queue.unassign_var_eh(v);
+            if (m_config.m_dual_mode)
+                vmtf_update_search(v);
             if (m_config.m_anti_exploration) {
                 m_canceled[v] = m_stats.m_conflict;
             }
@@ -3730,6 +4921,7 @@ namespace sat {
         m_trail.shrink(old_sz);        
         DEBUG_CODE(for (literal l : m_trail) SASSERT(lvl(l.var()) <= new_lvl););
         m_qhead = m_trail.size();
+        m_qhead_binary = m_trail.size();
         if (!m_replay_assign.empty()) IF_VERBOSE(20, verbose_stream() << "replay assign: " << m_replay_assign.size() << "\n");
         CTRACE(sat, !m_replay_assign.empty(), tout << "replay-assign: " << m_replay_assign << "\n";);
         for (unsigned i = m_replay_assign.size(); i-- > 0; ) {
@@ -3804,6 +4996,7 @@ namespace sat {
         TRACE(sat, display(tout););
 
         m_qhead = 0;
+        m_qhead_binary = 0;
         unsigned j = 0;
         for (bool_var v : m_free_vars) 
             if (v < max_var)
@@ -4834,6 +6027,7 @@ namespace sat {
         st.update("sat propagations nary", m_propagate);
         st.update("sat restarts", m_restart);
         st.update("sat minimized lits", m_minimized_lits);
+        st.update("sat shrunken lits", m_shrunken_lits);
         st.update("sat subs resolution dyn", m_dyn_sub_res);
         st.update("sat blocked correction sets", m_blocked_corr_sets);
         st.update("sat units", m_units);
@@ -4841,6 +6035,11 @@ namespace sat {
         st.update("sat elim bool vars bdd", m_elim_var_bdd);
         st.update("sat backjumps", m_backjumps);
         st.update("sat backtracks", m_backtracks);
+        st.update("sat chrono backtracks", m_chrono_backtracks);
+        st.update("sat trail reuse", m_trail_reuse);
+        st.update("sat elim eqs inplace", m_elim_eqs_inplace);
+        st.update("sat eager subsumed", m_eager_subsumed);
+        st.update("sat otfs strengthened", m_otfs_strengthened);
     }
 
     void stats::reset() {

@@ -11,23 +11,27 @@ z3_add_component(sat
     sat_clause_use_list.cpp
     sat_cleaner.cpp
     sat_config.cpp
-    sat_ddfw_wrapper.cpp    
+    sat_ddfw_wrapper.cpp
+    sat_dual_mode.cpp
     sat_drat.cpp
     sat_elim_eqs.cpp
     sat_gc.cpp
     sat_integrity_checker.cpp
     sat_local_search.cpp
     sat_lookahead.cpp
+    sat_lucky.cpp
     sat_model_converter.cpp
     sat_mus.cpp
     sat_npn3_finder.cpp
     sat_parallel.cpp
     sat_prob.cpp
+    sat_probsat.cpp
     sat_probing.cpp
     sat_proof_trim.cpp
     sat_scc.cpp
     sat_simplifier.cpp
     sat_solver.cpp
+    sat_warmup.cpp
     sat_watched.cpp
     sat_xor_finder.cpp
   COMPONENT_DEPENDENCIES
