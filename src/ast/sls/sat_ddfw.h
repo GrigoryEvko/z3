@@ -108,6 +108,19 @@ namespace sat {
         unsigned_vector  m_num_models;
         bool             m_save_best_values = false;
 
+        // Incremental best-model tracking via flip trail (CaDiCaL walk.cpp
+        // lines 120-229). Instead of O(N) copy on each improvement, we
+        // record flipped literals on a trail. The best model is reconstructed
+        // by replaying m_flip_trail[0..m_best_trail_pos) onto m_best_values.
+        // Trail is compacted when it exceeds num_vars()/4 entries.
+        literal_vector   m_flip_trail;          // sequence of flipped literals (new polarity)
+        unsigned         m_best_trail_pos = 0;  // trail position of best assignment
+        svector<lbool>   m_best_values;         // base values for reconstruction
+        bool             m_trail_active = false; // whether trail tracking is active
+
+        void compact_flip_trail();
+        void reconstruct_best_model();
+
         scoped_ptr<local_search_plugin> m_plugin = nullptr;
         std::function<bool(void)> m_parallel_sync;
 

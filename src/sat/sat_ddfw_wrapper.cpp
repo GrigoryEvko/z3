@@ -53,6 +53,11 @@ namespace sat {
         }
         m_ddfw.init_clause_data();
         m_ddfw.flatten_use_list();
+        // Reset flip trail since values were externally overwritten.
+        m_ddfw.m_flip_trail.reset();
+        m_ddfw.m_best_trail_pos = 0;
+        m_ddfw.m_trail_active = false;
+        m_ddfw.m_best_values.reset();
     }
 
     void ddfw_wrapper::add(solver const& s) {

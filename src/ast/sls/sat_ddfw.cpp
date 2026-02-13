@@ -33,11 +33,15 @@
 namespace sat {
 
     lbool ddfw::check(unsigned sz, literal const* assumptions) {
-        init(sz, assumptions);   
+        init(sz, assumptions);
         if (m_plugin)
             check_with_plugin();
         else
             check_without_plugin();
+        // Reconstruct full model from flip trail before returning,
+        // so that get_model() returns the correct best assignment.
+        if (m_trail_active)
+            reconstruct_best_model();
         remove_assumptions();
         log();
         return m_min_sz == 0 && m_limit.inc()  ? m_last_result : l_undef;
@@ -236,8 +240,15 @@ namespace sat {
         m_flips = 0;
         m_last_flips = 0;
         m_shifts = 0;
+
+        // Reset flip trail for incremental best-model tracking.
+        m_flip_trail.reset();
+        m_best_trail_pos = 0;
+        m_best_values.reset();
+        m_trail_active = false;
+
         m_stopwatch.start();
-        if (sz == 0)        
+        if (sz == 0)
             m_initialized = true;
     }
 
@@ -329,6 +340,15 @@ namespace sat {
         }
         value(v) = !value(v);
         update_reward_avg(v);
+
+        // Record flip on trail for incremental best-model tracking.
+        // The literal encodes the NEW value: literal(v, false) means v=true.
+        if (m_trail_active) {
+            m_flip_trail.push_back(literal(v, !value(v)));
+            // Compact when trail exceeds num_vars/4 to bound memory usage.
+            if (m_flip_trail.size() > num_vars() / 4)
+                compact_flip_trail();
+        }
     }
 
     bool ddfw::should_reinit_weights() {
@@ -394,9 +414,21 @@ namespace sat {
         return m_flips >= m_restart_next;
     }
     
-    void ddfw::do_restart() {    
+    void ddfw::do_restart() {
+        // Reconstruct best model before restart invalidates the trail,
+        // so that m_model contains the correct best assignment.
+        if (m_trail_active)
+            reconstruct_best_model();
         reinit_values();
         init_clause_data();
+        // Reset trail after restart: values were reinitialized, so the
+        // old trail is invalid. Re-snapshot base values from current state.
+        if (m_trail_active) {
+            m_flip_trail.reset();
+            m_best_trail_pos = 0;
+            for (unsigned i = 0; i < num_vars(); ++i)
+                m_best_values[i] = to_lbool(value(i));
+        }
         m_restart_next += m_config.m_restart_base*get_luby(++m_restart_count);
     }
 
@@ -425,9 +457,19 @@ namespace sat {
     }
 
     void ddfw::save_model() {
-        m_model.reserve(num_vars());
-        for (unsigned i = 0; i < num_vars(); ++i) 
-            m_model[i] = to_lbool(value(i));
+        if (m_trail_active && !m_plugin) {
+            // Incremental best-model tracking: O(1) instead of O(N) copy.
+            // Just record the current trail position as the best snapshot.
+            // The full model will be reconstructed lazily when needed.
+            m_best_trail_pos = m_flip_trail.size();
+        }
+        else {
+            // Full O(N) copy needed: either trail not active yet, or plugin
+            // requires immediate access to m_model for callbacks.
+            m_model.reserve(num_vars());
+            for (unsigned i = 0; i < num_vars(); ++i)
+                m_model[i] = to_lbool(value(i));
+        }
         save_priorities();
         if (m_plugin && !m_in_external_flip && m_restart_count == 0 && m_model_save_count++ % 10 == 0)
             m_plugin->on_restart(); // import values if there are any updated ones.
@@ -445,8 +487,21 @@ namespace sat {
         bool do_save_model = ((m_unsat.size() < m_min_sz || m_unsat.empty()) &&
             ((m_unsat.size() < 50 || m_min_sz * 10 > m_unsat.size() * 11)));
 
-        if (do_save_model)
+        if (do_save_model) {
+            // Activate trail tracking after the first full model save.
+            // On the first save, we do an O(N) copy to establish the base
+            // snapshot in m_best_values; subsequent saves use O(1) trail
+            // position recording.
+            if (!m_trail_active && !m_plugin) {
+                m_best_values.reserve(num_vars());
+                for (unsigned i = 0; i < num_vars(); ++i)
+                    m_best_values[i] = to_lbool(value(i));
+                m_flip_trail.reset();
+                m_best_trail_pos = 0;
+                m_trail_active = true;
+            }
             save_model();
+        }
             
         if (m_unsat.size() < m_min_sz) {
             m_models.reset();
@@ -467,6 +522,53 @@ namespace sat {
             m_restart_next = m_flips;            
             m_models.erase(h);
         }        
+    }
+
+    // Compact the flip trail by burning the prefix up to m_best_trail_pos
+    // into m_best_values. This is called when the trail exceeds num_vars/4
+    // to bound memory usage (CaDiCaL walk.cpp lines ~200-220).
+    void ddfw::compact_flip_trail() {
+        if (!m_trail_active)
+            return;
+        // Burn prefix [0, m_best_trail_pos) into m_best_values.
+        for (unsigned i = 0; i < m_best_trail_pos; ++i) {
+            literal lit = m_flip_trail[i];
+            m_best_values[lit.var()] = to_lbool(!lit.sign());
+        }
+        // Shift remaining trail entries.
+        unsigned remaining = m_flip_trail.size() - m_best_trail_pos;
+        for (unsigned i = 0; i < remaining; ++i)
+            m_flip_trail[i] = m_flip_trail[m_best_trail_pos + i];
+        m_flip_trail.shrink(remaining);
+        m_best_trail_pos = 0;
+        // If trail is STILL too long after burning the best prefix
+        // (best_trail_pos was 0 or very small), do a full flush:
+        // re-snapshot current state as base and clear trail entirely.
+        // This matches CaDiCaL's fallback (walk.cpp ~line 220).
+        if (m_flip_trail.size() > num_vars() / 4) {
+            for (unsigned i = 0; i < num_vars(); ++i)
+                m_best_values[i] = to_lbool(value(i));
+            m_flip_trail.reset();
+            m_best_trail_pos = 0;
+        }
+    }
+
+    // Reconstruct the best model from base values + trail prefix.
+    // Replays m_flip_trail[0..m_best_trail_pos) onto m_best_values
+    // and writes the result into m_model for external consumption.
+    void ddfw::reconstruct_best_model() {
+        if (!m_trail_active)
+            return;
+        m_model.reserve(num_vars());
+        // Start from base values.
+        for (unsigned i = 0; i < num_vars(); ++i)
+            m_model[i] = m_best_values[i];
+        // Apply trail up to best position.
+        unsigned pos = std::min(m_best_trail_pos, m_flip_trail.size());
+        for (unsigned i = 0; i < pos; ++i) {
+            literal lit = m_flip_trail[i];
+            m_model[lit.var()] = to_lbool(!lit.sign());
+        }
     }
 
     unsigned ddfw::value_hash() const {
