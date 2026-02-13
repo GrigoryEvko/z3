@@ -1217,7 +1217,52 @@ namespace euf {
         for (auto* e : m_solvers)
             e->gc_vars(num_vars);
     }
-    
+
+    void solver::compact_vars(unsigned const* var_map, unsigned new_num_vars) {
+        // Remap m_bool_var2expr: build new mapping at remapped indices.
+        {
+            ptr_vector<expr> new_b2e;
+            new_b2e.resize(new_num_vars, nullptr);
+            unsigned old_sz = m_bool_var2expr.size();
+            for (unsigned v = 0; v < old_sz; ++v) {
+                expr* e = m_bool_var2expr[v];
+                if (!e) continue;
+                unsigned nv = var_map[v];
+                if (nv == UINT_MAX) continue;
+                new_b2e[nv] = e;
+            }
+            m_bool_var2expr.swap(new_b2e);
+        }
+
+        // Remap m_var_trail: update variable indices.
+        {
+            unsigned j = 0;
+            for (unsigned i = 0; i < m_var_trail.size(); ++i) {
+                sat::bool_var v = m_var_trail[i];
+                unsigned nv = var_map[v];
+                if (nv == UINT_MAX) continue;
+                m_var_trail[j++] = nv;
+            }
+            m_var_trail.shrink(j);
+        }
+
+        // Update enode bool_var references via the egraph (which is
+        // a friend of enode and can access the private set_bool_var).
+        for (euf::enode* n : m_egraph.nodes()) {
+            sat::bool_var b = n->bool_var();
+            if (b == sat::null_bool_var) continue;
+            unsigned nb = var_map[b];
+            if (nb == UINT_MAX)
+                m_egraph.set_bool_var(n, sat::null_bool_var);
+            else
+                m_egraph.set_bool_var(n, nb);
+        }
+
+        // Propagate to sub-solvers.
+        for (auto* e : m_solvers)
+            e->compact_vars(var_map, new_num_vars);
+    }
+
     double solver::get_reward(literal l, ext_constraint_idx idx, sat::literal_occs_fun& occs) const {
         auto* ext = sat::constraint_base::to_extension(idx);
         SASSERT(ext);        

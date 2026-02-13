@@ -400,6 +400,7 @@ namespace euf {
         bool is_blocked(literal l, ext_constraint_idx) override;
         bool check_model(sat::model const& m) const override;
         void gc_vars(unsigned num_vars) override;
+        void compact_vars(unsigned const* var_map, unsigned new_num_vars) override;
         bool resource_limits_exceeded() const override { return false; } // TODO
 
 
