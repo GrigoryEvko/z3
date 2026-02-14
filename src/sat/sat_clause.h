@@ -58,6 +58,7 @@ namespace sat {
         unsigned           m_inact_rounds:5; // inactivity rounds for gc_dyn_psm (max 31)
         unsigned           m_glue:8;
         unsigned           m_psm:8;  // transient field used during gc
+        unsigned           m_pos;    // saved scan position for watch replacement (Gent 2013 / CaDiCaL)
         literal            m_lits[0];
 
         static size_t get_obj_size(unsigned num_lits) { return sizeof(clause) + num_lits * sizeof(literal); }
@@ -105,6 +106,8 @@ namespace sat {
         unsigned glue() const { return m_glue; }
         void set_psm(unsigned psm) { m_psm = psm > 255 ? 255 : psm; }
         unsigned psm() const { return m_psm; }
+        unsigned pos() const { return m_pos; }
+        void set_pos(unsigned p) { m_pos = p; }
         clause_offset get_new_offset() const;
         void set_new_offset(clause_offset off);
 

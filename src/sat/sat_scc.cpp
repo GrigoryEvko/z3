@@ -230,22 +230,34 @@ namespace sat {
         report rpt(*this);
         TRACE(scc, m_solver.display(tout););
         TRACE(scc_details, m_solver.display_watches(tout););
-        literal_vector roots;
-        bool_var_vector to_elim;
-        if (!extract_roots(roots, to_elim))
-            return 0;
-        TRACE(scc, for (unsigned i = 0; i < roots.size(); ++i) { tout << i << " -> " << roots[i] << "\n"; }
-              tout << "to_elim: "; for (unsigned v : to_elim) tout << v << " "; tout << "\n";);
-        m_num_elim += to_elim.size();
-        elim_eqs eliminator(m_solver);
-        eliminator(roots, to_elim);
-        TRACE(scc_detail, m_solver.display(tout););
-        CASSERT("scc_bug", m_solver.check_invariant());
 
-        if (m_scc_tr) 
+        // Multi-round SCC (CaDiCaL-style): each round's clause shrinking
+        // can create new binary clauses that form new equivalences.
+        // Cap at 4 rounds (CaDiCaL defaults to 2).
+        unsigned total_elim = 0;
+        for (unsigned round = 0; round < 4; ++round) {
+            if (m_solver.m_inconsistent)
+                break;
+            literal_vector roots;
+            bool_var_vector to_elim;
+            if (!extract_roots(roots, to_elim))
+                break;
+            if (to_elim.empty())
+                break;
+            TRACE(scc, tout << "SCC round " << round << ": " << to_elim.size() << " equivalences\n";);
+            m_num_elim += to_elim.size();
+            total_elim += to_elim.size();
+            elim_eqs eliminator(m_solver);
+            eliminator(roots, to_elim);
+            CASSERT("scc_bug", m_solver.check_invariant());
+        }
+
+        TRACE(scc_detail, m_solver.display(tout););
+
+        if (m_scc_tr)
             reduce_tr();
         TRACE(scc_detail, m_solver.display(tout););
-        return to_elim.size();
+        return total_elim;
     }
 
     unsigned scc::reduce_tr(bool learned) {        

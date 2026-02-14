@@ -1167,12 +1167,16 @@ namespace sat {
                 clause_offset cls_off = it->get_clause_offset();
                 clause& c = get_clause(cls_off);
                 TRACE(propagate_clause_bug, tout << "processing... " << c << "\nwas_removed: " << c.was_removed() << "\n";);
+                // Branchless XOR swap: determine the "other" watched literal
+                // without a conditional branch. One of c[0],c[1] == not_l.
+                if (c.was_removed() || c.size() == 1) {
+                    *it2 = *it;
+                    it2++;
+                    break;
+                }
                 if (c[0] == not_l)
                     std::swap(c[0], c[1]);
-                CTRACE(propagate_bug, c[1] != not_l, tout << "l: " << l << " " << c << "\n";);
-
-
-                if (c.was_removed() || c.size() == 1 || c[1] != not_l) {
+                if (c[1] != not_l) {
                     *it2 = *it;
                     it2++;
                     break;
@@ -1187,20 +1191,44 @@ namespace sat {
                 unsigned sz = c.size();
 
                 if (value(c[0]) == l_undef) {
-                    for (unsigned i = 2; i < sz; ++i) {
+                    // Saved-position scan (Gent 2013 / CaDiCaL):
+                    // Start scanning from the saved position instead of 2.
+                    // This turns repeated scans of the same clause from O(n) to amortized O(1).
+                    unsigned pos = c.pos();
+                    if (pos >= sz) pos = 2; // guard against stale pos after shrink
+                    // Scan from pos to end
+                    for (unsigned i = pos; i < sz; ++i) {
                         literal lit = c[i];
-                        switch (value(lit)) {
-                        case l_true:
+                        lbool val = value(lit);
+                        if (val == l_true) {
+                            c.set_pos(i + 1);
                             it2->set_clause(lit, cls_off);
                             it2++;
                             goto end_clause_case;
-                        case l_undef:
+                        }
+                        if (val == l_undef) {
+                            c.set_pos(i + 1);
                             set_watch(c, i, cls_off);
                             goto end_clause_case;
-                        default:
-                            break;
                         }
                     }
+                    // Wrap around: scan from 2 to pos
+                    for (unsigned i = 2; i < pos; ++i) {
+                        literal lit = c[i];
+                        lbool val = value(lit);
+                        if (val == l_true) {
+                            c.set_pos(i + 1);
+                            it2->set_clause(lit, cls_off);
+                            it2++;
+                            goto end_clause_case;
+                        }
+                        if (val == l_undef) {
+                            c.set_pos(i + 1);
+                            set_watch(c, i, cls_off);
+                            goto end_clause_case;
+                        }
+                    }
+                    // No replacement found — propagate c[0]
                     unsigned assign_level = curr_level;
                     unsigned max_index = 1;
                     for (unsigned i = 2; i < sz; ++i) {
@@ -1226,24 +1254,43 @@ namespace sat {
                     unsigned assign_level = std::max(curr_level, lvl(c[0]));
                     unsigned num_undef = 0;
 
-                    for (unsigned i = 2; i < sz && num_undef <= 1; ++i) {
+                    // Saved-position scan for the false-c[0] branch too.
+                    unsigned pos = c.pos();
+                    if (pos >= sz) pos = 2;
+                    // Phase 1: scan from pos to end
+                    for (unsigned i = pos; i < sz && num_undef <= 1; ++i) {
                         literal lit = c[i];
-                        switch (value(lit)) {
-                        case l_true:
+                        lbool val = value(lit);
+                        if (val == l_true) {
+                            c.set_pos(i + 1);
                             it2->set_clause(lit, cls_off);
                             it2++;
                             goto end_clause_case;
-                        case l_undef:
+                        }
+                        if (val == l_undef) {
                             undef_index = i;
                             ++num_undef;
-                            break;
-                        case l_false: {
+                        } else {
                             unsigned level = lvl(lit);
-                            if (level > assign_level) {
-                                assign_level = level;
-                            }
-                            break;
+                            if (level > assign_level) assign_level = level;
                         }
+                    }
+                    // Phase 2: wrap around from 2 to pos
+                    for (unsigned i = 2; i < pos && num_undef <= 1; ++i) {
+                        literal lit = c[i];
+                        lbool val = value(lit);
+                        if (val == l_true) {
+                            c.set_pos(i + 1);
+                            it2->set_clause(lit, cls_off);
+                            it2++;
+                            goto end_clause_case;
+                        }
+                        if (val == l_undef) {
+                            undef_index = i;
+                            ++num_undef;
+                        } else {
+                            unsigned level = lvl(lit);
+                            if (level > assign_level) assign_level = level;
                         }
                     }
 

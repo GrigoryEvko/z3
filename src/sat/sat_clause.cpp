@@ -38,7 +38,8 @@ namespace sat {
         m_covered(false),
         m_inact_rounds(0),
         m_glue(255),
-        m_psm(255) {
+        m_psm(255),
+        m_pos(2) {
         memcpy(m_lits, lits, sizeof(literal) * sz);
         mark_strengthened();
         SASSERT(check_approx());
