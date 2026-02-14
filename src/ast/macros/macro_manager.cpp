@@ -21,6 +21,7 @@ Revision History:
 --*/
 #include "ast/macros/macro_manager.h"
 #include "ast/for_each_expr.h"
+#include "ast/occurs.h"
 #include "ast/rewriter/var_subst.h"
 #include "ast/rewriter/th_rewriter.h"
 #include "ast/rewriter/rewriter_def.h"
@@ -251,9 +252,17 @@ struct macro_manager::macro_expander_cfg : public default_rewriter_cfg {
         return BR_FAILED;
     }
 
-    bool reduce_quantifier(quantifier * old_q, 
-                           expr * new_body, 
-                           expr * const * new_patterns, 
+    bool pattern_has_macro_func(expr * pat) {
+        for (auto const& kv : mm.m_decl2macro) {
+            if (occurs(kv.m_key, pat))
+                return true;
+        }
+        return false;
+    }
+
+    bool reduce_quantifier(quantifier * old_q,
+                           expr * new_body,
+                           expr * const * new_patterns,
                            expr * const * new_no_patterns,
                            expr_ref & result,
                            proof_ref & result_pr) {
@@ -268,20 +277,48 @@ struct macro_manager::macro_expander_cfg : public default_rewriter_cfg {
 
         bool erase_patterns = false;
         for (unsigned i = 0; !erase_patterns && i < old_q->get_num_patterns(); ++i) {
-            if (old_q->get_pattern(i) != new_patterns[i]) 
+            if (old_q->get_pattern(i) != new_patterns[i])
                 erase_patterns = true;
         }
         for (unsigned i = 0; !erase_patterns && i < old_q->get_num_no_patterns(); ++i) {
             if (old_q->get_no_pattern(i) != new_no_patterns[i])
                 erase_patterns = true;
         }
+
         if (erase_patterns) {
             result = m.update_quantifier(old_q, 0, nullptr, 0, nullptr, new_body);
+            if (m.proofs_enabled())
+                result_pr = m.mk_rewrite(old_q, result);
+            return true;
         }
-        if (erase_patterns && m.proofs_enabled()) {
-            result_pr = m.mk_rewrite(old_q, result);
+
+        // Since rewrite_patterns() is false, patterns are not rewritten even when the body changes.
+        // If a macro function appears in a pattern but has been expanded away in the body,
+        // the pattern becomes a dead trigger (it references a function that no longer has
+        // ground instances). Remove only the stale patterns, keeping valid ones.
+        if (new_body != old_q->get_expr()) {
+            unsigned num_pats = old_q->get_num_patterns();
+            expr_ref_vector good_pats(m);
+            bool has_stale = false;
+            for (unsigned i = 0; i < num_pats; ++i) {
+                expr * pat = old_q->get_pattern(i);
+                if (pattern_has_macro_func(pat))
+                    has_stale = true;
+                else
+                    good_pats.push_back(pat);
+            }
+            if (has_stale) {
+                result = m.update_quantifier(old_q,
+                    good_pats.size(), good_pats.data(),
+                    old_q->get_num_no_patterns(), old_q->get_no_patterns(),
+                    new_body);
+                if (m.proofs_enabled())
+                    result_pr = m.mk_rewrite(old_q, result);
+                return true;
+            }
         }
-        return erase_patterns;
+
+        return false;
     }
 
     bool get_subst(expr * _n, expr* & r, proof* & p) {
