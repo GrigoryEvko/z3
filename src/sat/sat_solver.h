@@ -245,6 +245,19 @@ namespace sat {
         literal_set             m_ext_assumption_set;   // set of enabled assumptions
         literal_vector          m_core;             // unsat core
 
+        // Lazy UNSAT core computation (CaDiCaL-style deferred failing analysis).
+        bool                    m_core_is_valid = false;
+        bool                    m_conflict_at_search_lvl = false;
+        justification           m_saved_conflict;
+        literal                 m_saved_not_l;
+        unsigned                m_saved_conflict_lvl = 0;
+
+        // Per-literal assumption flags for O(1) is_assumption() checks.
+        bool_vector             m_assumption_mark;
+
+        // Per-variable freeze reference counting (CaDiCaL-style freeze/melt).
+        unsigned_vector         m_frozen_refcount;
+
         unsigned                m_par_id;        
         unsigned                m_par_limit_in;
         unsigned                m_par_limit_out;
@@ -565,7 +578,11 @@ namespace sat {
         bool model_is_current() const { return m_model_is_current; }
 
         // retrieve core from assumptions
-        literal_vector const& get_core() const { return m_core; }
+        // Lazily compute core on first access (CaDiCaL-style deferred failing).
+        literal_vector const& get_core() const {
+            const_cast<solver*>(this)->ensure_core_computed();
+            return m_core;
+        }
 
         model_converter const & get_model_converter() const { return m_mc; }
 
@@ -670,6 +687,10 @@ namespace sat {
         bool           m_min_core_valid { false };
         void init_reason_unknown() { m_reason_unknown = "no reason given"; }
         void init_assumptions(unsigned num_lits, literal const* lits);
+        bool try_ilb_reuse(unsigned num_lits, literal const* lits);
+        void ensure_core_computed();
+        void freeze_assumption_var(bool_var v);
+        void melt_assumption_var(bool_var v);
         void reassert_min_core();
         void update_min_core();
         void resolve_weighted();

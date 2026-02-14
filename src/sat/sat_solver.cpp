@@ -19,6 +19,7 @@ Revision History:
 
 
 #include <cmath>
+#include <climits>
 #include <atomic>
 #ifndef SINGLE_THREAD
 #include <thread>
@@ -1563,35 +1564,42 @@ namespace sat {
     // -----------------------
     lbool solver::check(unsigned num_lits, literal const* lits) {
         init_reason_unknown();
-        pop_to_base_level();
+        // ILB (CaDiCaL-style): reuse trail when assumptions are identical.
+        bool ilb_reused = try_ilb_reuse(num_lits, lits);
+        if (!ilb_reused)
+            pop_to_base_level();
         m_stats.m_units = init_trail_size();
         IF_VERBOSE(2, verbose_stream() << "(sat.solver)\n";);
-        SASSERT(at_base_lvl());
 
         if (m_config.m_ddfw_search) {
+            if (!at_base_lvl()) pop_to_base_level();
             m_cleaner(true);
             return do_ddfw_search(num_lits, lits);
         }
         if (m_config.m_prob_search) {
+            if (!at_base_lvl()) pop_to_base_level();
             m_cleaner(true);
             return do_prob_search(num_lits, lits);
         }
         if (m_config.m_local_search) {
+            if (!at_base_lvl()) pop_to_base_level();
             m_cleaner(true);
             return do_local_search(num_lits, lits);
         }
         if ((m_config.m_num_threads > 1 || m_config.m_ddfw_threads > 0) && !m_par && !m_ext) {
+            if (!at_base_lvl()) pop_to_base_level();
             SASSERT(scope_lvl() == 0);
             return check_par(num_lits, lits);
         }
         if (m_config.m_local_search_threads > 0 && !m_par && (!m_ext || m_ext->is_pb())) {
+            if (!at_base_lvl()) pop_to_base_level();
             SASSERT(scope_lvl() == 0);
             return check_par(num_lits, lits);
         }
         flet<bool> _searching(m_searching, true);
         m_clone = nullptr;
         if (m_mc.empty() && gparams::get_ref().get_bool("model_validate", false)) {
-            
+
             m_clone = alloc(solver, m_no_drat_params, m_rlimit);
             m_clone->copy(*this);
             m_clone->set_extension(nullptr);
@@ -1601,9 +1609,14 @@ namespace sat {
             if (check_inconsistent()) return l_false;
             propagate(false);
             if (check_inconsistent()) return l_false;
-            init_assumptions(num_lits, lits);
-            propagate(false);
-            if (check_inconsistent()) return l_false;
+            if (!ilb_reused) {
+                init_assumptions(num_lits, lits);
+                propagate(false);
+                if (check_inconsistent()) return l_false;
+            } else {
+                // ILB: assumptions already assigned; restore search_lvl.
+                m_search_lvl = scope_lvl();
+            }
             if (m_config.m_force_cleanup) do_cleanup(true);
             TRACE(sat, display(tout););
             TRACE(before_search, display(tout););
@@ -2157,8 +2170,9 @@ namespace sat {
             pop_to_base_level();
             reinit_assumptions();
             lbool r = basic_search();
-            if (r != l_false) 
+            if (r != l_false)
                 return r;
+            ensure_core_computed();
             if (!m_ext->should_research(m_core))
                 return r;
         }
@@ -2203,22 +2217,52 @@ namespace sat {
     }    
 
 
+    // ILB: Incremental Lazy Backtracking (CaDiCaL-style).
+    // If the new assumptions are identical to the old ones, preserve the
+    // assumption scope and skip the full pop/reassign cycle.
+    bool solver::try_ilb_reuse(unsigned num_lits, literal const* lits) {
+        if (at_base_lvl())
+            return false;
+        if (m_assumptions.empty() && m_user_scope_literals.empty())
+            return false;
+        if (!m_user_scope_literals.empty())
+            return false;
+        if (m_config.m_drat)
+            return false;
+        if (num_lits != m_assumptions.size())
+            return false;
+        for (unsigned i = 0; i < num_lits; ++i) {
+            if (lits[i] != m_assumptions[i])
+                return false;
+        }
+        // Assumptions match. Pop search scopes but keep assumption scope.
+        if (scope_lvl() > m_search_lvl)
+            pop(scope_lvl() - m_search_lvl);
+        m_inconsistent = false;
+        m_core_is_valid = false;
+        m_conflict_at_search_lvl = false;
+        m_stats.m_trail_reuse++;
+        TRACE(sat, tout << "ILB: reused " << m_assumptions.size()
+              << " assumptions, trail size " << m_trail.size() << "\n";);
+        return true;
+    }
+
     void solver::init_assumptions(unsigned num_lits, literal const* lits) {
-        if (num_lits == 0 && m_user_scope_literals.empty()) 
-            return;        
+        if (num_lits == 0 && m_user_scope_literals.empty())
+            return;
 
         SASSERT(at_base_lvl());
         reset_assumptions();
         push();
 
         propagate(false);
-        if (inconsistent()) 
-            return;        
+        if (inconsistent())
+            return;
 
         TRACE(sat,
               tout << literal_vector(num_lits, lits) << "\n";
-              if (!m_user_scope_literals.empty()) 
-                  tout << "user literals: " << m_user_scope_literals << "\n";              
+              if (!m_user_scope_literals.empty())
+                  tout << "user literals: " << m_user_scope_literals << "\n";
               m_mc.display(tout);
               );
 
@@ -2235,7 +2279,7 @@ namespace sat {
             assign_scoped(lit);
         }
 
-        m_search_lvl = scope_lvl(); 
+        m_search_lvl = scope_lvl();
         SASSERT(m_search_lvl == 1);
     }
 
@@ -2248,15 +2292,61 @@ namespace sat {
     }
 
     void solver::reset_assumptions() {
+        // Melt variables frozen by previous assumptions (CaDiCaL-style).
+        for (literal lit : m_assumptions)
+            melt_assumption_var(lit.var());
+        // Clear per-literal assumption flags.
+        for (literal lit : m_assumptions) {
+            unsigned idx = lit.index();
+            if (idx < m_assumption_mark.size())
+                m_assumption_mark[idx] = false;
+        }
         m_assumptions.reset();
         m_assumption_set.reset();
         m_ext_assumption_set.reset();
+        m_core_is_valid = false;
+        m_conflict_at_search_lvl = false;
     }
 
     void solver::add_assumption(literal lit) {
+        // O(1) dedup via per-literal flag (CaDiCaL-style).
+        unsigned idx = lit.index();
+        if (idx < m_assumption_mark.size() && m_assumption_mark[idx])
+            return;
+        while (m_assumption_mark.size() <= idx)
+            m_assumption_mark.push_back(false);
+        m_assumption_mark[idx] = true;
         m_assumption_set.insert(lit);
         m_assumptions.push_back(lit);
         set_external(lit.var());
+        freeze_assumption_var(lit.var());
+    }
+
+    void solver::freeze_assumption_var(bool_var v) {
+        while (m_frozen_refcount.size() <= v)
+            m_frozen_refcount.push_back(0);
+        if (m_frozen_refcount[v] < UINT_MAX)
+            m_frozen_refcount[v]++;
+    }
+
+    void solver::melt_assumption_var(bool_var v) {
+        if (v >= m_frozen_refcount.size()) return;
+        if (m_frozen_refcount[v] == 0) return;
+        if (m_frozen_refcount[v] < UINT_MAX)
+            m_frozen_refcount[v]--;
+    }
+
+    // Lazy UNSAT core (CaDiCaL-style deferred failing analysis).
+    void solver::ensure_core_computed() {
+        if (m_core_is_valid) return;
+        if (!m_conflict_at_search_lvl) return;
+        // Clear flag BEFORE calling to prevent re-entrant recursion from MUS.
+        m_conflict_at_search_lvl = false;
+        m_conflict = m_saved_conflict;
+        m_not_l = m_saved_not_l;
+        m_conflict_lvl = m_saved_conflict_lvl;
+        resolve_conflict_for_unsat_core();
+        m_core_is_valid = true;
     }
 
     void solver::reassert_min_core() {
@@ -2317,7 +2407,12 @@ namespace sat {
     }
 
     bool solver::is_assumption(literal l) const {
-        return tracking_assumptions() && (m_assumption_set.contains(l) || m_ext_assumption_set.contains(l));
+        if (!tracking_assumptions()) return false;
+        // Fast path: per-literal flag (O(1)) for SAT-level assumptions.
+        unsigned idx = l.index();
+        if (idx < m_assumption_mark.size() && m_assumption_mark[idx])
+            return true;
+        return m_ext_assumption_set.contains(l);
     }
 
     void solver::set_activity(bool_var v, double new_act) {
@@ -2381,6 +2476,8 @@ namespace sat {
         m_stopwatch.reset();
         m_stopwatch.start();
         m_core.reset();
+        m_core_is_valid = false;
+        m_conflict_at_search_lvl = false;
         m_min_core_valid = false;
         m_min_core.reset();
         m_simplifier.init_search();
@@ -2441,7 +2538,7 @@ namespace sat {
         if (m_ext) {
             m_ext->pre_simplify();
         }
-      
+
         m_simplifier(false);
 
         CASSERT("sat_simplify_bug", check_invariant());
@@ -2970,11 +3067,22 @@ namespace sat {
         m_conflict_lvl = get_max_lvl(m_not_l, m_conflict, unique_max);
         justification js = m_conflict;
 
-        if (m_conflict_lvl <= 1 && (!m_assumptions.empty() || 
-                                    !m_ext_assumption_set.empty() || 
+        if (m_conflict_lvl <= 1 && (!m_assumptions.empty() ||
+                                    !m_ext_assumption_set.empty() ||
                                     !m_user_scope_literals.empty())) {
-            TRACE(sat, tout << "unsat core\n";);
-            resolve_conflict_for_unsat_core();
+            TRACE(sat, tout << "unsat core (deferred)\n";);
+            // Lazy failed analysis: defer core extraction until get_core().
+            if (m_config.m_drat) {
+                resolve_conflict_for_unsat_core();
+                m_core_is_valid = true;
+            } else {
+                m_saved_conflict = m_conflict;
+                m_saved_not_l = m_not_l;
+                m_saved_conflict_lvl = m_conflict_lvl;
+                m_conflict_at_search_lvl = true;
+                m_core_is_valid = false;
+                m_core.reset();
+            }
             return l_false;
         }
 
@@ -4875,6 +4983,10 @@ namespace sat {
         m_prev_phase.shrink(v);
         m_target_phase.shrink(v);
         m_assigned_since_gc.shrink(v);
+        if (m_frozen_refcount.size() > v)
+            m_frozen_refcount.shrink(v);
+        if (m_assumption_mark.size() > 2*v)
+            m_assumption_mark.shrink(2*v);
         m_simplifier.reset_todos();
     }
 
