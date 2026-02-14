@@ -724,6 +724,12 @@ namespace sat {
             return false;
         if (m_config.m_drat)
             return false;
+        // Don't compact when there are model converter entries.
+        // The mc entries store variable indices from the pre-compaction space.
+        // After compaction, consumers (sat2goal, inc_sat_solver) would see
+        // mixed old/new indices causing corrupt model reconstruction.
+        if (!m_mc.empty())
+            return false;
 
         unsigned nv = num_vars();
         if (nv < 200)
@@ -1032,15 +1038,10 @@ namespace sat {
             m_clauses_to_reinit.shrink(j);
         }
 
-        // Remap model converter entries.
-        // The mc stores bool_var and literal_vector entries.
-        // For now, only remap if it's non-empty.
-        // mc entries reference eliminated variables; after compaction,
-        // eliminated vars are gone and the mc entries remain valid since
-        // the mc is consumed only at model construction time.
-        // NOTE: A full implementation would remap m_mc.m_entries[i].m_var
-        // and m_mc.m_entries[i].m_clauses. For correctness, we need to
-        // ensure the mc is either empty or properly remapped.
+        // Model converter entries are not remapped during compaction.
+        // should_compact() prevents compaction when mc is non-empty,
+        // so all entries here remain in the current (only) index space.
+        SASSERT(m_mc.empty());
 
         // Update bookkeeping arrays.
         m_active_vars.reset();

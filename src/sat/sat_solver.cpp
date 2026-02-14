@@ -3710,8 +3710,7 @@ namespace sat {
         unsigned sz   = m_trail.size();
         for (unsigned i = head; i < sz; ++i) {
             bool_var v = m_trail[i].var();
-            TRACE(forget_phase, tout << "forgetting phase of v" << v << "\n";);
-            m_phase[v] = m_rand() % 2 == 0;
+            m_phase[v] = !m_trail[i].sign();
         }
         if (is_sat_phase() && head >= m_best_phase_size) {
             m_best_phase_size = head;
@@ -4393,8 +4392,13 @@ namespace sat {
         m_shrinkable_vars.reset();
         if (failed || uip_pos < 0) return false;
         literal uip = ~m_trail[uip_pos];
+        bool_var old_begin_var = m_lemma[block_begin].var();
         m_lemma[block_begin] = uip;
         bool_var uip_var = uip.var();
+        // Reset mark on the replaced block-begin literal if it's a different variable
+        // than the UIP, since it will no longer appear in m_lemma.
+        if (old_begin_var != uip_var && is_marked(old_begin_var))
+            reset_mark(old_begin_var);
         if (!is_marked(uip_var)) mark(uip_var);
         unsigned shrunken = 0;
         for (unsigned i = block_begin + 1; i <= block_end; ++i) {
