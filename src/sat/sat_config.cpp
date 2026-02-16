@@ -273,6 +273,23 @@ namespace sat {
         sat_simplifier_params ssp(_p);
         m_elim_vars = ssp.elim_vars();
 
+        // Configuration presets (CaDiCaL-style).
+        // Applied last so they override defaults for the target problem class.
+        symbol cfg = p.configuration();
+        if (cfg == symbol("sat")) {
+            // Target satisfiable instances: prefer stable mode, richer exploration.
+            m_dual_mode = true;         // enable stable/focused switching
+            m_phase = PS_SAT_CACHING;   // target -> best -> saved cascade
+        }
+        else if (cfg == symbol("unsat")) {
+            // Target unsatisfiable instances: focused search, skip local search.
+            m_dual_mode = false;        // stay in focused mode
+            m_phase = PS_BASIC_CACHING; // simple phase caching
+        }
+        else if (cfg != symbol("default") && cfg != symbol("")) {
+            throw sat_param_exception("invalid configuration: 'default', 'sat', or 'unsat' expected");
+        }
+
     }
 
     void config::collect_param_descrs(param_descrs & r) {
