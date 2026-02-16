@@ -92,6 +92,10 @@ namespace sat {
         if (m_random_seed == 0) {
             m_random_seed = _p.get_uint("random_seed", 0);
         }
+        m_randec          = p.randec();
+        m_randec_length   = p.randec_length();
+        m_randec_interval = p.randec_interval();
+        m_randec_initial  = p.randec_initial();
         
         m_burst_search    = p.burst_search();
         m_enable_pre_simplify  = p.enable_pre_simplify();

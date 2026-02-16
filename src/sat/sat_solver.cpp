@@ -2116,11 +2116,48 @@ namespace sat {
     bool_var solver::next_var() {
         bool_var next;
 
-        if (m_rand() < static_cast<int>(m_config.m_random_freq * random_gen::max_value())) {
+        // CaDiCaL-style random decision bursts (decide.cpp:40-117):
+        // Instead of i.i.d. random decisions with fixed probability,
+        // inject concentrated bursts at scheduled intervals.
+        // Burst length grows as base * log(count + 10).
+        // Interval grows as phases * log(phases) * interval_factor.
+        if (m_randec_burst_remaining > 0 && num_vars() > 0) {
+            // We're inside a burst — pick a random unassigned variable.
+            for (unsigned attempts = 0; attempts < 100; ++attempts) {
+                next = m_rand() % num_vars();
+                if (value(next) == l_undef && !was_eliminated(next))
+                    return next;
+            }
+            // Couldn't find one quickly; fall through to normal heuristic.
+        }
+        else if (!m_randec_burst_remaining && m_config.m_randec &&
+                 m_stats.m_conflict >= m_randec_next_conflict &&
+                 scope_lvl() <= m_search_lvl + 1) {
+            // Time to start a new burst (only when near base level).
+            ++m_randec_phases;
+            m_randec_burst_remaining = static_cast<unsigned>(
+                m_config.m_randec_length * std::log(m_randec_phases + 10));
+            // Schedule next burst.
+            double delta = m_randec_phases * std::log(static_cast<double>(m_randec_phases) + 1);
+            m_randec_next_conflict = m_stats.m_conflict +
+                static_cast<uint64_t>(delta * m_config.m_randec_interval);
+            IF_VERBOSE(3, verbose_stream() << "(sat-randec burst phase=" << m_randec_phases
+                       << " len=" << m_randec_burst_remaining
+                       << " next=" << m_randec_next_conflict << ")\n";);
+            // Pick first random decision of this burst.
+            if (num_vars() > 0) {
+                for (unsigned attempts = 0; attempts < 100; ++attempts) {
+                    next = m_rand() % num_vars();
+                    if (value(next) == l_undef && !was_eliminated(next))
+                        return next;
+                }
+            }
+        }
+        else if (m_rand() < static_cast<int>(m_config.m_random_freq * random_gen::max_value())) {
+            // Fallback: i.i.d. random decisions at low probability.
             if (num_vars() == 0)
                 return null_bool_var;
             next = m_rand() % num_vars();
-            TRACE(random_split, tout << "next: " << next << " value(next): " << value(next) << "\n";);
             if (value(next) == l_undef && !was_eliminated(next))
                 return next;
         }
@@ -2547,6 +2584,8 @@ namespace sat {
         m_conflicts_since_restart = 0;
         m_search_ticks            = 0;
         m_ticks_at_last_restart   = 0;
+        m_search_ticks_backup     = 0;
+        m_ticks_restart_backup    = 0;
         m_force_conflict_analysis = false;
         m_restart_threshold       = m_config.m_restart_initial;
         m_luby_idx                = 1;
@@ -2567,6 +2606,14 @@ namespace sat {
         m_tier2_glue_limit        = 6;
         m_tier_recompute_count    = 0;
         m_next_tier_recompute     = 1000;
+
+        // Effort-based inprocessing state.
+        m_props_at_last_simplify  = 0;
+
+        // Random decision burst state.
+        m_randec_burst_remaining  = 0;
+        m_randec_phases           = 0;
+        m_randec_next_conflict    = m_config.m_randec_initial;
 
         if (m_learned.size() <= 2*m_clauses.size())
             m_conflicts_since_gc      = 0;
@@ -2641,6 +2688,11 @@ namespace sat {
         };
         report _rprt(*this);
         SASSERT(at_base_lvl());
+
+        // Track propagation work between inprocessing rounds (CaDiCaL SET_EFFORT_LIMIT
+        // infrastructure). Currently used for diagnostics; individual techniques use
+        // their own doubling + AIMD-delay budgets.
+        m_props_at_last_simplify = m_stats.m_propagate;
 
         m_cleaner(m_config.m_force_cleanup);
         CASSERT("sat_simplify_bug", check_invariant());
@@ -3211,6 +3263,10 @@ namespace sat {
         // In stable mode, tick the reluctant doubling counter on every conflict.
         if (m_config.m_dual_mode && m_stable_mode)
             reluctant_tick();
+
+        // Decrement random decision burst counter on conflict.
+        if (m_randec_burst_remaining > 0)
+            --m_randec_burst_remaining;
 
         // Periodically recompute dynamic tier boundaries from glue usage histogram.
         if (m_conflicts_since_init >= m_next_tier_recompute)

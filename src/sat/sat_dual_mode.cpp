@@ -138,9 +138,11 @@ namespace sat {
             reluctant_enable();
         }
 
-        // Each mode gets its own EMA averages.
+        // Each mode gets its own EMA averages and tick counters.
         std::swap(m_fast_glue_avg, m_fast_glue_backup);
         std::swap(m_slow_glue_avg, m_slow_glue_backup);
+        std::swap(m_search_ticks, m_search_ticks_backup);
+        std::swap(m_ticks_at_last_restart, m_ticks_restart_backup);
 
         IF_VERBOSE(2, verbose_stream() << "(sat.dual-mode :mode "
                    << (m_stable_mode ? "stable" : "focused")

@@ -88,6 +88,14 @@ namespace sat {
             return &(e.m_lits);
         }
 
+        // Scale budget proportional to propagation work (CaDiCaL SET_EFFORT_LIMIT).
+        void add_effort_budget(int64_t delta) {
+            if (delta > 0) {
+                int64_t sum = static_cast<int64_t>(m_probing_limit) + delta;
+                m_probing_limit = sum > UINT_MAX ? UINT_MAX : static_cast<unsigned>(sum);
+            }
+        }
+
         void dec(unsigned c) { m_counter -= c; }
     };
 

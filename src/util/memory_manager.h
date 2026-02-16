@@ -68,6 +68,7 @@ public:
 #endif
     static unsigned long long get_allocation_size();
     static unsigned long long get_max_used_memory();
+    static unsigned long long get_rss(); // current RSS from /proc (Linux) or allocation size
     static unsigned long long get_allocation_count();
     static unsigned long long get_max_memory_size();
     // temporary hack to avoid out-of-memory crash in z3.exe

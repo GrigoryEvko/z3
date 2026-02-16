@@ -8,6 +8,10 @@ Copyright (c) 2015 Microsoft Corporation
 #include<stdlib.h>
 #include<climits>
 #include<cstdint>
+#include<cstdio>
+#if defined(__linux__)
+#include<unistd.h>
+#endif
 #include "util/mutex.h"
 #include "util/trace.h"
 #include "util/memory_manager.h"
@@ -175,6 +179,23 @@ unsigned long long memory::get_allocation_size() {
     if (r < 0)
         r = 0;
     return r;
+}
+
+unsigned long long memory::get_rss() {
+#if defined(__linux__)
+    // Read RSS from /proc/self/statm (field 2, in pages).
+    FILE* f = fopen("/proc/self/statm", "r");
+    if (f) {
+        unsigned long long vsize = 0, rss_pages = 0;
+        if (fscanf(f, "%llu %llu", &vsize, &rss_pages) == 2) {
+            fclose(f);
+            return rss_pages * static_cast<unsigned long long>(sysconf(_SC_PAGESIZE));
+        }
+        fclose(f);
+    }
+#endif
+    // Fallback: use tracked allocation size.
+    return get_allocation_size();
 }
 
 unsigned long long memory::get_max_used_memory() {

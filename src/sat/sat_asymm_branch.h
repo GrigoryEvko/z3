@@ -135,6 +135,17 @@ namespace sat {
 
         void init_search() { m_calls = 0; m_vivified.reset(); m_reused_decisions = 0; }
 
+        // Scale budget proportional to propagation work (CaDiCaL SET_EFFORT_LIMIT).
+        // Adds delta to the current limit, so early calls use the parameter default
+        // and later calls grow with search effort.
+        void add_effort_budget(int64_t delta) {
+            if (delta > 0) {
+                m_asymm_branch_limit += delta;
+                if (m_asymm_branch_limit > static_cast<int64_t>(UINT_MAX))
+                    m_asymm_branch_limit = UINT_MAX;
+            }
+        }
+
         inline void dec(unsigned c) { m_counter -= c; }
     };
 

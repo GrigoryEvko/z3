@@ -110,6 +110,10 @@ namespace sat {
         symbol             m_inprocess_out;
         double             m_random_freq;
         unsigned           m_random_seed;
+        bool               m_randec;
+        unsigned           m_randec_length;
+        unsigned           m_randec_interval;
+        unsigned           m_randec_initial;
         unsigned           m_burst_search;
         bool               m_enable_pre_simplify;
         bool               m_lucky_phase;

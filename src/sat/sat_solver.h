@@ -203,6 +203,11 @@ namespace sat {
         uint64_t                m_reluctant_countdown = 1024;
         bool                    m_reluctant_triggered = false;
 
+        // random decision bursts (CaDiCaL-style)
+        unsigned                m_randec_burst_remaining = 0; // conflicts left in current burst
+        unsigned                m_randec_phases = 0;          // number of completed burst phases
+        uint64_t                m_randec_next_conflict = 0;   // conflict count to start next burst
+
         // phase
         bool_vector             m_phase;
         bool_vector             m_best_phase;
@@ -654,6 +659,8 @@ namespace sat {
         // to the restart heuristic.
         uint64_t m_search_ticks = 0;
         uint64_t m_ticks_at_last_restart = 0;
+        uint64_t m_search_ticks_backup = 0;       // per-mode tick tracking (CaDiCaL-style)
+        uint64_t m_ticks_restart_backup = 0;       // per-mode restart baseline
 
         unsigned m_simplifications = 0;
         unsigned m_restart_threshold = 0;
@@ -667,6 +674,10 @@ namespace sat {
         double   m_simplify_mult = 1.5;
         bool     m_simplify_enabled = true;
         bool     m_restart_enabled = true;
+
+        // Propagation-proportional effort budgets for inprocessing (CaDiCaL SET_EFFORT_LIMIT).
+        // Each technique's budget scales with propagations done since last call.
+        uint64_t m_props_at_last_simplify = 0;
 
         // AIMD adaptive delay for inprocessing techniques.
         // Each technique tracks whether it made progress; if not,
