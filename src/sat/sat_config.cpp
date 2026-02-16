@@ -51,6 +51,7 @@ namespace sat {
         m_fast_glue_avg = p.restart_emafastglue();
         m_slow_glue_avg = p.restart_emaslowglue();
         m_restart_margin = p.restart_margin();
+        m_restart_margin_sat = p.restart_margin_sat();
         m_restart_fast = p.restart_fast();
         s = p.phase();
         if (s == symbol("always_false")) 

@@ -100,7 +100,8 @@ namespace sat {
         bool               m_restart_fast;
         unsigned           m_restart_initial;
         double             m_restart_factor; // for geometric case
-        double             m_restart_margin; // for ema
+        double             m_restart_margin;     // for ema (focused/unsat phase)
+        double             m_restart_margin_sat; // for ema (stable/sat phase)
         unsigned           m_restart_max;
         unsigned           m_activity_scale;
         double             m_fast_glue_avg;

@@ -969,7 +969,27 @@ namespace sat {
         m_assigned_since_gc[v]     = true;
         m_trail_pos[v]             = m_trail.size();
         m_trail.push_back(l);
-        
+
+        // CaDiCaL-style assignment-time watch list prefetch.
+        // Issuing the prefetch here gives the DRAM controller maximum lead time:
+        // all remaining watches of the CURRENT propagation literal must be processed
+        // before this newly assigned literal is dequeued, giving many cycles for the
+        // prefetch to complete. The propagation-loop prefetch (one step ahead) and
+        // this complement each other -- this one targets L2 cache (hint=1) for the
+        // longer latency path.
+        if (m_config.m_propagate_prefetch) {
+            unsigned idx = l.index();
+#if defined(__GNUC__) || defined(__clang__)
+            __builtin_prefetch(m_bin_watches[idx].data(), 0, 1);
+            __builtin_prefetch(m_watches[idx].data(), 0, 1);
+#else
+    #if !defined(_M_ARM) && !defined(_M_ARM64)
+            _mm_prefetch((const char*)(m_bin_watches[idx].data()), _MM_HINT_T1);
+            _mm_prefetch((const char*)(m_watches[idx].data()), _MM_HINT_T1);
+    #endif
+#endif
+        }
+
         switch (m_config.m_branching_heuristic) {
         case BH_VSIDS: 
             break;
@@ -1020,6 +1040,11 @@ namespace sat {
     bool solver::propagate_core(bool update) {
         if (m_ext && (!is_probing() || at_base_lvl()))
             m_ext->unit_propagate();
+        // CaDiCaL-style deferred statistics: accumulate in stack-local
+        // counters during the entire propagation loop and write back
+        // once at the end, avoiding cache-line pressure on the Stats struct.
+        unsigned local_propagate = 0;
+        unsigned local_bin_propagate = 0;
         unsigned prop_counter = 0;
         while (m_qhead < m_trail.size() && !m_inconsistent) {
             do {
@@ -1040,13 +1065,18 @@ namespace sat {
     #endif
 #endif
                 }
-                if (!propagate_literal(l, update))
+                if (!propagate_literal(l, update, local_propagate, local_bin_propagate)) {
+                    m_stats.m_propagate += local_propagate;
+                    m_stats.m_bin_propagate += local_bin_propagate;
                     return false;
+                }
             } while (m_qhead < m_trail.size());
 
-            if (m_ext && (!is_probing() || at_base_lvl())) 
-                m_ext->unit_propagate();            
+            if (m_ext && (!is_probing() || at_base_lvl()))
+                m_ext->unit_propagate();
         }
+        m_stats.m_propagate += local_propagate;
+        m_stats.m_bin_propagate += local_bin_propagate;
         if (m_inconsistent)
             return false;
 
@@ -1073,8 +1103,7 @@ namespace sat {
 
     void solver::propagate_clause(clause& c, bool update, unsigned assign_level, clause_offset cls_off) {
         unsigned glue;
-        SASSERT(value(c[0]) == l_undef); 
-            m_stats.m_propagate++;          
+        SASSERT(value(c[0]) == l_undef);
             c.mark_used();                                          
             assign_core(c[0], justification(assign_level, cls_off)); 
             if (update && c.is_learned() && c.glue() > 2 && num_diff_levels_below(c.size(), c.begin(), c.glue() - 1, glue)) {
@@ -1093,7 +1122,7 @@ namespace sat {
         m_watches[(~c[1]).index()].push_back(watched(c[0], cls_off));
     }
 
-    bool solver::propagate_literal(literal l, bool update) {
+    bool solver::propagate_literal(literal l, bool update, unsigned& local_propagate, unsigned& local_bin_propagate) {
         bool keep;
         unsigned curr_level = lvl(l);
         TRACE(sat_propagate, tout << "propagating: " << l << "@" << curr_level << " " << m_justification[l.var()] << "\n"; );
@@ -1116,7 +1145,7 @@ namespace sat {
                     set_conflict(justification(curr_level, not_l), ~l1);
                     return false;
                 case l_undef:
-                    m_stats.m_bin_propagate++;
+                    local_bin_propagate++;
                     assign_core(l1, justification(curr_level, not_l));
                     break;
                 default:
@@ -1167,22 +1196,25 @@ namespace sat {
                 clause_offset cls_off = it->get_clause_offset();
                 clause& c = get_clause(cls_off);
                 TRACE(propagate_clause_bug, tout << "processing... " << c << "\nwas_removed: " << c.was_removed() << "\n";);
-                // Branchless XOR swap: determine the "other" watched literal
-                // without a conditional branch. One of c[0],c[1] == not_l.
                 if (c.was_removed() || c.size() == 1) {
                     *it2 = *it;
                     it2++;
                     break;
                 }
-                if (c[0] == not_l)
-                    std::swap(c[0], c[1]);
-                if (c[1] != not_l) {
+                // Stale watch: neither watched literal is the false literal.
+                if (c[0] != not_l && c[1] != not_l) {
                     *it2 = *it;
                     it2++;
                     break;
                 }
-                if (value(c[0]) == l_true) {
-                    it2->set_clause(c[0], cls_off);
+                // Branchless XOR swap (CaDiCaL-style): compute the other
+                // watched literal without a conditional branch.
+                // a^b^not_l == b when a==not_l, == a when b==not_l.
+                literal other_watch = to_literal(c[0].to_uint() ^ c[1].to_uint() ^ not_l.to_uint());
+                c[0] = other_watch;
+                c[1] = not_l;
+                if (value(other_watch) == l_true) {
+                    it2->set_clause(other_watch, cls_off);
                     it2++;
                     break;
                 }
@@ -1246,6 +1278,7 @@ namespace sat {
                         *it2 = *it;
                         it2++;
                     }
+                    local_propagate++;
                     propagate_clause(c, update, assign_level, cls_off);
                 }
                 else {
@@ -1298,6 +1331,7 @@ namespace sat {
                         set_watch(c, undef_index, cls_off);
                         if (num_undef == 1) {
                             std::swap(c[0], c[1]);
+                            local_propagate++;
                             propagate_clause(c, update, assign_level, cls_off);
                         }
                         goto end_clause_case;
@@ -2851,9 +2885,10 @@ namespace sat {
 
         if (!tick_forced && m_conflicts_since_restart <= m_restart_threshold) return false;
         if (m_config.m_restart != RS_EMA) return true;
+        double margin = (m_search_state == s_sat) ? m_config.m_restart_margin_sat : m_config.m_restart_margin;
         return
             m_fast_glue_avg + search_lvl() <= scope_lvl() &&
-            m_config.m_restart_margin * m_slow_glue_avg <= m_fast_glue_avg;
+            margin * m_slow_glue_avg <= m_fast_glue_avg;
     }
 
     void solver::log_stats() {
@@ -3117,17 +3152,28 @@ namespace sat {
         if (m_conflict_lvl <= 1 && (!m_assumptions.empty() ||
                                     !m_ext_assumption_set.empty() ||
                                     !m_user_scope_literals.empty())) {
-            TRACE(sat, tout << "unsat core (deferred)\n";);
-            // Lazy failed analysis: defer core extraction until get_core().
             if (m_config.m_drat) {
-                resolve_conflict_for_unsat_core();
+                // DRAT mode: compute core eagerly so proof logging is correct.
+                // drat_explain_conflict handles extension logging (scoped_drating)
+                // and also calls resolve_conflict_for_unsat_core when m_ext != null.
+                drat_explain_conflict();
+                // When there is no extension, compute the core directly.
+                if (!m_ext)
+                    resolve_conflict_for_unsat_core();
+                if (m_conflict_lvl == 0)
+                    drat_log_clause(0, nullptr, sat::status::redundant());
                 m_core_is_valid = true;
-            } else {
-                m_saved_conflict = m_conflict;
-                m_saved_not_l = m_not_l;
-                m_saved_conflict_lvl = m_conflict_lvl;
+            }
+            else {
+                // CaDiCaL-style lazy failing: save conflict state, defer core
+                // extraction until the first get_core() call.
+                TRACE(sat, tout << "unsat core deferred (conflict_lvl=" << m_conflict_lvl
+                      << " not_l=" << m_not_l << " conflict=" << m_conflict << ")\n";);
+                m_saved_conflict         = m_conflict;
+                m_saved_not_l            = m_not_l;
+                m_saved_conflict_lvl     = m_conflict_lvl;
                 m_conflict_at_search_lvl = true;
-                m_core_is_valid = false;
+                m_core_is_valid          = false;
                 m_core.reset();
             }
             return l_false;
