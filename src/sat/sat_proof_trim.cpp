@@ -396,8 +396,10 @@ namespace sat {
 
         if (m_clause.size() == 2 && is_unit2())
             s.propagate_bin_clause(m_clause[0], m_clause[1]);
-        else if (m_clause.size() > 2 && is_unit())
+        else if (m_clause.size() > 2 && is_unit()) {
+            s.m_stats.m_propagate++;
             s.propagate_clause(*cl, true, 0, s.cls_allocator().get_offset(cl));
+        }
         s.propagate(false);
         if (s.inconsistent()) {
             IF_VERBOSE(3, verbose_stream() << "conflict " << m_clause << "\n");

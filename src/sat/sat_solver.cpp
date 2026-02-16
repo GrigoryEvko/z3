@@ -1389,7 +1389,7 @@ namespace sat {
     // Invariant: m_qhead <= m_qhead_binary <= m_trail.size()
     // -----------------------------------------------------------------------
 
-    bool solver::propagate_binary_only() {
+    bool solver::propagate_binary_only(unsigned& local_bin_propagate) {
         while (m_qhead_binary < m_trail.size()) {
             literal l = m_trail[m_qhead_binary];
             m_qhead_binary++;
@@ -1405,7 +1405,7 @@ namespace sat {
                     set_conflict(justification(curr_level, not_l), ~l1);
                     return false;
                 case l_undef:
-                    m_stats.m_bin_propagate++;
+                    local_bin_propagate++;
                     assign_core(l1, justification(curr_level, not_l));
                     break;
                 default:
@@ -1416,7 +1416,7 @@ namespace sat {
         return !m_inconsistent;
     }
 
-    bool solver::propagate_long_one() {
+    bool solver::propagate_long_one(unsigned& local_propagate) {
         SASSERT(m_qhead < m_trail.size());
         bool keep;
 
@@ -1498,7 +1498,7 @@ namespace sat {
                         *it2 = *it;
                         it2++;
                     }
-                    m_stats.m_propagate++;
+                    local_propagate++;
                     c.mark_used();
                     assign_core(c[0], justification(assign_level, cls_off));
                 }
@@ -1533,7 +1533,7 @@ namespace sat {
                         set_watch(c, undef_index, cls_off);
                         if (num_undef == 1) {
                             std::swap(c[0], c[1]);
-                            m_stats.m_propagate++;
+                            local_propagate++;
                             c.mark_used();
                             assign_core(c[0], justification(assign_level, cls_off));
                         }
@@ -1575,19 +1575,29 @@ namespace sat {
 
     bool solver::propagate_probing() {
         m_qhead_binary = m_qhead;
+        unsigned local_propagate = 0;
+        unsigned local_bin_propagate = 0;
         while (true) {
             if (m_qhead_binary < m_trail.size()) {
-                if (!propagate_binary_only())
+                if (!propagate_binary_only(local_bin_propagate)) {
+                    m_stats.m_propagate += local_propagate;
+                    m_stats.m_bin_propagate += local_bin_propagate;
                     return false;
+                }
             }
             else if (m_qhead < m_trail.size()) {
-                if (!propagate_long_one())
+                if (!propagate_long_one(local_propagate)) {
+                    m_stats.m_propagate += local_propagate;
+                    m_stats.m_bin_propagate += local_bin_propagate;
                     return false;
+                }
             }
             else {
                 break;
             }
         }
+        m_stats.m_propagate += local_propagate;
+        m_stats.m_bin_propagate += local_bin_propagate;
         return !m_inconsistent;
     }
 
@@ -2144,12 +2154,18 @@ namespace sat {
     
     bool solver::guess(bool_var next) {
         lbool lphase = m_ext ? m_ext->get_phase(next) : l_undef;
-        
+
         if (lphase != l_undef)
             return lphase == l_true;
 
-        // CaDiCaL-style target phase: prefer recorded conflict-free assignment.
+        // CaDiCaL-style three-phase decision cascade (decide.cpp:138-154):
+        //   Stable mode:  target -> best -> saved
+        //   Focused mode: saved only
+        // Target phase records the deepest conflict-free trail prefix and
+        // provides guided restart: the solver rebuilds the same prefix and
+        // extends it further each time.
         lbool tp = m_target_phase.get(next, l_undef);
+        bool stable = m_config.m_dual_mode ? m_stable_mode : (m_search_state == s_sat);
 
         switch (m_config.m_phase) {
         case PS_ALWAYS_TRUE:
@@ -2157,18 +2173,20 @@ namespace sat {
         case PS_ALWAYS_FALSE:
             return false;
         case PS_BASIC_CACHING:
-            if (tp != l_undef)
+            if (stable && tp != l_undef)
                 return tp == l_true;
             return m_phase[next];
         case PS_FROZEN:
             return m_best_phase[next];
         case PS_SAT_CACHING:
         case PS_LOCAL_SEARCH:
-            if (m_search_state == s_unsat)
-                return m_phase[next];
-            if (tp != l_undef)
-                return tp == l_true;
-            return m_best_phase[next];
+            // CaDiCaL cascade: stable prefers target, then best; focused uses saved.
+            if (stable) {
+                if (tp != l_undef)
+                    return tp == l_true;
+                return m_best_phase[next];
+            }
+            return m_phase[next];
         case PS_RANDOM:
             return (m_rand() % 2) == 0;
         default:
@@ -2581,6 +2599,20 @@ namespace sat {
     bool solver::should_simplify() const {
         return m_conflicts_since_init >= m_next_simplify && m_simplify_enabled;
     }
+
+    // CaDiCaL-style density scaling: denser formulas (higher clause/variable
+    // ratio) need more conflicts before inprocessing pays off.  Returns v
+    // unchanged when ratio <= 2; otherwise multiplies by log2(ratio).
+    double solver::scale_by_density(double v) const {
+        double nc = static_cast<double>(m_clauses.size());
+        double nv = static_cast<double>(num_vars());
+        if (nv == 0) return v;
+        double ratio = nc / nv;
+        if (ratio <= 2.0) return v;
+        double res = log2(ratio) * v;
+        return res < 1.0 ? 1.0 : res;
+    }
+
     /**
        \brief Apply all simplifications.
     */
@@ -2620,14 +2652,31 @@ namespace sat {
             m_ext->pre_simplify();
         }
 
-        m_simplifier(false);
+        // Simplifier with AIMD delay: skip if the technique has been
+        // unproductive recently, but track progress to re-enable it.
+        if (!m_simplifier_delay.should_delay()) {
+            unsigned old_subsumed  = m_simplifier.m_num_subsumed;
+            unsigned old_sub_res   = m_simplifier.m_num_sub_res;
+            unsigned old_elim_vars = m_simplifier.m_num_elim_vars;
 
-        CASSERT("sat_simplify_bug", check_invariant());
-        CASSERT("sat_missed_prop", check_missed_propagation());
-        if (!m_learned.empty()) {
-            m_simplifier(true);
-            CASSERT("sat_missed_prop", check_missed_propagation());
+            m_simplifier(false);
+
             CASSERT("sat_simplify_bug", check_invariant());
+            CASSERT("sat_missed_prop", check_missed_propagation());
+            if (!m_learned.empty()) {
+                m_simplifier(true);
+                CASSERT("sat_missed_prop", check_missed_propagation());
+                CASSERT("sat_simplify_bug", check_invariant());
+            }
+
+            bool simp_progress =
+                m_simplifier.m_num_subsumed  > old_subsumed  ||
+                m_simplifier.m_num_sub_res   > old_sub_res   ||
+                m_simplifier.m_num_elim_vars > old_elim_vars;
+            if (simp_progress)
+                m_simplifier_delay.reduce();
+            else
+                m_simplifier_delay.bump();
         }
         sort_watch_lits();
         CASSERT("sat_simplify_bug", check_invariant());
@@ -2639,10 +2688,31 @@ namespace sat {
             m_ext->simplify();
         }
 
-        m_probing();
-        CASSERT("sat_missed_prop", check_missed_propagation());
-        CASSERT("sat_simplify_bug", check_invariant());
-        m_asymm_branch(false);
+        // Probing with AIMD delay.
+        if (!m_probing_delay.should_delay()) {
+            uint64_t old_units = m_stats.m_units;
+            m_probing();
+            CASSERT("sat_missed_prop", check_missed_propagation());
+            CASSERT("sat_simplify_bug", check_invariant());
+            if (m_stats.m_units > old_units)
+                m_probing_delay.reduce();
+            else
+                m_probing_delay.bump();
+        }
+
+        // Vivification (asymmetric branching) with AIMD delay.
+        if (!m_asymm_delay.should_delay()) {
+            unsigned old_lits = m_asymm_branch.m_elim_literals;
+            unsigned old_learned_lits = m_asymm_branch.m_elim_learned_literals;
+            m_asymm_branch(false);
+            bool asymm_progress =
+                m_asymm_branch.m_elim_literals > old_lits ||
+                m_asymm_branch.m_elim_learned_literals > old_learned_lits;
+            if (asymm_progress)
+                m_asymm_delay.reduce();
+            else
+                m_asymm_delay.bump();
+        }
 
         if (m_config.m_lookahead_simplify && !m_ext) {
             lookahead lh(*this);
@@ -2660,12 +2730,13 @@ namespace sat {
         }
 
         if (m_next_simplify == 0) {
-            m_next_simplify = m_config.m_next_simplify1;
+            m_next_simplify = static_cast<unsigned>(scale_by_density(m_config.m_next_simplify1));
         }
         else {
             m_next_simplify = static_cast<unsigned>(m_conflicts_since_init * m_config.m_simplify_mult2);
-            if (m_next_simplify > m_conflicts_since_init + m_config.m_simplify_max)
-                m_next_simplify = m_conflicts_since_init + m_config.m_simplify_max;
+            unsigned cap = static_cast<unsigned>(scale_by_density(m_config.m_simplify_max));
+            if (m_next_simplify > m_conflicts_since_init + cap)
+                m_next_simplify = m_conflicts_since_init + cap;
         }
 
         if (m_par) {
@@ -3881,24 +3952,28 @@ namespace sat {
         return is_two_phase() && m_search_state == s_sat;
     }
 
-    // CaDiCaL-style target phase update.
-    // Records the phase assignment at the deepest conflict-free trail prefix.
-    // On every conflict, the trail up to the conflicting decision level is
-    // conflict-free. If this prefix is deeper than any previously seen, we
-    // snapshot the current variable assignments as the target phase.
-    // This provides a "guided restart" effect: after restart, the solver
-    // rebuilds the same conflict-free prefix and extends it further each time.
+    // CaDiCaL-style target and best phase update (analyze.cpp update_target_and_best).
+    // Called at the start of conflict analysis, before backjumping.
+    //
+    // Uses the full trail size (all assigned variables at the moment of
+    // conflict), matching CaDiCaL: every literal on the trail was propagated
+    // without contradiction -- the conflict was found on the NEXT propagation.
+    //
+    // Target phase: deepest trail since last rephase (reset on rephase).
+    // Best phase: deepest trail ever since last rephase (also reset on rephase).
+    // Both provide "guided restart" memory for the solver.
     void solver::update_target_phase() {
-        unsigned from_lvl = m_conflict_lvl;
-        unsigned no_conflict_until = from_lvl == 0 ? 0 : m_scopes[from_lvl - 1].m_trail_lim;
-        if (no_conflict_until > m_target_assigned) {
-            m_target_assigned = no_conflict_until;
-            for (unsigned i = 0; i < no_conflict_until; ++i) {
+        if (m_conflict_lvl == 0)
+            return;
+        unsigned assigned = m_trail.size();
+        if (assigned > m_target_assigned) {
+            m_target_assigned = assigned;
+            for (unsigned i = 0; i < assigned; ++i) {
                 literal  lit = m_trail[i];
                 bool_var v   = lit.var();
                 m_target_phase[v] = lit.sign() ? l_false : l_true;
             }
-            IF_VERBOSE(12, verbose_stream() << "target trail: " << no_conflict_until << "\n");
+            IF_VERBOSE(12, verbose_stream() << "target trail: " << assigned << "\n");
         }
     }
 
@@ -3909,16 +3984,21 @@ namespace sat {
         unsigned from_lvl = m_conflict_lvl;
         unsigned head = from_lvl == 0 ? 0 : m_scopes[from_lvl - 1].m_trail_lim;
         unsigned sz   = m_trail.size();
+        // Save current assignment as the "saved" phase for variables
+        // at or above the conflict level (these will be unassigned).
         for (unsigned i = head; i < sz; ++i) {
             bool_var v = m_trail[i].var();
             m_phase[v] = !m_trail[i].sign();
         }
-        if (is_sat_phase() && head >= m_best_phase_size) {
-            m_best_phase_size = head;
-            IF_VERBOSE(12, verbose_stream() << "sticky trail: " << head << "\n");
-            for (unsigned i = 0; i < head; ++i) {
+        // CaDiCaL unconditionally tracks the best (longest-ever) assignment
+        // on every conflict (analyze.cpp update_target_and_best).
+        // Uses full trail size, not just the prefix below conflict level.
+        if (sz > m_best_phase_size) {
+            m_best_phase_size = sz;
+            IF_VERBOSE(12, verbose_stream() << "best trail: " << sz << "\n");
+            for (unsigned i = 0; i < sz; ++i) {
                 bool_var v = m_trail[i].var();
-                m_best_phase[v] = m_phase[v];
+                m_best_phase[v] = !m_trail[i].sign();
             }
             set_has_new_best_phase(true);
         }
@@ -3936,11 +4016,15 @@ namespace sat {
     void solver::do_toggle_search_state() {
 
         if (is_two_phase()) {
-            m_best_phase_size = 0;
+            // In dual mode, stable/focused switching is handled by stabilizing()
+            // and best phase should persist across mode switches (CaDiCaL never
+            // resets best on mode switch). Only reset in legacy two-phase mode.
+            if (!m_config.m_dual_mode)
+                m_best_phase_size = 0;
             std::swap(m_fast_glue_backup, m_fast_glue_avg);
             std::swap(m_slow_glue_backup, m_slow_glue_avg);
             if (m_search_state == s_sat) {
-                m_search_unsat_conflicts += m_config.m_search_unsat_conflicts;   
+                m_search_unsat_conflicts += m_config.m_search_unsat_conflicts;
             }
             else {
                 m_search_sat_conflicts += m_config.m_search_sat_conflicts;
@@ -3955,6 +4039,10 @@ namespace sat {
             m_search_state = s_unsat;
             m_search_next_toggle = m_search_unsat_conflicts;
         }
+
+        // Reset reluctant doubling on search state toggle so each
+        // phase starts with a fresh Luby sequence.
+        reluctant_enable();
 
         m_phase_counter = 0;
     }
@@ -4078,60 +4166,70 @@ namespace sat {
             break;
 
         case PS_BASIC_CACHING:
-            // CaDiCaL stable+walk schedule (rephase.cpp:287-316):
-            //   original, inverted, (best, walk, original, best, walk, inverted)^w
+            // Rich rephase schedule interleaving "best" (most effective strategy
+            // from CaDiCaL) with diversification strategies.
             //
-            // Matches CaDiCaL exactly: primes both polarity extremes first,
-            // then alternates exploitation (best), exploration (walk), and
-            // polarity resets (original/inverted) in a repeating 6-cycle.
-            if (count == 0)
-                type = rephase_original();
-            else if (count == 1)
-                type = rephase_inverted();
-            else {
-                switch ((count - 2) % 6) {
-                case 0: type = rephase_best();     break;
-                case 1: type = rephase_walk();     break;
-                case 2: type = rephase_original(); break;
-                case 3: type = rephase_best();     break;
-                case 4: type = rephase_walk();     break;
-                case 5: type = rephase_inverted(); break;
-                default: UNREACHABLE();            break;
-                }
+            // 8-cycle: best, random, best, original, best, flipping, best, walk
+            //
+            // "Best" appears in every other slot because it exploits the solver's
+            // memory of its deepest conflict-free assignment -- the single most
+            // impactful rephase strategy. Between best slots, we cycle through
+            // diversification: random (entropy), original (reset to negative),
+            // flipping (complement), and walk (local search guidance).
+            //
+            // Best-phase tracking is unconditional in updt_phase_of_vars(),
+            // and m_best_phase_size resets each rephase for PS_BASIC_CACHING.
+            switch (count % 8) {
+            case 0: type = rephase_best();     break;
+            case 1: type = rephase_random();   break;
+            case 2: type = rephase_best();     break;
+            case 3: type = rephase_original(); break;
+            case 4: type = rephase_best();     break;
+            case 5: type = rephase_flipping(); break;
+            case 6: type = rephase_best();     break;
+            case 7: type = rephase_walk();     break;
+            default: UNREACHABLE();            break;
             }
             break;
 
         case PS_SAT_CACHING:
         case PS_LOCAL_SEARCH:
-            // CaDiCaL-style rich rephasing schedule with walk integration.
+            // Search-state-aware rephasing with walk integration.
             //
-            // Schedule: original, inverted, (best, WALK, original, best, WALK, inverted)^\omega
+            // s_sat (stable): best-heavy 8-cycle with walk for guidance:
+            //   best, walk, best, original, best, flipping, best, inverted
             //
-            // This matches CaDiCaL's stable+walk pattern (rephase.cpp:287-316):
-            //   count 0: original
-            //   count 1: inverted
-            //   count 2+: 6-cycle of best, walk, original, best, walk, inverted
-            //
-            // Walk runs every 3rd rephase in the repeating cycle, providing
-            // local-search-guided phase hints via the lightweight in-place ProbSAT
-            // walker. No DDFW clause copying -- operates directly on solver state.
-            //
-            // Unlike the old PS_LOCAL_SEARCH which had a 50% random skip and only
-            // ran in s_sat state, this always executes on schedule regardless of
-            // search state, matching CaDiCaL's unconditional walk trigger.
-            if (count == 0)
-                type = rephase_original();
-            else if (count == 1)
-                type = rephase_inverted();
-            else {
-                switch ((count - 2) % 6) {
+            // s_unsat (focused): standard CaDiCaL schedule balancing
+            // exploitation and exploration:
+            //   original, inverted, (best, walk, original, best, walk, inverted)^w
+            if (m_search_state == s_sat) {
+                switch (count % 8) {
                 case 0: type = rephase_best();     break;
                 case 1: type = rephase_walk();     break;
-                case 2: type = rephase_original(); break;
-                case 3: type = rephase_best();     break;
-                case 4: type = rephase_walk();     break;
-                case 5: type = rephase_inverted(); break;
+                case 2: type = rephase_best();     break;
+                case 3: type = rephase_original(); break;
+                case 4: type = rephase_best();     break;
+                case 5: type = rephase_flipping(); break;
+                case 6: type = rephase_best();     break;
+                case 7: type = rephase_inverted(); break;
                 default: UNREACHABLE();            break;
+                }
+            }
+            else {
+                if (count == 0)
+                    type = rephase_original();
+                else if (count == 1)
+                    type = rephase_inverted();
+                else {
+                    switch ((count - 2) % 6) {
+                    case 0: type = rephase_best();     break;
+                    case 1: type = rephase_walk();     break;
+                    case 2: type = rephase_original(); break;
+                    case 3: type = rephase_best();     break;
+                    case 4: type = rephase_walk();     break;
+                    case 5: type = rephase_inverted(); break;
+                    default: UNREACHABLE();            break;
+                    }
                 }
             }
             break;
@@ -4151,6 +4249,13 @@ namespace sat {
         // Reset target phase depth on rephase to allow re-discovery of a new
         // deepest conflict-free assignment (following CaDiCaL's approach).
         m_target_assigned = 0;
+
+        // For PS_BASIC_CACHING, also reset best-phase depth so the solver can
+        // discover a new best assignment after rephasing. In two-phase modes
+        // (PS_SAT_CACHING, PS_LOCAL_SEARCH) this reset happens in
+        // do_toggle_search_state() when switching between stable/focused.
+        if (m_config.m_phase == PS_BASIC_CACHING)
+            m_best_phase_size = 0;
 
         // Arithmetically increasing rephase interval (CaDiCaL: delta = rephaseint * (total+1))
         m_rephase_inc += m_config.m_rephase_base;
@@ -4764,7 +4869,7 @@ namespace sat {
     void solver::bump_reason_literals() {
         if (!m_config.m_bump_reason || m_config.m_branching_heuristic != BH_VSIDS || m_lemma.empty())
             return;
-        unsigned decisions_this = m_stats.m_decision - m_decisions_at_last_conflict;
+        uint64_t decisions_this = m_stats.m_decision - m_decisions_at_last_conflict;
         m_decisions_at_last_conflict = m_stats.m_decision;
         m_decisions_per_conflict += 1e-4 * (decisions_this - m_decisions_per_conflict);
         if (m_decisions_per_conflict > m_config.m_bump_reason_rate)

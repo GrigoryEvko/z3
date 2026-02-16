@@ -58,33 +58,33 @@ namespace sat {
        \brief Main statistic counters.
     */
     struct stats {
-        unsigned m_mk_var;
-        unsigned m_mk_bin_clause;
-        unsigned m_mk_ter_clause;
-        unsigned m_mk_clause;
-        unsigned m_conflict;
-        unsigned m_propagate;
-        unsigned m_bin_propagate;
-        unsigned m_ter_propagate;
-        unsigned m_decision;
-        unsigned m_restart;
-        unsigned m_gc_clause;
-        unsigned m_del_clause;
-        unsigned m_minimized_lits;
-        unsigned m_shrunken_lits;
-        unsigned m_dyn_sub_res;
-        unsigned m_non_learned_generation;
-        unsigned m_blocked_corr_sets;
-        unsigned m_elim_var_res;
-        unsigned m_elim_var_bdd;
-        unsigned m_units;
-        unsigned m_backtracks;
-        unsigned m_backjumps;
-        unsigned m_chrono_backtracks;
-        unsigned m_trail_reuse;
-        unsigned m_elim_eqs_inplace;   // SCC eq-elim clauses shrunk in-place (watches unchanged)
-        unsigned m_eager_subsumed;
-        unsigned m_otfs_strengthened;
+        uint64_t m_mk_var;
+        uint64_t m_mk_bin_clause;
+        uint64_t m_mk_ter_clause;
+        uint64_t m_mk_clause;
+        uint64_t m_conflict;
+        uint64_t m_propagate;
+        uint64_t m_bin_propagate;
+        uint64_t m_ter_propagate;
+        uint64_t m_decision;
+        uint64_t m_restart;
+        uint64_t m_gc_clause;
+        uint64_t m_del_clause;
+        uint64_t m_minimized_lits;
+        uint64_t m_shrunken_lits;
+        uint64_t m_dyn_sub_res;
+        uint64_t m_non_learned_generation;
+        uint64_t m_blocked_corr_sets;
+        uint64_t m_elim_var_res;
+        uint64_t m_elim_var_bdd;
+        uint64_t m_units;
+        uint64_t m_backtracks;
+        uint64_t m_backjumps;
+        uint64_t m_chrono_backtracks;
+        uint64_t m_trail_reuse;
+        uint64_t m_elim_eqs_inplace;   // SCC eq-elim clauses shrunk in-place (watches unchanged)
+        uint64_t m_eager_subsumed;
+        uint64_t m_otfs_strengthened;
         stats() { reset(); }
         void reset();
         void collect_statistics(statistics & st) const;
@@ -94,6 +94,25 @@ namespace sat {
         no_drat_params() { set_bool("drat.disable", true); }
     };
     
+    /**
+     * \brief AIMD (additive-increase / multiplicative-decrease) delay for
+     * inprocessing techniques.  Inspired by CaDiCaL's limit.hpp Delay struct.
+     *
+     * If a technique was NOT useful, call bump() -- linearly increases the
+     * number of simplification rounds to skip before trying again.
+     * If it WAS useful, call reduce() -- halves the delay so it runs sooner.
+     */
+    struct inprocessing_delay {
+        unsigned interval = 0;
+        unsigned limit    = 0;
+        bool should_delay() {
+            if (limit > 0) { --limit; return true; }
+            return false;
+        }
+        void bump()   { if (interval < 1000000) ++interval; limit = interval; }
+        void reduce() { interval /= 2; limit = interval; }
+    };
+
     class solver : public solver_core {
     public:
         struct abort_solver : public std::exception {};
@@ -180,8 +199,8 @@ namespace sat {
         // Reluctant doubling (Knuth/Luby) for stable-mode restarts.
         uint64_t                m_reluctant_u = 1;
         uint64_t                m_reluctant_v = 1;
-        uint64_t                m_reluctant_period = 512;
-        uint64_t                m_reluctant_countdown = 512;
+        uint64_t                m_reluctant_period = 1024;
+        uint64_t                m_reluctant_countdown = 1024;
         bool                    m_reluctant_triggered = false;
 
         // phase
@@ -555,13 +574,13 @@ namespace sat {
     protected:
         bool should_propagate() const;
         bool propagate_core(bool update);
-        bool propagate_literal(literal l, bool update);
+        bool propagate_literal(literal l, bool update, unsigned& local_propagate, unsigned& local_bin_propagate);
         void propagate_clause(clause& c, bool update, unsigned assign_level, clause_offset cls_off);
         void set_watch(clause& c, unsigned idx, clause_offset cls_off);
 
         // Dual-pointer propagation for probing (CaDiCaL-style)
-        bool propagate_binary_only();
-        bool propagate_long_one();
+        bool propagate_binary_only(unsigned& local_bin_propagate);
+        bool propagate_long_one(unsigned& local_propagate);
         bool propagate_probing();
 
         // -----------------------
@@ -625,7 +644,7 @@ namespace sat {
         bool     m_force_conflict_analysis = false;
         // CaDiCaL-style reason-side literal bumping state
         double   m_decisions_per_conflict = 0.0;
-        unsigned m_decisions_at_last_conflict = 0;
+        uint64_t m_decisions_at_last_conflict = 0;
         int64_t  m_bump_reason_delay = 0;
         int64_t  m_bump_reason_delay_interval = 0;
 
@@ -648,6 +667,13 @@ namespace sat {
         double   m_simplify_mult = 1.5;
         bool     m_simplify_enabled = true;
         bool     m_restart_enabled = true;
+
+        // AIMD adaptive delay for inprocessing techniques.
+        // Each technique tracks whether it made progress; if not,
+        // it linearly increases the number of rounds to skip.
+        inprocessing_delay m_simplifier_delay;
+        inprocessing_delay m_probing_delay;
+        inprocessing_delay m_asymm_delay;
         bool guess(bool_var next);
         bool decide();
         bool_var next_var();
@@ -701,6 +727,7 @@ namespace sat {
         bool tracking_assumptions() const;
         bool is_assumption(literal l) const;
         bool should_simplify() const;
+        double scale_by_density(double v) const;
         void do_simplify();
         void mk_model();
         bool check_model(model const & m) const;
