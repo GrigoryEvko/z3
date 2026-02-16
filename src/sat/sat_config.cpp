@@ -273,6 +273,9 @@ namespace sat {
         sat_simplifier_params ssp(_p);
         m_elim_vars = ssp.elim_vars();
 
+        m_optimize_level  = p.optimize_level();
+        if (m_optimize_level > 31) m_optimize_level = 31;
+
         // Configuration presets (CaDiCaL-style).
         // Applied last so they override defaults for the target problem class.
         symbol cfg = p.configuration();

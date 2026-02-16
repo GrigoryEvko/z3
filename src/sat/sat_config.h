@@ -114,6 +114,7 @@ namespace sat {
         unsigned           m_randec_length;
         unsigned           m_randec_interval;
         unsigned           m_randec_initial;
+        unsigned           m_optimize_level;
         unsigned           m_burst_search;
         bool               m_enable_pre_simplify;
         bool               m_lucky_phase;

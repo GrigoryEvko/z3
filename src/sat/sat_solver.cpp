@@ -2694,6 +2694,14 @@ namespace sat {
         // their own doubling + AIMD-delay budgets.
         m_props_at_last_simplify = m_stats.m_propagate;
 
+        // CaDiCaL-style -O optimization levels: add extra effort budget per round.
+        // Level N adds 2^N million extra budget to each inprocessing technique.
+        if (m_config.m_optimize_level > 0) {
+            int64_t extra = static_cast<int64_t>(1000000) << m_config.m_optimize_level;
+            m_probing.add_effort_budget(extra);
+            m_asymm_branch.add_effort_budget(extra);
+        }
+
         m_cleaner(m_config.m_force_cleanup);
         CASSERT("sat_simplify_bug", check_invariant());
 
