@@ -28,8 +28,9 @@ namespace sat {
     class scoped_detach;
 
     class asymm_branch {
+        friend class solver;
         struct report;
-        
+
         solver &   s;
         params_ref m_params;
         int64_t    m_counter;
@@ -49,11 +50,18 @@ namespace sat {
         unsigned   m_elim_literals;
         unsigned   m_elim_learned_literals;
         unsigned   m_tr;
+        unsigned   m_prefix_subsumed;
+        unsigned   m_vivify_retries;   // number of retry passes that succeeded
+
+        // vivification retry & once-only (CaDiCaL-style)
+        clause_vector m_retry_queue;   // clauses strengthened this pass, eligible for retry
+        uint_set      m_vivified;      // clause IDs attempted without change (skip in future rounds)
 
         literal_vector m_pos, m_neg; // literals (complements of literals) in clauses sorted by discovery time (m_left in BIG).
         svector<std::pair<literal, unsigned>> m_pos1, m_neg1;
         literal_vector m_to_delete;
         literal_vector m_tmp;
+        svector<int64_t> m_jw_occ;  // Jeroslow-Wang per-literal occurrence scores
        
         struct compare_left;
 
@@ -85,10 +93,34 @@ namespace sat {
         void process_bin(big& big);
         
         bool flip_literal_at(clause const& c, unsigned flip_index, unsigned& new_sz);
-        
+
         bool cleanup(scoped_detach& scoped_d, clause& c, unsigned skip_index, unsigned new_sz);
 
         bool propagate_literal(clause const& c, literal l);
+
+        // CaDiCaL-style vivification with full conflict analysis.
+        // Assigns each negated clause literal at its own scope level,
+        // performs conflict analysis on conflict to derive a decision-only
+        // strengthened clause, and tries instantiation as fallback.
+        bool vivify_clause(clause& c);
+
+        // Analyze conflict during vivification: walk implication graph
+        // backward, collect the set of decision literals that contributed
+        // to the conflict. Returns the strengthened clause as m_tmp.
+        void vivify_analyze(clause const& c, unsigned num_levels);
+
+        // CaDiCaL-style vivification with decision reuse between clauses.
+        // Sorts clause literals by JW occurrence, sorts clauses lexicographically,
+        // then processes them incrementally -- reusing decisions on the trail
+        // when consecutive clauses share a common literal prefix.
+        void process_with_reuse(clause_vector& clauses, int64_t limit);
+
+        // Decision-reuse state: tracks which negated literals are currently
+        // decided on the trail (one per scope level, starting at level 1).
+        literal_vector m_decisions;  // m_decisions[i] = literal decided at level i+1
+        unsigned       m_reused_decisions;  // stat counter
+
+        void prefix_subsume(clause_vector& clauses);
 
     public:
         asymm_branch(solver & s, params_ref const & p);
@@ -101,7 +133,7 @@ namespace sat {
         void collect_statistics(statistics & st) const;
         void reset_statistics();
 
-        void init_search() { m_calls = 0; }
+        void init_search() { m_calls = 0; m_vivified.reset(); m_reused_decisions = 0; }
 
         inline void dec(unsigned c) { m_counter -= c; }
     };
