@@ -57,6 +57,7 @@ namespace sat {
 
     class simplifier {
         friend class pb::solver;
+        friend class solver;
         friend class elim_vars;
         solver &               s;
         unsigned               m_num_calls;
@@ -68,6 +69,16 @@ namespace sat {
         bool_var_set           m_elim_todo;
         bool                   m_need_cleanup = false;
         tmp_clause             m_dummy;
+
+        // Per-variable subsume flags (CaDiCaL-style incremental subsumption).
+        // When a clause is added or strengthened, all its variables are marked.
+        // Only clauses with >= 2 marked variables are scheduled for subsumption,
+        // since they share enough variables with recently-changed clauses to
+        // plausibly participate in subsumption.  This dramatically reduces the
+        // subsumption schedule in later inprocessing rounds.
+        bool_vector            m_subsume_flag;
+        void mark_subsume(clause const & c);
+        bool has_subsume_overlap(clause const & c) const;
 
         // Dynamic elimination heap (CaDiCaL-style).
         // Min-heap ordered by cached elimination cost: variables with
@@ -191,6 +202,7 @@ namespace sat {
         void elim_lit(clause & c, literal l);
         void elim_dup_bins();
         bool subsume_with_binaries();
+        bool try_subsume_by_binary(clause & c);
         void mark_as_not_learned_core(watch_list & wlist, literal l2);
         void mark_as_not_learned(literal l1, literal l2);
 
@@ -355,6 +367,7 @@ namespace sat {
             m_elim_todo.reset();
             m_sub_todo.reset();
             m_sub_bin_todo.reset();
+            m_subsume_flag.reset();
         }
 
         void operator()(bool learned);

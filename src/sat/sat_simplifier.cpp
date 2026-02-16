@@ -27,6 +27,11 @@ Revision History:
 
 namespace sat {
 
+    // CaDiCaL-style occurrence list length limits for subsumption (options.hpp:215-222).
+    // Prevents quadratic blowup on instances with heavy variable reuse.
+    static const unsigned SUBSUME_CLS_LIMIT = 100;   // max clause length to connect
+    static const unsigned SUBSUME_OCC_LIMIT = 100;    // max occurrence list length per literal
+
     void use_list::init(unsigned num_vars) {
         m_use_list.reset();
         unsigned num_lits = 2 * num_vars;
@@ -125,15 +130,51 @@ namespace sat {
 
     bool simplifier::bva_enabled() const {
         return !m_incremental_mode && !s.tracking_assumptions() && m_bva && single_threaded();
-    }    
+    }
+
+    void simplifier::mark_subsume(clause const & c) {
+        for (literal lit : c) {
+            bool_var v = lit.var();
+            if (v < m_subsume_flag.size())
+                m_subsume_flag[v] = true;
+        }
+    }
+
+    bool simplifier::has_subsume_overlap(clause const & c) const {
+        unsigned count = 0;
+        for (literal lit : c) {
+            bool_var v = lit.var();
+            if (v < m_subsume_flag.size() && m_subsume_flag[v]) {
+                if (++count >= 2)
+                    return true;
+            }
+        }
+        return false;
+    }
 
     void simplifier::register_clauses(clause_vector & cs) {
         std::stable_sort(cs.begin(), cs.end(), size_lt());
         for (clause* c : cs) {
             if (!c->frozen()) {
+                // CaDiCaL-style limits: skip clauses too long for subsumption
+                if (c->size() > SUBSUME_CLS_LIMIT)
+                    continue;
+                // Skip if every literal's occurrence list is already full.
+                // Find the minimum-occurrence literal; if even that exceeds
+                // the limit, the clause would not help subsumption checks.
+                unsigned min_occ = UINT_MAX;
+                for (literal l : *c) {
+                    unsigned occ = m_use_list.get(l).size();
+                    if (occ < min_occ)
+                        min_occ = occ;
+                }
+                if (min_occ >= SUBSUME_OCC_LIMIT)
+                    continue;
                 m_use_list.insert(*c);
-                if (c->strengthened())
+                if (c->strengthened()) {
+                    mark_subsume(*c);
                     m_sub_todo.insert(*c);
+                }
             }
         }
     }
@@ -180,6 +221,7 @@ namespace sat {
         m_elim_heap.reset();
         m_elim_costs.finalize();
         m_elim_heap_dirty.finalize();
+        m_subsume_flag.finalize();
         m_visited.finalize();
         m_bs_cs.finalize();
         m_bs_ls.finalize();
@@ -195,6 +237,8 @@ namespace sat {
         m_sub_todo.reset();
         m_sub_bin_todo.reset();
         m_elim_todo.reset();
+        m_subsume_flag.reset();
+        m_subsume_flag.resize(s.num_vars(), false);
         init_visited();
         TRACE(after_cleanup, s.display(tout););
         CASSERT("sat_solver", s.check_invariant());
@@ -740,6 +784,10 @@ namespace sat {
         unsigned new_trail_sz = s.m_trail.size();
         for (unsigned i = old_trail_sz; i < new_trail_sz; ++i) {
             literal l = s.m_trail[i];
+            // Mark the propagated variable as subsume-relevant:
+            // clauses containing ~l are effectively strengthened.
+            if (l.var() < m_subsume_flag.size())
+                m_subsume_flag[l.var()] = true;
             // put clauses with literals assigned to false back into todo-list
             for (auto it = m_use_list.get(~l).mk_iterator(); !it.at_end(); it.next()) {
                 m_sub_todo.insert(it.curr());
@@ -752,8 +800,11 @@ namespace sat {
             }
             cs.reset();            
         }
-        for (unsigned i = num_clauses; i < s.m_clauses.size(); ++i) 
-            m_use_list.insert(*s.m_clauses[i]);
+        for (unsigned i = num_clauses; i < s.m_clauses.size(); ++i) {
+            clause & c = *s.m_clauses[i];
+            if (c.size() <= SUBSUME_CLS_LIMIT)
+                m_use_list.insert(c);
+        }
     }
 
     void simplifier::elim_lit(clause & c, literal l) {
@@ -804,40 +855,126 @@ namespace sat {
             break;
         default:
             TRACE(elim_lit, tout << "result: " << c << "\n";);
+            mark_subsume(c);
             m_sub_todo.insert(c);
             break;
         }
     }
 
-    bool simplifier::subsume_with_binaries() {
-        unsigned init = s.m_rand(); // start in a random place, since subsumption can be aborted
-        unsigned num_lits = s.m_bin_watches.size();
-        for (unsigned i = 0; i < num_lits; ++i) {
-            unsigned l_idx = (i + init) % num_lits;
-            watch_list & bwlist = get_bin_wlist(to_literal(l_idx));
-            literal l = ~to_literal(l_idx);
-            // should not traverse bwlist using iterators, since back_subsumption1 may add new binary clauses there
-            for (unsigned j = 0; j < bwlist.size(); ++j) {
-                watched w  = bwlist[j];
+    /**
+       \brief CaDiCaL-style tight binary subsumption check for a single clause.
+
+       Marks all literals of c, then for each literal l in c, scans binary
+       watches of l.  If binary (l, other) and other is also in c, c is
+       subsumed.  If binary (l, other) and ~other is in c, c can be
+       strengthened by removing ~other (self-subsumption resolution).
+
+       Returns true if c was subsumed (removed).
+       On strengthening, calls elim_lit and returns false (caller should
+       re-check c if needed).
+    */
+    bool simplifier::try_subsume_by_binary(clause & c) {
+        if (c.was_removed())
+            return true;
+        unsigned sz = c.size();
+        if (sz <= 2)
+            return false;
+
+        for (unsigned i = 0; i < sz; ++i)
+            mark_visited(c[i]);
+
+        bool subsumed = false;
+        literal strengthen_lit = null_literal;
+
+        for (unsigned i = 0; i < sz && !subsumed && strengthen_lit == null_literal; ++i) {
+            literal l = c[i];
+            // get_bin_wlist(~l) contains watched entries for binaries (l, other)
+            watch_list const & bwlist = get_bin_wlist(~l);
+            for (auto const & w : bwlist) {
                 SASSERT(w.is_binary_clause());
-                if (w.is_binary_non_learned_clause()) {
-                    literal l2 = w.get_literal();
-                    if (l.index() < l2.index()) {
-                        m_dummy.set(l, l2, w.is_learned());
-                        clause & c = *(m_dummy.get());
-                        back_subsumption1(c);
-                        if (w.is_learned() && !c.is_learned()) {
-                            SASSERT(bwlist[j] == w);
-                            TRACE(set_not_learned_bug,
-                                  tout << "marking as not learned: " << l2 << " " << bwlist[j].is_learned() << "\n";);
-                            bwlist[j].set_learned(false);
-                            mark_as_not_learned_core(get_bin_wlist(~l2), l);
-                        }
-                        if (s.inconsistent())
-                            return false;
-                    }
+                if (w.is_learned())
+                    continue;
+                literal other = w.get_literal();
+                if (is_marked(other)) {
+                    // Binary (l, other) subsumes c -- both l and other are in c
+                    TRACE(subsumption, tout << "binary (" << l << " " << other << ") subsumes " << c << "\n";);
+                    subsumed = true;
+                    break;
+                }
+                if (is_marked(~other)) {
+                    // Binary (l, other) can strengthen c: remove ~other from c
+                    // (self-subsumption resolution: (l, other) resolves with c on other)
+                    TRACE(subsumption, tout << "binary (" << l << " " << other << ") strengthens " << c
+                          << " by removing " << ~other << "\n";);
+                    strengthen_lit = ~other;
+                    break;
                 }
             }
+        }
+
+        for (unsigned i = 0; i < sz; ++i)
+            unmark_visited(c[i]);
+
+        if (subsumed) {
+            remove_clause(c, false);
+            m_num_subsumed++;
+            return true;
+        }
+
+        if (strengthen_lit != null_literal) {
+            m_sub_counter -= c.size();
+            elim_lit(c, strengthen_lit);
+            m_num_sub_res++;
+            return false;
+        }
+
+        return false;
+    }
+
+    /**
+       \brief CaDiCaL-style binary subsumption: for each longer clause,
+       check whether any non-learned binary subsumes or strengthens it.
+
+       This is the inverse of the old approach (which iterated over binaries
+       and searched use-lists).  The new approach iterates over clauses once
+       and scans binary watches per literal -- much tighter for typical
+       instances where binaries vastly outnumber longer clauses.
+    */
+    bool simplifier::subsume_with_binaries() {
+        clause_vector to_check;
+        for (clause * cp : s.m_clauses)
+            if (!cp->frozen() && !cp->was_removed() && cp->size() > 2)
+                to_check.push_back(cp);
+        if (m_learned_in_use_lists) {
+            for (clause * cp : s.m_learned)
+                if (!cp->frozen() && !cp->was_removed() && cp->size() > 2)
+                    to_check.push_back(cp);
+        }
+
+        for (clause * cp : to_check) {
+            checkpoint();
+            clause & c = *cp;
+            if (c.was_removed())
+                continue;
+
+            // Iteratively apply binary subsumption/strengthening.
+            // After strengthening, re-check since new binary matches may appear.
+            bool strengthened_this_round = true;
+            while (strengthened_this_round && !c.was_removed() && c.size() > 2 && !s.inconsistent()) {
+                strengthened_this_round = false;
+                unsigned sz_before = c.size();
+                if (try_subsume_by_binary(c))
+                    break; // subsumed -- removed
+                // try_subsume_by_binary returns false on strengthening;
+                // detect it by clause shrinkage or the strengthened flag.
+                if (!c.was_removed() && (c.size() < sz_before || c.strengthened())) {
+                    c.unmark_strengthened();
+                    strengthened_this_round = true;
+                }
+            }
+
+            if (s.inconsistent())
+                return false;
             if (m_sub_counter < 0)
                 break;
         }
@@ -964,6 +1101,14 @@ namespace sat {
 
             clause & c = m_sub_todo.erase();
 
+            // Per-variable subsume filter (CaDiCaL-style): skip clauses
+            // that share fewer than 2 variables with recently-changed
+            // clauses.  Such clauses are unlikely to find new subsumption
+            // targets, saving significant work in later inprocessing rounds.
+            if (!c.strengthened() && !has_subsume_overlap(c)) {
+                continue;
+            }
+
             c.unmark_strengthened();
             m_sub_counter--;
             TRACE(subsumption, tout << "next: " << c << "\n";);
@@ -994,6 +1139,18 @@ namespace sat {
                     break;
                 }
             }
+            // Fast binary subsumption/strengthening before full use-list scan.
+            // If the clause is subsumed by a binary, skip the expensive back_subsumption1.
+            // If strengthened, the clause may shrink; re-enter the loop for further checks.
+            if (c.size() > 2 && try_subsume_by_binary(c)) {
+                // c was subsumed by a binary -- already removed
+                continue;
+            }
+            if (c.was_removed())
+                continue;
+            if (s.inconsistent())
+                return;
+
             TRACE(subsumption, tout << "using: " << c << "\n";);
             back_subsumption1(c);
         }
@@ -2426,7 +2583,9 @@ namespace sat {
                     if (s.m_config.m_drat) s.m_drat.add(*new_c, status::redundant());
                     s.m_clauses.push_back(new_c);
 
-                    m_use_list.insert(*new_c);
+                    if (new_c->size() <= SUBSUME_CLS_LIMIT)
+                        m_use_list.insert(*new_c);
+                    mark_subsume(*new_c);
                     if (m_sub_counter > 0)
                         back_subsumption1(*new_c);
                     else
@@ -2969,8 +3128,11 @@ namespace sat {
                 clause * new_c = s.alloc_clause(resolvent.size(), resolvent.data(), false);
                 if (s.m_config.m_drat) s.m_drat.add(*new_c, status::redundant());
                 s.m_clauses.push_back(new_c);
-                m_use_list.insert(*new_c);
-                m_sub_todo.insert(*new_c);
+                if (new_c->size() <= SUBSUME_CLS_LIMIT) {
+                    m_use_list.insert(*new_c);
+                    mark_subsume(*new_c);
+                    m_sub_todo.insert(*new_c);
+                }
             }
         }
         return true;
@@ -3026,8 +3188,11 @@ namespace sat {
                 clause * nc = s.alloc_clause(new_cls.size(), new_cls.data(), false);
                 if (s.m_config.m_drat) s.m_drat.add(*nc, status::redundant());
                 s.m_clauses.push_back(nc);
-                m_use_list.insert(*nc);
-                m_sub_todo.insert(*nc);
+                if (nc->size() <= SUBSUME_CLS_LIMIT) {
+                    m_use_list.insert(*nc);
+                    mark_subsume(*nc);
+                    m_sub_todo.insert(*nc);
+                }
             }
         }
 
