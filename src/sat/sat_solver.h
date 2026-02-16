@@ -261,6 +261,9 @@ namespace sat {
         svector<scope>          m_scopes;
         scoped_limit_trail      m_vars_lim;
         stopwatch               m_stopwatch;
+        // Per-phase profiling timers (CaDiCaL-style).
+        stopwatch               m_profile_simplify;
+        stopwatch               m_profile_gc;
         params_ref              m_params;
         no_drat_params          m_no_drat_params;
         scoped_ptr<solver>      m_clone; // for debugging purposes

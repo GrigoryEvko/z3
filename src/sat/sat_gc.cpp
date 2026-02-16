@@ -55,6 +55,12 @@ namespace sat {
 
     void solver::do_gc() {
         if (!should_gc()) return;
+        struct gc_profile_guard {
+            stopwatch& sw;
+            gc_profile_guard(stopwatch& s) : sw(s) { sw.start(); }
+            ~gc_profile_guard() { sw.stop(); }
+        };
+        gc_profile_guard _gpg(m_profile_gc);
         TRACE(sat, tout << m_conflicts_since_gc << " " << m_gc_threshold << "\n";);
         uint64_t gc = m_stats.m_gc_clause;
         m_conflicts_since_gc = 0;

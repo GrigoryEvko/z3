@@ -2676,13 +2676,15 @@ namespace sat {
         struct report {
             solver&   s;
             stopwatch m_watch;
-            report(solver& s):s(s) { 
-                m_watch.start(); 
+            report(solver& s):s(s) {
+                s.m_profile_simplify.start();
+                m_watch.start();
                 s.log_stats();
                 IF_VERBOSE(2, verbose_stream() << "(sat.simplify :simplifications " << s.m_simplifications << ")\n";);
             }
-            ~report() { 
-                m_watch.stop(); 
+            ~report() {
+                m_watch.stop();
+                s.m_profile_simplify.stop();
                 s.log_stats();
             }
         };
@@ -5433,6 +5435,9 @@ namespace sat {
         if (m_ext) m_ext->collect_statistics(st);
         if (m_local_search) m_local_search->collect_statistics(st);
         st.copy(m_aux_stats);
+        // Per-phase profiling timers.
+        st.update("sat time simplify", m_profile_simplify.get_seconds());
+        st.update("sat time gc", m_profile_gc.get_seconds());
     }
 
     void solver::reset_statistics() {
