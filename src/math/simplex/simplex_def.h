@@ -1029,9 +1029,9 @@ namespace simplex {
     template<typename Ext>
     void simplex<Ext>::collect_statistics(::statistics & st) const {
         M.collect_statistics(st);
-        st.update("simplex num pivots", m_stats.m_num_pivots);
-        st.update("simplex num infeasible", m_stats.m_num_infeasible);
-        st.update("simplex num checks", m_stats.m_num_checks);
+        st.update("simplex num pivots", static_cast<uint64_t>(m_stats.m_num_pivots));
+        st.update("simplex num infeasible", static_cast<uint64_t>(m_stats.m_num_infeasible));
+        st.update("simplex num checks", static_cast<uint64_t>(m_stats.m_num_checks));
     }
         
 

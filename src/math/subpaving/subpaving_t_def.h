@@ -1888,11 +1888,11 @@ void context_t<C>::reset_statistics() {
 
 template<typename C>
 void context_t<C>::collect_statistics(statistics & st) const {
-    st.update("conflicts",  m_num_conflicts);
-    st.update("new bounds", m_num_mk_bounds);
-    st.update("splits",     m_num_splits);
-    st.update("nodes",      m_num_nodes);
-    st.update("visited",    m_num_visited);
+    st.update("conflicts",  static_cast<uint64_t>(m_num_conflicts));
+    st.update("new bounds", static_cast<uint64_t>(m_num_mk_bounds));
+    st.update("splits",     static_cast<uint64_t>(m_num_splits));
+    st.update("nodes",      static_cast<uint64_t>(m_num_nodes));
+    st.update("visited",    static_cast<uint64_t>(m_num_visited));
 }
 
 // -----------------------------------

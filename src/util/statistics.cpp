@@ -23,7 +23,7 @@ Notes:
 #include "util/smt2_util.h"
 #include<iomanip>
 
-void statistics::update(char const * key, unsigned inc) {
+void statistics::update(char const * key, uint64_t inc) {
     if (inc != 0)
         m_stats.push_back(key_val_pair(key, inc));
 }
@@ -78,7 +78,7 @@ struct str_lt {
     bool operator()(char const * s1, char const * s2) const { return strcmp(s1, s2) < 0; }
 };
 
-typedef map<char const *, unsigned, str_hash_proc, str_eq_proc> key2val;
+typedef map<char const *, uint64_t, str_hash_proc, str_eq_proc> key2val;
 typedef map<char const *, double, str_hash_proc, str_eq_proc> key2dval;
 
 unsigned get_max_len(ptr_buffer<char> & keys) {
@@ -122,7 +122,7 @@ std::ostream& statistics::display_smt2(std::ostream & out) const {
     out << "(";
     for (unsigned i = 0; i < keys.size(); ++i) {
         char * k = keys.get(i);
-        unsigned val; 
+        uint64_t val;
         if (m_u.find(k, val)) {
             DISPLAY_KEY();
             out << " " << val;
@@ -153,7 +153,7 @@ std::ostream& statistics::display(std::ostream & out) const {
 
     for (unsigned i = 0; i < keys.size(); ++i) {
         char * k = keys.get(i);
-        unsigned val; 
+        uint64_t val;
         if (m_u.find(k, val)) {
             DISPLAY_KEY();
             out << " " << val << "\n";
@@ -211,7 +211,7 @@ char const * statistics::get_key(unsigned idx) const {
         return m_d_stats[idx - m_stats.size()].first;
 }
 
-unsigned statistics::get_uint_value(unsigned idx) const {
+uint64_t statistics::get_uint_value(unsigned idx) const {
     SASSERT(idx < size());
     SASSERT(is_uint(idx));
     return m_stats[idx].second;
@@ -224,12 +224,7 @@ double statistics::get_double_value(unsigned idx) const {
 }
 
 static void get_uint64_stats(statistics& st, char const* name, unsigned long long value) {
-    if (value <= UINT_MAX) {
-        st.update(name, static_cast<unsigned>(value));
-    }
-    else {
-        st.update(name, static_cast<double>(value));
-    }
+    st.update(name, static_cast<uint64_t>(value));
 }
 
 void get_memory_statistics(statistics& st) {

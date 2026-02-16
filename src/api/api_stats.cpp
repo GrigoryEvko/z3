@@ -109,7 +109,7 @@ extern "C" {
             SET_ERROR_CODE(Z3_INVALID_ARG, nullptr);
             return 0;
         }
-        return to_stats_ref(s).get_uint_value(idx);
+        return static_cast<unsigned>(to_stats_ref(s).get_uint_value(idx));
         Z3_CATCH_RETURN(0);
     }
 

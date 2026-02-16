@@ -19,18 +19,20 @@ Notes:
 #pragma once
 
 #include<ostream>
+#include<cstdint>
 #include "util/vector.h"
 #include "util/rlimit.h"
 
 class statistics {
-    typedef std::pair<char const *, unsigned> key_val_pair;
+    typedef std::pair<char const *, uint64_t> key_val_pair;
     svector<key_val_pair>   m_stats;
     typedef std::pair<char const *, double> key_d_val_pair;
     svector<key_d_val_pair> m_d_stats;
 public:
     void copy(statistics const & st);
     void reset();
-    void update(char const * key, unsigned inc);
+    void update(char const * key, uint64_t inc);
+    void update(char const * key, unsigned inc) { update(key, static_cast<uint64_t>(inc)); }
     void update(char const * key, double inc);
     std::ostream& display(std::ostream & out) const;
     std::ostream& display_smt2(std::ostream & out) const;
@@ -38,7 +40,7 @@ public:
     unsigned size() const;
     bool is_uint(unsigned idx) const;
     char const * get_key(unsigned idx) const;
-    unsigned get_uint_value(unsigned idx) const;
+    uint64_t get_uint_value(unsigned idx) const;
     double get_double_value(unsigned idx) const;
 };
 

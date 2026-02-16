@@ -576,7 +576,7 @@ namespace simplex {
     */    
     template<typename Ext>
     void sparse_matrix<Ext>::collect_statistics(::statistics & st) const {
-        st.update("simplex add rows", m_stats.m_add_rows);
+        st.update("simplex add rows", static_cast<uint64_t>(m_stats.m_add_rows));
     }
 
 
