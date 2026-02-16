@@ -160,7 +160,7 @@ namespace sat {
     void solver::reluctant_enable() {
         m_reluctant_u = 1;
         m_reluctant_v = 1;
-        m_reluctant_period = 512;
+        m_reluctant_period = 1024;
         m_reluctant_countdown = m_reluctant_period;
         m_reluctant_triggered = false;
     }
@@ -175,7 +175,10 @@ namespace sat {
         } else {
             m_reluctant_v *= 2;
         }
-        m_reluctant_countdown = m_reluctant_v * m_reluctant_period;
+        // Cap at 1048576 conflicts to prevent indefinite non-restarting.
+        static constexpr uint64_t MAX_RELUCTANT_PERIOD = 1048576;
+        uint64_t next = m_reluctant_v * m_reluctant_period;
+        m_reluctant_countdown = std::min(next, MAX_RELUCTANT_PERIOD);
         m_reluctant_triggered = true;
     }
 

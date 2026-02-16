@@ -176,7 +176,7 @@ namespace sat {
         m_gc_initial      = p.gc_initial();
         m_gc_increment    = p.gc_increment();
         m_gc_small_lbd    = p.gc_small_lbd();
-        m_gc_k            = std::min(31u, p.gc_k());
+        m_gc_k            = std::min(15u, p.gc_k());
         m_gc_burst        = p.gc_burst();
         m_gc_defrag       = p.gc_defrag();
 

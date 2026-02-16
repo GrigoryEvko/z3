@@ -48,14 +48,14 @@ namespace sat {
         unsigned           m_strengthened:1;
         unsigned           m_removed:1;
         unsigned           m_learned:1;
-        unsigned           m_used:1;
+        unsigned           m_used:2;         // CaDiCaL-style usage counter: 0=unused, 1/2=recently used
         unsigned           m_frozen:1;
         unsigned           m_reinit_stack:1;
         unsigned           m_tier:2;         // clause tier: 0=TIER2, 1=TIER1, 2=CORE
         unsigned           m_garbage:1;      // marked for lazy GC (CaDiCaL-style mark-then-collect)
         unsigned           m_reason:1;       // protected as reason clause during GC
         unsigned           m_covered:1;      // CCE already tried on this clause (CaDiCaL-style)
-        unsigned           m_inact_rounds:5; // inactivity rounds for gc_dyn_psm (max 31)
+        unsigned           m_inact_rounds:4; // inactivity rounds for gc_dyn_psm (max 15)
         unsigned           m_glue:8;
         unsigned           m_psm:8;  // transient field used during gc
         unsigned           m_pos;    // saved scan position for watch replacement (Gent 2013 / CaDiCaL)
@@ -92,10 +92,13 @@ namespace sat {
         bool contains(literal l) const;
         bool contains(bool_var v) const;
         bool satisfied_by(model const & m) const;
-        void mark_used() { m_used = true; }
-        void unmark_used() { m_used = false; }
-        bool was_used() const { return m_used; }
-        void inc_inact_rounds() { if (m_inact_rounds < 31) m_inact_rounds++; }
+        void mark_used() { m_used = 2; }
+        void unmark_used() { m_used = 0; }
+        bool was_used() const { return m_used > 0; }
+        unsigned used() const { return m_used; }
+        void set_used(unsigned u) { m_used = u > 3 ? 3 : u; }
+        void decay_used() { if (m_used > 0) m_used--; }
+        void inc_inact_rounds() { if (m_inact_rounds < 15) m_inact_rounds++; }
         void reset_inact_rounds() { m_inact_rounds = 0; }
         unsigned inact_rounds() const { return m_inact_rounds; }
         bool frozen() const { return m_frozen; }

@@ -56,7 +56,7 @@ namespace sat {
     void solver::do_gc() {
         if (!should_gc()) return;
         TRACE(sat, tout << m_conflicts_since_gc << " " << m_gc_threshold << "\n";);
-        unsigned gc = m_stats.m_gc_clause;
+        uint64_t gc = m_stats.m_gc_clause;
         m_conflicts_since_gc = 0;
         m_gc_threshold += m_config.m_gc_increment;
         IF_VERBOSE(10, verbose_stream() << "(sat.gc)\n";);
@@ -145,54 +145,94 @@ namespace sat {
     };
 
     /**
-       \brief Partition m_learned so CORE/TIER1 clauses are at front, TIER2 at back.
-       Returns the index where TIER2 clauses start.
+       \brief Partition m_learned with CaDiCaL-style usage-based aging.
+       Three-phase partition:
+         1. CORE clauses: always kept (indices [0, core_end))
+         2. TIER1 with used>0: kept, usage decayed (indices [core_end, protected_end))
+            TIER1 with used==0: demoted to TIER2
+         3. TIER2 with used>0: kept, usage decayed (indices [protected_end, cand_start))
+            TIER2 with used==0: candidates for deletion (indices [cand_start, end))
+       Returns the index where deletion candidates start.
     */
     unsigned solver::partition_tier2() {
-        unsigned j = 0;
         unsigned sz = m_learned.size();
+
+        // Pass 1: Age TIER1 clauses. Demote unused ones to TIER2.
         for (unsigned i = 0; i < sz; ++i) {
-            if (!m_learned[i]->is_tier2()) {
+            clause& c = *(m_learned[i]);
+            if (c.is_tier1()) {
+                if (c.was_used()) {
+                    c.decay_used();
+                }
+                else {
+                    c.set_tier(clause::TIER2);
+                }
+            }
+        }
+
+        // Pass 2: Partition into [protected | candidates].
+        // Protected = CORE + TIER1 + used-TIER2.
+        // Candidates = unused-TIER2.
+        unsigned j = 0;
+        for (unsigned i = 0; i < sz; ++i) {
+            clause& c = *(m_learned[i]);
+            bool keep_protected;
+            if (c.is_core() || c.is_tier1()) {
+                keep_protected = true;
+            }
+            else {
+                // TIER2: protect if recently used, candidate otherwise
+                if (c.was_used()) {
+                    c.decay_used();
+                    keep_protected = true;
+                }
+                else {
+                    keep_protected = false;
+                }
+            }
+            if (keep_protected) {
                 std::swap(m_learned[i], m_learned[j]);
                 j++;
             }
         }
+        TRACE(sat, tout << "partition_tier2: protected=" << j
+              << " candidates=" << (sz - j) << " demoted=" << demoted << "\n";);
         return j;
     }
 
     void solver::gc_glue() {
-        unsigned tier2_start = partition_tier2();
-        unsigned tier2_sz = m_learned.size() - tier2_start;
-        if (tier2_sz >= 2)
-            std::nth_element(m_learned.begin() + tier2_start, m_learned.begin() + tier2_start + tier2_sz/2, m_learned.end(), glue_lt());
-        gc_tier2("glue", tier2_start);
+        unsigned cand_start = partition_tier2();
+        unsigned cand_sz = m_learned.size() - cand_start;
+        if (cand_sz >= 2)
+            std::nth_element(m_learned.begin() + cand_start, m_learned.begin() + cand_start + cand_sz/2, m_learned.end(), glue_lt());
+        gc_tier2("glue", cand_start);
     }
 
     void solver::gc_psm() {
         save_psm();
-        unsigned tier2_start = partition_tier2();
-        unsigned tier2_sz = m_learned.size() - tier2_start;
-        if (tier2_sz >= 2)
-            std::nth_element(m_learned.begin() + tier2_start, m_learned.begin() + tier2_start + tier2_sz/2, m_learned.end(), psm_lt());
-        gc_tier2("psm", tier2_start);
+        unsigned cand_start = partition_tier2();
+        unsigned cand_sz = m_learned.size() - cand_start;
+        if (cand_sz >= 2)
+            std::nth_element(m_learned.begin() + cand_start, m_learned.begin() + cand_start + cand_sz/2, m_learned.end(), psm_lt());
+        gc_tier2("psm", cand_start);
     }
 
     void solver::gc_glue_psm() {
         save_psm();
-        unsigned tier2_start = partition_tier2();
-        unsigned tier2_sz = m_learned.size() - tier2_start;
-        if (tier2_sz >= 2)
-            std::nth_element(m_learned.begin() + tier2_start, m_learned.begin() + tier2_start + tier2_sz/2, m_learned.end(), glue_psm_lt());
-        gc_tier2("glue-psm", tier2_start);
+        unsigned cand_start = partition_tier2();
+        unsigned cand_sz = m_learned.size() - cand_start;
+        if (cand_sz >= 2)
+            std::nth_element(m_learned.begin() + cand_start, m_learned.begin() + cand_start + cand_sz/2, m_learned.end(), glue_psm_lt());
+        gc_tier2("glue-psm", cand_start);
     }
 
     void solver::gc_psm_glue() {
         save_psm();
-        unsigned tier2_start = partition_tier2();
-        unsigned tier2_sz = m_learned.size() - tier2_start;
-        if (tier2_sz >= 2)
-            std::nth_element(m_learned.begin() + tier2_start, m_learned.begin() + tier2_start + tier2_sz/2, m_learned.end(), psm_glue_lt());
-        gc_tier2("psm-glue", tier2_start);
+        unsigned cand_start = partition_tier2();
+        unsigned cand_sz = m_learned.size() - cand_start;
+        if (cand_sz >= 2)
+            std::nth_element(m_learned.begin() + cand_start, m_learned.begin() + cand_start + cand_sz/2, m_learned.end(), psm_glue_lt());
+        gc_tier2("psm-glue", cand_start);
     }
 
     /**
@@ -205,17 +245,18 @@ namespace sat {
     }
 
     /**
-       \brief GC the worse half of TIER2 clauses using lazy two-phase collection.
-       CORE and TIER1 clauses (indices [0, tier2_start)) are never touched.
-       Of the TIER2 portion [tier2_start, end), the better half (lower indices
-       after nth_element) is kept, and the worse half is marked garbage if can_delete.
+       \brief GC deletion candidates using lazy two-phase collection.
+       Clauses at indices [0, cand_start) are protected (CORE, active TIER1,
+       recently-used TIER2). Of the candidate portion [cand_start, end),
+       the better half (lower indices after nth_element) is kept, and
+       the worse half is marked garbage if can_delete.
        Then collect_garbage batch-flushes all watches and frees memory.
     */
-    void solver::gc_tier2(char const * st_name, unsigned tier2_start) {
+    void solver::gc_tier2(char const * st_name, unsigned cand_start) {
         TRACE(sat, tout << "gc tier2\n";);
         unsigned sz       = m_learned.size();
-        unsigned tier2_sz = sz - tier2_start;
-        unsigned keep     = tier2_start + tier2_sz / 2;
+        unsigned cand_sz  = sz - cand_start;
+        unsigned keep     = cand_start + cand_sz / 2;
         unsigned marked   = 0;
         for (unsigned i = keep; i < sz; ++i) {
             clause & c = *(m_learned[i]);
@@ -229,7 +270,7 @@ namespace sat {
         unsigned deleted = sz - m_learned.size();
         m_stats.m_gc_clause += deleted;
         IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat-gc :strategy " << st_name
-                   << " :tier2 " << tier2_sz << " :protected " << tier2_start
+                   << " :candidates " << cand_sz << " :protected " << cand_start
                    << " :deleted " << deleted << ")\n";);
     }
 
@@ -320,10 +361,11 @@ namespace sat {
                 if (c.is_core()) {
                     // keep as-is
                 }
-                else if (c.glue() > m_config.m_gc_small_lbd && c.is_tier2()) {
-                    // TIER2 clauses: aggressively managed
+                else if (c.is_tier2()) {
+                    // TIER2 clauses: aggressively managed with usage-based aging
                     if (c.was_used()) {
                         c.reset_inact_rounds();
+                        c.decay_used();
                     }
                     else {
                         c.inc_inact_rounds();
@@ -338,7 +380,6 @@ namespace sat {
                             continue;
                         }
                     }
-                    c.unmark_used();
                     if (psm(c) > static_cast<unsigned>(c.size() * m_min_d_tk)) {
                         // move to frozen: requires immediate detach (frozen clause must not
                         // participate in BCP), so this path stays synchronous.
@@ -351,12 +392,16 @@ namespace sat {
                     }
                 }
                 else if (c.is_tier1()) {
-                    // TIER1 clauses: only reset/track inactivity, do not delete in normal GC
-                    if (c.was_used())
+                    // TIER1 clauses: usage-based aging with demotion to TIER2
+                    if (c.was_used()) {
                         c.reset_inact_rounds();
-                    else
-                        c.inc_inact_rounds();
-                    c.unmark_used();
+                        c.decay_used();
+                    }
+                    else {
+                        // No recent usage: demote to TIER2
+                        c.set_tier(clause::TIER2);
+                        c.reset_inact_rounds();
+                    }
                 }
             }
             else {
