@@ -91,10 +91,11 @@ namespace sat {
     // variables to false satisfies the formula.
 
     lbool solver::lucky_trivially_false() {
-        // Check n-ary clauses.
+        // Check n-ary clauses (irredundant only, matching CaDiCaL).
         for (clause* cp : m_clauses) {
             clause& c = *cp;
             if (c.was_removed()) continue;
+            if (c.is_learned()) continue;
             bool satisfied = false;
             bool found_neg = false;
             for (literal lit : c) {
@@ -144,10 +145,11 @@ namespace sat {
     // -----------------------------------------------------------------------
 
     lbool solver::lucky_trivially_true() {
-        // Check n-ary clauses.
+        // Check n-ary clauses (irredundant only, matching CaDiCaL).
         for (clause* cp : m_clauses) {
             clause& c = *cp;
             if (c.was_removed()) continue;
+            if (c.is_learned()) continue;
             bool satisfied = false;
             bool found_pos = false;
             for (literal lit : c) {
@@ -280,10 +282,11 @@ namespace sat {
     // formulas where each clause has at most one positive literal.
 
     lbool solver::lucky_positive_horn() {
-        // Iterate n-ary clauses.
+        // Iterate n-ary clauses (irredundant only, matching CaDiCaL).
         for (clause* cp : m_clauses) {
             clause& c = *cp;
             if (c.was_removed()) continue;
+            if (c.is_learned()) continue;
             bool satisfied = false;
             literal pos_lit = null_literal;
             for (literal lit : c) {
@@ -340,10 +343,11 @@ namespace sat {
     // -----------------------------------------------------------------------
 
     lbool solver::lucky_negative_horn() {
-        // Iterate n-ary clauses.
+        // Iterate n-ary clauses (irredundant only, matching CaDiCaL).
         for (clause* cp : m_clauses) {
             clause& c = *cp;
             if (c.was_removed()) continue;
+            if (c.is_learned()) continue;
             bool satisfied = false;
             literal neg_lit = null_literal;
             for (literal lit : c) {

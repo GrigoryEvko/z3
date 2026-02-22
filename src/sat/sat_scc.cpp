@@ -260,18 +260,33 @@ namespace sat {
         return total_elim;
     }
 
-    unsigned scc::reduce_tr(bool learned) {        
+    unsigned scc::reduce_tr(bool learned, int64_t* budget) {
         init_big(learned);
-        unsigned num_elim = m_big.reduce_tr(m_solver);
+        unsigned num_elim = m_big.reduce_tr(m_solver, budget);
         m_num_elim_bin += num_elim;
         return num_elim;
     }
 
     void scc::reduce_tr() {
-        unsigned quota = 0, num_reduced = 0, count = 0;
-        while ((num_reduced = reduce_tr(false)) > quota && count++ < 10) { quota = std::max(100u, num_reduced / 2); }
-        quota = 0; count = 0;
-        while ((num_reduced = reduce_tr(true))  > quota && count++ < 10) { quota = std::max(100u, num_reduced / 2); }
+        // Budget proportional to search propagations (CaDiCaL-style effort limit).
+        // 0.2% of total propagation work, minimum 1000 ticks.
+        int64_t total_budget = std::max(static_cast<int64_t>(1000),
+                                        static_cast<int64_t>(m_solver.m_stats.m_propagate * 0.002));
+        // Split budget: 40% irredundant, 60% learned (learned clauses are typically
+        // more numerous and benefit more from transitive reduction).
+        int64_t irred_budget   = total_budget * 2 / 5;
+        int64_t learned_budget = total_budget - irred_budget;
+
+        // Up to 2 passes per category: the first pass finds the vast majority of
+        // transitive edges; a second pass catches newly-exposed transitivity.
+        // Each pass also stops early when its budget is exhausted.
+        unsigned num_reduced = reduce_tr(false, &irred_budget);
+        if (num_reduced > 0 && irred_budget > 0)
+            reduce_tr(false, &irred_budget);
+
+        num_reduced = reduce_tr(true, &learned_budget);
+        if (num_reduced > 0 && learned_budget > 0)
+            reduce_tr(true, &learned_budget);
     }
 
     void scc::collect_statistics(statistics & st) const {

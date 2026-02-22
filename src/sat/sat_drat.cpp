@@ -67,36 +67,36 @@ namespace sat {
             return;
         if (m_activity && ((m_stats.m_num_add % 1000) == 0))
             dump_activity();
-        
-        char buffer[10000];
+
+        // Use a dynamic buffer to avoid stack buffer overflow with large clauses.
+        // DRAT logging is I/O-bound so the allocation cost is negligible.
+        svector<char> buffer;
         char digits[20];     // enough for storing unsigned
         char* lastd = digits + sizeof(digits);
 
-        unsigned len = 0;
-
         if (st.is_deleted()) {
-            buffer[len++] = 'd';
-            buffer[len++] = ' ';
+            buffer.push_back('d');
+            buffer.push_back(' ');
         }
         else if (st.is_input()) {
-            buffer[len++] = 'i';
-            buffer[len++] = ' ';
+            buffer.push_back('i');
+            buffer.push_back(' ');
         }
         else if (!st.is_sat()) {
             if (st.is_redundant()) {
-                buffer[len++] = 'r';
-                buffer[len++] = ' ';
+                buffer.push_back('r');
+                buffer.push_back(' ');
             }
             else if (st.is_asserted()) {
-                buffer[len++] = 'a';
-                buffer[len++] = ' ';
+                buffer.push_back('a');
+                buffer.push_back(' ');
             }
         }
 
         for (unsigned i = 0; i < n; ++i) {
             literal lit = c[i];
             unsigned v = lit.var();
-            if (lit.sign()) buffer[len++] = '-';
+            if (lit.sign()) buffer.push_back('-');
             char* d = lastd;
             SASSERT(v > 0);
             while (v > 0) {
@@ -105,18 +105,17 @@ namespace sat {
                 v /= 10;
                 SASSERT(d > digits);
             }
-            SASSERT(len + lastd < sizeof(buffer) + d);
-            memcpy(buffer + len, d, lastd - d);
-            len += static_cast<unsigned>(lastd - d);
-            buffer[len++] = ' ';
-            if (static_cast<size_t>(len) + 50 > sizeof(buffer)) {
-                m_out->write(buffer, len);
-                len = 0;
+            buffer.append(static_cast<unsigned>(lastd - d), d);
+            buffer.push_back(' ');
+            // Flush periodically to avoid unbounded memory growth on huge clauses.
+            if (buffer.size() >= 8192) {
+                m_out->write(buffer.data(), buffer.size());
+                buffer.reset();
             }
         }
-        buffer[len++] = '0';
-        buffer[len++] = '\n';
-        m_out->write(buffer, len);
+        buffer.push_back('0');
+        buffer.push_back('\n');
+        m_out->write(buffer.data(), buffer.size());
     }
 
     void drat::dump_activity() {
@@ -133,9 +132,10 @@ namespace sat {
         else if (st.is_deleted())
             ch = 'd';
         else return;
-        char buffer[10000];
-        int len = 0;
-        buffer[len++] = ch;
+
+        // Use a dynamic buffer to avoid stack buffer overflow with large clauses.
+        svector<char> buffer;
+        buffer.push_back(static_cast<char>(ch));
 
         for (unsigned i = 0; i < n; ++i) {
             literal lit = c[i];
@@ -144,16 +144,17 @@ namespace sat {
                 ch = static_cast<unsigned char>(v & 255);
                 v >>= 7;
                 if (v) ch |= 128;
-                buffer[len++] = ch;
-                if (len == sizeof(buffer)) {
-                    m_bout->write(buffer, len);
-                    len = 0;
-                }
+                buffer.push_back(static_cast<char>(ch));
             }
             while (v);
+            // Flush periodically to avoid unbounded memory growth on huge clauses.
+            if (buffer.size() >= 8192) {
+                m_bout->write(buffer.data(), buffer.size());
+                buffer.reset();
+            }
         }
-        buffer[len++] = 0;
-        m_bout->write(buffer, len);
+        buffer.push_back('\0');
+        m_bout->write(buffer.data(), buffer.size());
     }
 
     bool drat::is_cleaned(clause& c) const {

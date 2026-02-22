@@ -39,7 +39,7 @@ namespace sat {
         big        m_big;
 
         void reduce_tr();
-        unsigned reduce_tr(bool learned);
+        unsigned reduce_tr(bool learned, int64_t* budget);
 
 
     public:
