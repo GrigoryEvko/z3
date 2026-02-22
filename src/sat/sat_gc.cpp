@@ -94,6 +94,9 @@ namespace sat {
             break;
         }
         if (m_ext) m_ext->gc();
+        // CaDiCaL-style: shrink oversized watch lists after GC to reclaim
+        // excess capacity from deleted clauses. (CaDiCaL collect.cpp:225)
+        shrink_watches();
         if (gc > 0 && should_defrag()) {
             defrag_clauses();
         }
@@ -178,12 +181,24 @@ namespace sat {
 
         // Pass 2: Partition into [protected | candidates].
         // Protected = CORE + TIER1 + used-TIER2.
-        // Candidates = unused-TIER2.
+        // Candidates = unused-TIER2 + unused hyper clauses (any tier).
+        // CaDiCaL-style: hyper clauses (from probing) get no grace period --
+        // if not used since last reduce, they become candidates regardless of tier.
         unsigned j = 0;
         for (unsigned i = 0; i < sz; ++i) {
             clause& c = *(m_learned[i]);
             bool keep_protected;
-            if (c.is_core() || c.is_tier1()) {
+            if (c.is_hyper()) {
+                // Hyper clauses: protected only if recently used, regardless of tier
+                if (c.was_used()) {
+                    c.decay_used();
+                    keep_protected = true;
+                }
+                else {
+                    keep_protected = false;
+                }
+            }
+            else if (c.is_core() || c.is_tier1()) {
                 keep_protected = true;
             }
             else {
@@ -302,8 +317,8 @@ namespace sat {
     }
 
     bool solver::can_delete(clause const & c) const {
-        // CORE clauses are never deleted
-        if (c.is_core())
+        // CORE clauses are never deleted -- unless they are hyper (probing-derived)
+        if (c.is_core() && !c.is_hyper())
             return false;
         if (c.on_reinit_stack())
             return false;
@@ -363,8 +378,23 @@ namespace sat {
         for (; it != end; ++it) {
             clause & c = *(*it);
             if (!c.frozen()) {
+                // CaDiCaL-style: hyper clauses (from probing) get no grace period.
+                // If not used since last reduce, immediately mark for deletion.
+                if (c.is_hyper()) {
+                    if (c.was_used()) {
+                        c.decay_used();
+                    }
+                    else {
+                        mark_garbage(c);
+                        garbage_buf.push_back(&c);
+                        marked++;
+                        deleted++;
+                        m_stats.m_gc_clause++;
+                        continue;
+                    }
+                }
                 // Active clause: CORE clauses are never deleted or frozen
-                if (c.is_core()) {
+                else if (c.is_core()) {
                     // keep as-is
                 }
                 else if (c.is_tier2()) {
@@ -597,6 +627,29 @@ namespace sat {
     }
 
     /**
+       \brief Shrink watch list capacity after GC (CaDiCaL collect.cpp:225).
+       After flushing garbage entries, watch lists may have significant
+       excess capacity from deleted clauses. Right-size any list where
+       capacity > 2 * size to reclaim memory and reduce cache pollution.
+       Uses the swap trick since Z3's vector::shrink only adjusts size,
+       not capacity.
+    */
+    void solver::shrink_watches() {
+        for (watch_list& wl : m_watches) {
+            unsigned sz = wl.size();
+            unsigned cap = wl.capacity();
+            if (cap <= 8 || sz * 2 >= cap)
+                continue;
+            // Build a right-sized copy via push_back (capacity ~1.5*sz),
+            // then swap to replace the oversized original.
+            watch_list tight;
+            for (watched const& w : wl)
+                tight.push_back(w);
+            wl.swap(tight);
+        }
+    }
+
+    /**
        \brief Compact a clause vector, freeing all collectible clauses.
        Non-collectible clauses are shifted forward in-place.
     */
@@ -641,60 +694,6 @@ namespace sat {
 
     void solver::gc_reinit_stack(unsigned num_scopes) {
         return;
-        SASSERT (!at_base_lvl());
-        unsigned new_lvl = scope_lvl() - num_scopes;
-        ptr_vector<clause> to_gc;
-        unsigned j = m_scopes[new_lvl].m_clauses_to_reinit_lim;
-        unsigned sz = m_clauses_to_reinit.size();
-        if (sz - j <= 2000)
-            return;
-        for (unsigned i = j; i < sz; ++i) {
-            auto cw = m_clauses_to_reinit[i];
-            if (cw.is_binary() || is_asserting(new_lvl, cw)) 
-                m_clauses_to_reinit[j++] = cw;
-            else 
-                to_gc.push_back(cw.get_clause());
-        }
-        m_clauses_to_reinit.shrink(j);
-        if (to_gc.empty())
-            return;
-        for (clause* c : to_gc) {
-            SASSERT(c->on_reinit_stack());
-            c->set_removed(true);
-            c->set_reinit_stack(false);
-        }
-        j = 0;
-        for (unsigned i = 0; i < m_learned.size(); ++i) {
-            clause & c = *(m_learned[i]);
-            if (c.was_removed()) {
-                detach_clause(c);
-                del_clause(c);
-            }
-            else 
-                m_learned[j++] = &c;            
-        }
-        SASSERT(m_learned.size() - j == to_gc.size());
-        m_learned.shrink(j);
-    }
-
-    bool solver::is_asserting(unsigned new_lvl, clause_wrapper const& cw) const {
-        if (!cw.is_learned())
-            return true;
-        bool seen_true = false;
-        for (literal lit : cw) {
-            switch (value(lit)) {
-            case l_true:
-                if (lvl(lit) > new_lvl || seen_true)
-                    return false;
-                seen_true = true;
-                continue;
-            case l_false:
-                continue;
-            case l_undef:
-                return false;
-            }
-        }
-        return true;
     }
 
     void solver::gc_vars(bool_var max_var) {
@@ -727,25 +726,31 @@ namespace sat {
         }
         m_aux_literals.reset();
 
-        auto gc_clauses = [&](ptr_vector<clause>& clauses) {
-            unsigned j = 0;
+        // Mark clauses containing removed variables as garbage, then
+        // batch-flush all watch lists in a single pass (CaDiCaL-style).
+        // This replaces per-clause detach_clause which does O(wlist_len)
+        // linear scans; the batch flush is O(total_watches) regardless
+        // of how many clauses are removed.
+        unsigned marked = 0;
+        auto mark_clauses = [&](clause_vector& clauses) {
             for (clause* c : clauses) {
                 bool should_remove = false;
-                for (auto lit : *c) 
+                for (auto lit : *c)
                     should_remove |= lit.var() >= max_var;
                 if (should_remove) {
                     SASSERT(!c->on_reinit_stack());
-                    detach_clause(*c);
-                    del_clause(*c);
-                }
-                else {
-                    clauses[j++] = c;
+                    mark_garbage(*c);
+                    marked++;
                 }
             }
-            clauses.shrink(j);
         };
-        gc_clauses(m_learned);
-        gc_clauses(m_clauses);
+        mark_clauses(m_learned);
+        mark_clauses(m_clauses);
+        if (marked > 0) {
+            flush_all_watches();
+            collect_garbage_clauses(m_learned);
+            collect_garbage_clauses(m_clauses);
+        }
 
         if (m_ext)
             m_ext->gc_vars(max_var);
@@ -1116,141 +1121,5 @@ namespace sat {
 
         CASSERT("sat_compact", check_invariant());
     }
-
-#if 0
-    void solver::gc_reinit_stack(unsigned num_scopes) {
-        SASSERT (!at_base_lvl());
-        collect_clauses_to_gc(num_scopes);
-        for (literal lit : m_watch_literals_to_gc) {
-            mark_members_of_watch_list(lit);
-            shrink_watch_list(lit);
-        }
-        unsigned j = 0;
-        for (clause* c : m_learned) 
-            if (!c->was_removed())
-                m_learned[j++] = c;
-        m_learned.shrink(j);
-        for (clause* c : m_clauses_to_gc) 
-            del_clause(*c);
-        m_clauses_to_gc.reset();
-    }
-
-    void solver::add_to_gc(literal lit, clause_wrapper const& cw) {        
-        m_literal2gc_clause.reserve(lit.index()+1);
-        m_literal2gc_clause[lit.index()].push_back(cw);
-        if (!is_visited(lit)) {
-            mark_visited(lit);
-            m_watch_literals_to_gc.push_back(lit);
-        }
-    }
-
-    void solver::add_to_gc(clause_wrapper const& cw) {
-        std::cout << "add-to-gc " << cw << "\n";
-        if (cw.is_binary()) {
-            add_to_gc(cw[0], cw);
-            add_to_gc(cw[1], clause_wrapper(cw[1], cw[0]));
-        }
-        else if (ENABLE_TERNARY && cw.is_ternary()) {
-            SASSERT(cw.is_learned());
-            add_to_gc(cw[0], cw);
-            add_to_gc(cw[1], cw);
-            add_to_gc(cw[2], cw);
-            cw.get_clause()->set_removed(true);
-        }
-        else {
-            SASSERT(cw.is_learned());
-            add_to_gc(cw[0], cw);
-            add_to_gc(cw[1], cw); 
-            cw.get_clause()->set_removed(true);
-        }
-    }
-
-    void solver::insert_ternary_to_delete(literal lit, clause_wrapper const& cw) {
-        SASSERT(cw.is_ternary());
-        SASSERT(lit == cw[0] || lit == cw[1] || lit == cw[2]);
-        literal lit1, lit2;
-        if (cw[0] == lit) 
-            lit1 = cw[1], lit2 = cw[2];
-        else if (cw[1] == lit) 
-            lit1 = cw[0], lit2 = cw[2];
-        else 
-            lit1 = cw[0], lit2 = cw[1];
-        insert_ternary_to_delete(lit1, lit2, true);
-    }
-
-    void solver::insert_ternary_to_delete(literal lit1, literal lit2, bool should_delete) {
-        if (lit1.index() > lit2.index())
-            std::swap(lit1, lit2);        
-        m_ternary_to_delete.push_back(std::tuple(lit1, lit2, should_delete));
-    }
-
-    bool solver::in_ternary_to_delete(literal lit1, literal lit2) {
-        if (lit1.index() > lit2.index())
-            std::swap(lit1, lit2);
-        bool found = m_ternary_to_delete.contains(std::make_pair(lit1, lit2));
-        if (found) std::cout << lit1 << " " << lit2 << "\n"; 
-        return found;
-    }
-
-
-    void solver::collect_clauses_to_gc(unsigned num_scopes) {
-        unsigned new_lvl = scope_lvl() - num_scopes;
-        init_visited();
-        m_watch_literals_to_gc.reset();
-        unsigned j = m_scopes[new_lvl].m_clauses_to_reinit_lim;
-        for (unsigned i = j, sz = m_clauses_to_reinit.size(); i < sz; ++i) {
-            auto cw = m_clauses_to_reinit[i];
-            if (is_asserting(new_lvl, cw)) 
-                m_clauses_to_reinit[j++] = cw;
-            else 
-                add_to_gc(cw);
-        }
-        m_clauses_to_reinit.shrink(j);
-        SASSERT(m_clauses_to_reinit.size() >= j);
-    }
-
-    void solver::mark_members_of_watch_list(literal lit) {
-        init_visited();
-        m_ternary_to_delete.reset();
-        for (auto const& cw : m_literal2gc_clause[lit.index()]) {
-            SASSERT(!cw.is_binary() || lit == cw[0]);
-            SASSERT(cw.is_binary() || cw.was_removed());
-            if (cw.is_binary()) 
-                mark_visited(cw[1]);       
-            else if (ENABLE_TERNARY && cw.is_ternary())
-                insert_ternary_to_delete(lit, cw);
-        }        
-    }
-
-    void solver::shrink_watch_list(literal lit) {
-        auto& wl = get_wlist((~lit).index());
-        unsigned j = 0, sz = wl.size(), end = sz;
-        for (unsigned i = 0; i < end; ++i) {
-            auto w = wl[i];
-            if (w.is_binary_clause() && !is_visited(w.get_literal()))
-                wl[j++] = w;
-            else if (ENABLE_TERNARY && w.is_ternary_clause()) 
-                insert_ternary_to_delete(w.literal1(), w.literal2(), false);
-            else if (w.is_clause() && !get_clause(w).was_removed())
-                wl[j++] = w;
-            else if (w.is_ext_constraint())
-                wl[j++] = w;
-        }
-#if 0
-        std::sort(m_ternary_to_delete.begin(), m_ternary_to_delete.end());
-        int prev = -1;
-        unsigned k = 0;
-        std::tuple<literal, literal, bool> p = tuple(null_literal, null_literal, false);
-        for (unsigned i = 0; i < m_ternary_to_delete.size(); ++i) {
-            auto const& t = m_ternary_to_delete[i];
-        }
-#endif
-        std::cout << "gc-watch-list " << lit << " " << wl.size() << " -> " << j << "\n";
-        wl.shrink(j);
-        m_literal2gc_clause[lit.index()].reset();
-    }
-
-
-#endif
 
 }

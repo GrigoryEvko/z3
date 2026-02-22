@@ -855,6 +855,9 @@ namespace sat {
             break;
         default:
             TRACE(elim_lit, tout << "result: " << c << "\n";);
+            // CaDiCaL: clamp glue to size-1 after literal elimination.
+            if (c.is_learned() && c.glue() >= c.size())
+                c.set_glue(c.size() - 1);
             mark_subsume(c);
             m_sub_todo.insert(c);
             break;

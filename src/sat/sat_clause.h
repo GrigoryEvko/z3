@@ -55,9 +55,10 @@ namespace sat {
         unsigned           m_garbage:1;      // marked for lazy GC (CaDiCaL-style mark-then-collect)
         unsigned           m_reason:1;       // protected as reason clause during GC
         unsigned           m_covered:1;      // CCE already tried on this clause (CaDiCaL-style)
+        unsigned           m_hyper:1;        // hyper resolution clause from probing (CaDiCaL-style)
         unsigned           m_inact_rounds:4; // inactivity rounds for gc_dyn_psm (max 15)
         unsigned           m_glue:8;
-        unsigned           m_psm:8;  // transient field used during gc
+        unsigned           m_psm:7;  // transient field used during gc (7 bits: max 127)
         unsigned           m_pos;    // saved scan position for watch replacement (Gent 2013 / CaDiCaL)
         literal            m_lits[0];
 
@@ -107,7 +108,7 @@ namespace sat {
         static var_approx_set approx(unsigned num, literal const * lits);
         void set_glue(unsigned glue) { m_glue = glue > 255 ? 255 : glue; }
         unsigned glue() const { return m_glue; }
-        void set_psm(unsigned psm) { m_psm = psm > 255 ? 255 : psm; }
+        void set_psm(unsigned psm) { m_psm = psm > 127 ? 127 : psm; }
         unsigned psm() const { return m_psm; }
         unsigned pos() const { return m_pos; }
         void set_pos(unsigned p) { m_pos = p; }
@@ -134,6 +135,12 @@ namespace sat {
         // not to be coverable within the same simplification epoch.
         bool is_covered() const { return m_covered; }
         void set_covered(bool f) { m_covered = f; }
+
+        // Hyper resolution flag (CaDiCaL-style): marks clauses produced by
+        // hyper resolution during probing. These get no grace period in GC --
+        // they must be actively used in every reduce interval or are removed.
+        bool is_hyper() const { return m_hyper; }
+        void set_hyper(bool f) { m_hyper = f; }
 
         // Lazy GC flags (CaDiCaL-style mark-then-collect):
         //   m_garbage: clause is logically deleted, pending physical collection.
@@ -190,6 +197,7 @@ namespace sat {
         void          del_clause(clause * cls);
         void          recycle_id(clause * cls);
         unsigned      mk_id();
+        unsigned      id_range() const { return m_id_gen.get_id_range(); }
         void          free_clause_memory(clause * cls);
     };
 

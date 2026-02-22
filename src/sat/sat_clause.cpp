@@ -36,9 +36,10 @@ namespace sat {
         m_garbage(false),
         m_reason(false),
         m_covered(false),
+        m_hyper(false),
         m_inact_rounds(0),
         m_glue(255),
-        m_psm(255),
+        m_psm(127),
         m_pos(2) {
         memcpy(m_lits, lits, sizeof(literal) * sz);
         mark_strengthened();
@@ -200,6 +201,7 @@ namespace sat {
         cls->m_garbage       = other.m_garbage;
         cls->m_reason        = other.m_reason;
         cls->m_covered       = other.m_covered;
+        cls->m_hyper         = other.m_hyper;
         cls->m_inact_rounds  = other.m_inact_rounds;
         cls->m_approx        = other.approx();
         return cls;
