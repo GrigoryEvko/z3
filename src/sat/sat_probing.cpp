@@ -25,6 +25,7 @@ Revision History:
 namespace sat {
     probing::probing(solver & _s, params_ref const & p):
         s(_s),
+        m_assigned_gen(0),
         m_big(s.rand()) {
         updt_params(p);
         reset_statistics();
@@ -69,7 +70,7 @@ namespace sat {
         literal_vector * implied_lits = updt_cache ? nullptr : cached_implied_lits(l);
         if (implied_lits) {
             for (literal lit : *implied_lits) {
-                if (m_assigned.contains(lit)) {
+                if (lit.index() < m_assigned_stamp.size() && m_assigned_stamp[lit.index()] == m_assigned_gen) {
                     if (s.m_config.m_drat) {
                         s.m_drat.add(l, lit, status::redundant());
                         s.m_drat.add(~l, lit, status::redundant());
@@ -99,7 +100,7 @@ namespace sat {
             // collect literals that were assigned after assigning l
             unsigned tr_sz = s.m_trail.size();
             for (unsigned i = old_tr_sz; i < tr_sz; ++i) {
-                if (m_assigned.contains(s.m_trail[i])) {
+                if (s.m_trail[i].index() < m_assigned_stamp.size() && m_assigned_stamp[s.m_trail[i].index()] == m_assigned_gen) {
                     m_to_assert.push_back(s.m_trail[i]);
                 }
             }
@@ -143,11 +144,19 @@ namespace sat {
             return;
         }
         // collect literals that were assigned after assigning l
-        m_assigned.reset();
+        // O(1) reset via generation increment (avoids clearing the stamp array)
+        ++m_assigned_gen;
+        if (m_assigned_gen == 0) {
+            // Generation counter wrapped around; clear stamps to avoid false matches
+            m_assigned_stamp.fill(0);
+            m_assigned_gen = 1;
+        }
         unsigned tr_sz = s.m_trail.size();
+        // Ensure stamp array is large enough for all literals
+        m_assigned_stamp.reserve(2 * s.num_vars(), 0);
         for (unsigned i = old_tr_sz; i < tr_sz; ++i) {
             literal lit = s.m_trail[i];
-            m_assigned.insert(lit);
+            m_assigned_stamp[lit.index()] = m_assigned_gen;
 
 #if 0
             // learn equivalences during probing:
@@ -310,7 +319,8 @@ namespace sat {
     }
 
     void probing::finalize() {
-        m_assigned.finalize();
+        m_assigned_stamp.finalize();
+        m_assigned_gen = 0;
         m_to_assert.finalize();
         m_cached_bins.finalize();
     }

@@ -597,6 +597,8 @@ namespace sat {
         m_stats.m_mk_clause++;
         clause * r = alloc_clause(num_lits, lits, st.is_redundant());
         SASSERT(!st.is_redundant() || r->is_learned());
+        if (m_is_probing && st.is_redundant())
+            r->set_hyper(true);
         bool reinit = attach_nary_clause(*r, st.is_sat() && st.is_redundant());
  
         if (reinit || has_variables_to_reinit(*r)) 
@@ -690,6 +692,10 @@ namespace sat {
                 m_drat.del(c);
                 c.shrink(new_sz);
             }
+            // CaDiCaL: clamp glue to size-1 after shrinking.
+            // A clause with N literals spans at most N-1 decision levels.
+            if (c.is_learned() && c.glue() >= c.size())
+                c.set_glue(c.size() - 1);
         }
     }
 
@@ -965,7 +971,8 @@ namespace sat {
         m_assignment[(~l).index()] = l_false;
         bool_var v = l.var();
         m_justification[v]         = j;
-        m_phase[v]                 = !l.sign();
+        if (!m_is_probing)
+            m_phase[v]             = !l.sign();
         m_assigned_since_gc[v]     = true;
         m_trail_pos[v]             = m_trail.size();
         m_trail.push_back(l);
@@ -1007,8 +1014,8 @@ namespace sat {
             }
         }
         
-        SASSERT(!l.sign() || !m_phase[v]);
-        SASSERT(l.sign()  || m_phase[v]);
+        SASSERT(m_is_probing || !l.sign() || !m_phase[v]);
+        SASSERT(m_is_probing || l.sign()  || m_phase[v]);
         SASSERT(!l.sign() || value(v) == l_false);
         SASSERT(l.sign()  || value(v) == l_true);
         SASSERT(value(l) == l_true);
@@ -1102,18 +1109,12 @@ namespace sat {
     }
 
     void solver::propagate_clause(clause& c, bool update, unsigned assign_level, clause_offset cls_off) {
-        unsigned glue;
         SASSERT(value(c[0]) == l_undef);
-            c.mark_used();                                          
-            assign_core(c[0], justification(assign_level, cls_off)); 
-            if (update && c.is_learned() && c.glue() > 2 && num_diff_levels_below(c.size(), c.begin(), c.glue() - 1, glue)) {
-                c.set_glue(glue);
-                // Promote tier when glue improves (dynamic boundaries)
-                if (glue <= m_tier1_glue_limit && !c.is_core())
-                    c.set_tier(clause::CORE);
-                else if (glue <= m_tier2_glue_limit && c.is_tier2())
-                    c.set_tier(clause::TIER1);
-            }
+            c.mark_used();
+            assign_core(c[0], justification(assign_level, cls_off));
+            // Glue recomputation and tier promotion moved to conflict analysis
+            // (CaDiCaL-style: keep the propagation loop tight, update glue only
+            // when the clause is used as a reason during resolution).
     }
 
     void solver::set_watch(clause& c, unsigned idx, clause_offset cls_off) {
@@ -1164,7 +1165,8 @@ namespace sat {
 #define CONFLICT_CLEANUP() {                    \
                 for (; it != end; ++it, ++it2)  \
                     *it2 = *it;                 \
-                wlist.set_end(it2);             \
+                if (it2 != it)                  \
+                    wlist.set_end(it2);         \
             }
         for (; it != end; ++it) {
             // Prefetch the clause data for the next watch entry.
@@ -1207,22 +1209,26 @@ namespace sat {
                     it2++;
                     break;
                 }
-                // Branchless XOR swap (CaDiCaL-style): compute the other
-                // watched literal without a conditional branch.
+                // Branchless XOR (CaDiCaL-style): compute the other watched
+                // literal without a conditional branch or clause body write.
                 // a^b^not_l == b when a==not_l, == a when b==not_l.
                 literal other_watch = to_literal(c[0].to_uint() ^ c[1].to_uint() ^ not_l.to_uint());
-                c[0] = other_watch;
-                c[1] = not_l;
                 if (value(other_watch) == l_true) {
+                    // Fast path: no clause body write -- avoids dirtying cache line.
                     it2->set_clause(other_watch, cls_off);
                     it2++;
                     break;
                 }
-                VERIFY(c[1] == not_l);
+
+                // Slow path: must scan for a replacement.  Materialize the
+                // normalized watch positions now since set_watch and
+                // propagate_clause read c[0] and c[1].
+                c[0] = other_watch;
+                c[1] = not_l;
 
                 unsigned sz = c.size();
 
-                if (value(c[0]) == l_undef) {
+                if (value(other_watch) == l_undef) {
                     // Saved-position scan (Gent 2013 / CaDiCaL):
                     // Start scanning from the saved position instead of 2.
                     // This turns repeated scans of the same clause from O(n) to amortized O(1).
@@ -1260,21 +1266,32 @@ namespace sat {
                             goto end_clause_case;
                         }
                     }
-                    // No replacement found — propagate c[0]
-                    unsigned assign_level = curr_level;
-                    unsigned max_index = 1;
-                    for (unsigned i = 2; i < sz; ++i) {
-                        unsigned level = lvl(c[i]);
-                        if (level > assign_level) {
-                            assign_level = level;
-                            max_index = i;
+                    // No replacement found -- propagate c[0].
+                    // CaDiCaL optimization: only scan for the true assignment level
+                    // when chronological backtracking is enabled. Without chrono,
+                    // scope_lvl() is always correct since NCB backtracks exactly.
+                    unsigned assign_level;
+                    if (m_config.m_chrono_level_lim < UINT_MAX) {
+                        assign_level = curr_level;
+                        unsigned max_index = 1;
+                        for (unsigned i = 2; i < sz; ++i) {
+                            unsigned level = lvl(c[i]);
+                            if (level > assign_level) {
+                                assign_level = level;
+                                max_index = i;
+                            }
+                        }
+                        if (max_index != 1) {
+                            IF_VERBOSE(20, verbose_stream() << "swap watch for: " << c[1] << " " << c[max_index] << "\n");
+                            set_watch(c, max_index, cls_off);
+                        }
+                        else {
+                            *it2 = *it;
+                            it2++;
                         }
                     }
-                    if (max_index != 1) {
-                        IF_VERBOSE(20, verbose_stream() << "swap watch for: " << c[1] << " " << c[max_index] << "\n");
-                        set_watch(c, max_index, cls_off);
-                    }
                     else {
+                        assign_level = scope_lvl();
                         *it2 = *it;
                         it2++;
                     }
@@ -1284,7 +1301,10 @@ namespace sat {
                 else {
                     SASSERT(value(c[0]) == l_false);
                     unsigned undef_index = 0;
-                    unsigned assign_level = std::max(curr_level, lvl(c[0]));
+                    // CaDiCaL optimization: skip per-literal lvl() calls when
+                    // chrono is disabled -- scope_lvl() is always correct with NCB.
+                    bool track_levels = m_config.m_chrono_level_lim < UINT_MAX;
+                    unsigned assign_level = track_levels ? std::max(curr_level, lvl(c[0])) : scope_lvl();
                     unsigned num_undef = 0;
 
                     // Saved-position scan for the false-c[0] branch too.
@@ -1303,7 +1323,7 @@ namespace sat {
                         if (val == l_undef) {
                             undef_index = i;
                             ++num_undef;
-                        } else {
+                        } else if (track_levels) {
                             unsigned level = lvl(lit);
                             if (level > assign_level) assign_level = level;
                         }
@@ -1321,7 +1341,7 @@ namespace sat {
                         if (val == l_undef) {
                             undef_index = i;
                             ++num_undef;
-                        } else {
+                        } else if (track_levels) {
                             unsigned level = lvl(lit);
                             if (level > assign_level) assign_level = level;
                         }
@@ -1365,7 +1385,8 @@ namespace sat {
                 break;
             }
         }
-        wlist.set_end(it2);
+        if (it2 != it)
+            wlist.set_end(it2);
         if (m_ext && m_external[l.var()] && (!is_probing() || at_base_lvl()))
             m_ext->asserted(l);
 
@@ -1433,7 +1454,8 @@ namespace sat {
 #define PROBE_CONFLICT_CLEANUP() {              \
             for (; it != end; ++it, ++it2)      \
                 *it2 = *it;                     \
-            wlist.set_end(it2);                 \
+            if (it2 != it)                      \
+                wlist.set_end(it2);             \
         }
         for (; it != end; ++it) {
             switch (it->get_kind()) {
@@ -1463,7 +1485,7 @@ namespace sat {
                     it2++;
                     break;
                 }
-                VERIFY(c[1] == not_l);
+                SASSERT(c[1] == not_l);
 
                 unsigned sz = c.size();
 
@@ -1482,19 +1504,28 @@ namespace sat {
                             break;
                         }
                     }
-                    unsigned assign_level = curr_level;
-                    unsigned max_index = 1;
-                    for (unsigned i = 2; i < sz; ++i) {
-                        unsigned level = lvl(c[i]);
-                        if (level > assign_level) {
-                            assign_level = level;
-                            max_index = i;
+                    // CaDiCaL optimization: skip level scan when chrono is disabled.
+                    unsigned assign_level;
+                    if (m_config.m_chrono_level_lim < UINT_MAX) {
+                        assign_level = curr_level;
+                        unsigned max_index = 1;
+                        for (unsigned i = 2; i < sz; ++i) {
+                            unsigned level = lvl(c[i]);
+                            if (level > assign_level) {
+                                assign_level = level;
+                                max_index = i;
+                            }
+                        }
+                        if (max_index != 1) {
+                            set_watch(c, max_index, cls_off);
+                        }
+                        else {
+                            *it2 = *it;
+                            it2++;
                         }
                     }
-                    if (max_index != 1) {
-                        set_watch(c, max_index, cls_off);
-                    }
                     else {
+                        assign_level = scope_lvl();
                         *it2 = *it;
                         it2++;
                     }
@@ -1505,7 +1536,10 @@ namespace sat {
                 else {
                     SASSERT(value(c[0]) == l_false);
                     unsigned undef_index = 0;
-                    unsigned assign_level = std::max(curr_level, lvl(c[0]));
+                    // CaDiCaL optimization: skip per-literal lvl() calls when
+                    // chrono is disabled -- scope_lvl() is always correct with NCB.
+                    bool track_levels = m_config.m_chrono_level_lim < UINT_MAX;
+                    unsigned assign_level = track_levels ? std::max(curr_level, lvl(c[0])) : scope_lvl();
                     unsigned num_undef = 0;
 
                     for (unsigned i = 2; i < sz && num_undef <= 1; ++i) {
@@ -1519,13 +1553,14 @@ namespace sat {
                             undef_index = i;
                             ++num_undef;
                             break;
-                        case l_false: {
-                            unsigned level = lvl(lit);
-                            if (level > assign_level) {
-                                assign_level = level;
+                        case l_false:
+                            if (track_levels) {
+                                unsigned level = lvl(lit);
+                                if (level > assign_level) {
+                                    assign_level = level;
+                                }
                             }
                             break;
-                        }
                         }
                     }
 
@@ -1568,7 +1603,8 @@ namespace sat {
                 break;
             }
         }
-        wlist.set_end(it2);
+        if (it2 != it)
+            wlist.set_end(it2);
 #undef PROBE_CONFLICT_CLEANUP
         return true;
     }
@@ -2564,6 +2600,9 @@ namespace sat {
     }
 
     void solver::init_search() {
+        // ------------------------------------------------------------------
+        // Per-call state: always reset on every check() invocation.
+        // ------------------------------------------------------------------
         m_model_is_current        = false;
         m_solver_canceled         = false;
         m_phase_counter           = 0;
@@ -2574,12 +2613,10 @@ namespace sat {
         m_best_phase_size         = 0;
         m_target_assigned         = 0;
 
-        m_reorder.lo              = m_config.m_reorder_base;
         m_rephase.base            = m_config.m_rephase_base;
         m_rephase_lim             = 0;
         m_rephase_inc             = 0;
         m_conflicts_at_last_walk  = 0;
-        m_local_search_lim.base   = 500;
 
         m_conflicts_since_restart = 0;
         m_search_ticks            = 0;
@@ -2589,34 +2626,16 @@ namespace sat {
         m_force_conflict_analysis = false;
         m_restart_threshold       = m_config.m_restart_initial;
         m_luby_idx                = 1;
-        m_gc_threshold            = m_config.m_gc_initial;
-        m_defrag_threshold        = 2;
         m_restarts                = 0;
         m_last_position_log       = 0;
         m_restart_logs            = 0;
-        m_simplifications         = 0;
         m_conflicts_since_init    = 0;
         m_next_simplify           = m_config.m_simplify_delay;
         m_min_d_tk                = 1.0;
         m_search_lvl              = 0;
 
-        // Reset dynamic tier boundary state.
-        memset(m_glue_histogram, 0, sizeof(m_glue_histogram));
-        m_tier1_glue_limit        = 2;
-        m_tier2_glue_limit        = 6;
-        m_tier_recompute_count    = 0;
-        m_next_tier_recompute     = 1000;
-
-        // Effort-based inprocessing state.
-        m_props_at_last_simplify  = 0;
-
-        // Random decision burst state.
         m_randec_burst_remaining  = 0;
-        m_randec_phases           = 0;
-        m_randec_next_conflict    = m_config.m_randec_initial;
 
-        if (m_learned.size() <= 2*m_clauses.size())
-            m_conflicts_since_gc      = 0;
         m_restart_next_out        = 0;
         m_asymm_branch.init_search();
         m_stopwatch.reset();
@@ -2631,6 +2650,20 @@ namespace sat {
         if (m_ext)
             m_ext->init_search();
 
+        // Incremental clause decay (CaDiCaL-style): age learned clauses from
+        // previous check() calls by incrementing their glue.  This makes stale
+        // clauses gradually eligible for GC if they are not useful in the new
+        // assumption context.  Only fires when the watermark is non-zero (i.e.
+        // not the very first check() call).
+        if (m_config.m_incremental_decay && m_last_decay_clause_id > 0) {
+            for (clause* cp : m_learned) {
+                if (cp->id() < m_last_decay_clause_id && !cp->is_garbage() && cp->glue() < 255) {
+                    cp->set_glue(cp->glue() + 1);
+                }
+            }
+        }
+        m_last_decay_clause_id = cls_allocator().id_range();
+
         // Initialize dual-mode (stable/focused) search state.
         if (m_config.m_dual_mode) {
             m_stable_mode = false;
@@ -2640,6 +2673,40 @@ namespace sat {
             m_stabilize_limit = m_config.m_stabilize_initial;
             reluctant_enable();
         }
+
+        // ------------------------------------------------------------------
+        // Once-only state: slowly-evolving limits preserved across incremental
+        // check() calls (CaDiCaL-style).  Resetting these after a long run
+        // causes overly aggressive GC that deletes good learned clauses, and
+        // discards tuned simplification schedules.
+        // ------------------------------------------------------------------
+        if (!m_search_initialized) {
+            m_gc_threshold            = m_config.m_gc_initial;
+            m_defrag_threshold        = 2;
+            m_simplifications         = 0;
+            m_conflicts_since_gc      = 0;
+
+            // Dynamic tier boundary state.
+            memset(m_glue_histogram, 0, sizeof(m_glue_histogram));
+            m_tier1_glue_limit        = 2;
+            m_tier2_glue_limit        = 6;
+            m_tier_recompute_count    = 0;
+            m_next_tier_recompute     = 1000;
+
+            // Effort-based inprocessing state.
+            m_props_at_last_simplify  = 0;
+
+            // Backoff limits for inprocessing, reorder, local search.
+            m_reorder.lo              = m_config.m_reorder_base;
+            m_local_search_lim.base   = 500;
+
+            // Random decision burst schedule.
+            m_randec_phases           = 0;
+            m_randec_next_conflict    = m_config.m_randec_initial;
+
+            m_search_initialized      = true;
+        }
+
         TRACE(sat, display(tout););
     }
 
@@ -2710,6 +2777,12 @@ namespace sat {
         m_scc();
         CASSERT("sat_simplify_bug", check_invariant());
 
+        // Lightweight binary deduplication right after SCC.
+        // SCC's elim_eqs remaps and re-creates binary clauses, which can
+        // introduce duplicates.  Cleaning them before the simplifier avoids
+        // registering duplicates in the subsumption use-lists.
+        dedup_bin_clauses();
+
         if (m_ext) {
             m_ext->pre_simplify();
         }
@@ -2753,6 +2826,7 @@ namespace sat {
         // Probing with AIMD delay.
         if (!m_probing_delay.should_delay()) {
             uint64_t old_units = m_stats.m_units;
+            uint64_t old_bins  = m_stats.m_mk_bin_clause;
             m_probing();
             CASSERT("sat_missed_prop", check_missed_propagation());
             CASSERT("sat_simplify_bug", check_invariant());
@@ -2760,12 +2834,22 @@ namespace sat {
                 m_probing_delay.reduce();
             else
                 m_probing_delay.bump();
+
+            // CaDiCaL-style: run SCC after probing if new units or binary
+            // clauses were produced. New units shrink the implication graph,
+            // and new binaries can form equivalence cycles that SCC detects.
+            if (!inconsistent() &&
+                (m_stats.m_units > old_units || m_stats.m_mk_bin_clause > old_bins)) {
+                m_scc();
+                CASSERT("sat_simplify_bug", check_invariant());
+            }
         }
 
         // Vivification (asymmetric branching) with AIMD delay.
         if (!m_asymm_delay.should_delay()) {
             unsigned old_lits = m_asymm_branch.m_elim_literals;
             unsigned old_learned_lits = m_asymm_branch.m_elim_learned_literals;
+            uint64_t old_bins = m_stats.m_mk_bin_clause;
             m_asymm_branch(false);
             bool asymm_progress =
                 m_asymm_branch.m_elim_literals > old_lits ||
@@ -2774,6 +2858,14 @@ namespace sat {
                 m_asymm_delay.reduce();
             else
                 m_asymm_delay.bump();
+
+            // CaDiCaL-style: run SCC after vivification if clauses were
+            // shrunk to binary. Vivification can reduce ternary clauses
+            // to binary, creating new implication edges that form cycles.
+            if (!inconsistent() && m_stats.m_mk_bin_clause > old_bins) {
+                m_scc();
+                CASSERT("sat_simplify_bug", check_invariant());
+            }
         }
 
         if (m_config.m_lookahead_simplify && !m_ext) {
@@ -2835,6 +2927,52 @@ namespace sat {
     void solver::sort_watch_lits() {
         // With separated binary watches, m_watches contains only clause/ext watches.
         // No sorting needed since binary watches are already separate.
+    }
+
+    unsigned solver::dedup_bin_clauses() {
+        // Lightweight binary clause deduplication (CaDiCaL deduplicate.cpp).
+        // For each literal, sort its binary watch list by the watched literal
+        // (non-learned before learned for equal literals), then remove
+        // consecutive duplicates.  When a pair exists as both learned and
+        // non-learned, the sort order ensures the non-learned copy comes
+        // first and the learned duplicate is the one removed.
+        //
+        // Each removed watch entry accounts for one side of the binary clause;
+        // the matching entry in the other literal's watch list will be removed
+        // when we process that list.  So total removed watches / 2 = clauses.
+        unsigned removed = 0;
+        for (watch_list& wlist : m_bin_watches) {
+            if (wlist.size() < 2)
+                continue;
+            // Sort: primary key = watched literal index (ascending),
+            //        secondary key = non-learned before learned.
+            std::sort(wlist.begin(), wlist.end(),
+                [](watched const& a, watched const& b) {
+                    SASSERT(a.is_binary_clause() && b.is_binary_clause());
+                    unsigned ai = a.get_literal().index();
+                    unsigned bi = b.get_literal().index();
+                    if (ai != bi) return ai < bi;
+                    // non-learned (0) < learned (1)
+                    return !a.is_learned() && b.is_learned();
+                });
+            // Remove consecutive duplicates (same literal).
+            auto out = wlist.begin();
+            literal prev = null_literal;
+            for (auto it = wlist.begin(), end = wlist.end(); it != end; ++it) {
+                if (it->get_literal() == prev) {
+                    ++removed;
+                }
+                else {
+                    prev = it->get_literal();
+                    *out++ = *it;
+                }
+            }
+            wlist.set_end(out);
+        }
+        unsigned clauses_removed = removed / 2;
+        IF_VERBOSE(10, if (clauses_removed > 0)
+            verbose_stream() << " (sat-dedup-bin :removed " << clauses_removed << ")\n";);
+        return clauses_removed;
     }
 
     void solver::set_model(model const& mdl, bool is_current) {
@@ -3225,8 +3363,9 @@ namespace sat {
             }
         }
 
-        // Continue from where tier1 left off to find tier2 boundary at 90%.
-        for (; g < 64; g++) {
+        // Continue past tier1 to find tier2 boundary at 90%.
+        // Increment g to avoid double-counting the glue bucket where tier1 was found.
+        for (++g; g < 64; g++) {
             accumulated += m_glue_histogram[g];
             if (accumulated >= tier2_threshold) {
                 new_tier2 = g;
@@ -3388,14 +3527,25 @@ namespace sat {
                 break;
             case justification::CLAUSE: {
                 clause & c = get_clause(js);
-                // Promote clause tier when used as reason in conflict analysis.
-                // TIER2 clauses that participate in conflicts are promoted to TIER1,
-                // TIER1 clauses are promoted to CORE.
-                if (c.is_learned() && !c.is_core())
-                    c.promote_tier();
-                // Track glue usage for dynamic tier boundary recomputation.
-                if (c.is_learned())
-                    m_glue_histogram[std::min(c.glue(), 63u)]++;
+                // CaDiCaL-style: recompute glue for reason clauses during
+                // conflict analysis (not during propagation) to keep the
+                // propagation loop tight.  All literals in a reason clause
+                // are assigned, so num_diff_levels_below is safe here.
+                if (c.is_learned()) {
+                    unsigned new_glue;
+                    if (c.glue() > 2 &&
+                        num_diff_levels_below(c.size(), c.begin(), c.glue() - 1, new_glue)) {
+                        c.set_glue(new_glue);
+                    }
+                    // Tier promotion based on (possibly updated) glue.
+                    unsigned g = c.glue();
+                    if (g <= m_tier1_glue_limit && !c.is_core())
+                        c.set_tier(clause::CORE);
+                    else if (g <= m_tier2_glue_limit && c.is_tier2())
+                        c.set_tier(clause::TIER1);
+                    // Track glue usage for dynamic tier boundary recomputation.
+                    m_glue_histogram[std::min(g, 63u)]++;
+                }
                 unsigned i = 0;
                 if (consequent != null_literal) {
                     SASSERT(c[0] == consequent || c[1] == consequent);
@@ -3995,6 +4145,9 @@ namespace sat {
             }
         }
 
+        // CaDiCaL: clamp glue to size-1 after OTFS shrink.
+        if (c.is_learned() && c.glue() >= c.size())
+            c.set_glue(c.size() - 1);
         c.mark_used();
         m_stats.m_otfs_strengthened++;
     }
@@ -4836,6 +4989,18 @@ namespace sat {
         updt_lemma_lvl_set();
 
         unsigned sz   = m_lemma.size();
+
+        // CaDiCaL-style: sort the learned clause by ascending trail position
+        // before minimization.  Processing literals in trail order ensures that
+        // antecedents of earlier-assigned literals are already marked when we
+        // reach later ones, reducing the recursion depth of implied_by_marked.
+        if (sz > 2) {
+            std::sort(m_lemma.data() + 1, m_lemma.data() + sz,
+                [this](literal a, literal b) {
+                    return m_trail_pos[a.var()] < m_trail_pos[b.var()];
+                });
+        }
+
         unsigned i    = 1; // the first literal is the FUIP
         unsigned j    = 1;
         for (; i < sz; ++i) {
@@ -5375,17 +5540,20 @@ namespace sat {
         gc_vars(max_var);
         TRACE(sat, display(tout););
 
+        // Scope change invalidates evolved search limits; re-initialize on next check().
+        m_search_initialized = false;
+
         m_qhead = 0;
         m_qhead_binary = 0;
         unsigned j = 0;
-        for (bool_var v : m_free_vars) 
+        for (bool_var v : m_free_vars)
             if (v < max_var)
                 m_free_vars[j++] = v;
         m_free_vars.shrink(j);
-        m_free_vars.append(m_free_var_freeze[old_sz]); 
+        m_free_vars.append(m_free_var_freeze[old_sz]);
         m_free_var_freeze.shrink(old_sz);
         scoped_suspend_rlimit _sp(m_rlimit);
-        propagate(false);     
+        propagate(false);
     }
 
     void solver::pop_to_base_level() {

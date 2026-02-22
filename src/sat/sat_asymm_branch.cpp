@@ -731,7 +731,6 @@ namespace sat {
         CASSERT("asymm_branch", s.check_invariant());
         TRACE(asymm_branch_detail, s.display(tout););
         report rpt(*this);
-        bool_vector saved_phase(s.m_phase);
         flet<bool> _is_probing(s.m_is_probing, true);
 
         bool change = true;
@@ -756,7 +755,6 @@ namespace sat {
             m_touch_index = s.m_touch_index;
         }
 
-        s.m_phase = saved_phase;
         m_asymm_branch_limit *= 2;
         if (m_asymm_branch_limit > static_cast<int64_t>(UINT_MAX))
             m_asymm_branch_limit = UINT_MAX;

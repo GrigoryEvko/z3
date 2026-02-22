@@ -73,7 +73,7 @@ namespace sat {
 
         void ensure_big(solver& s, bool learned) { if (m_left.empty()) init(s, learned); }
 
-        unsigned reduce_tr(solver& s);
+        unsigned reduce_tr(solver& s, int64_t* budget = nullptr);
 
         // does it include learned binaries?
         bool learned() const { return m_learned; }

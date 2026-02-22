@@ -29,7 +29,11 @@ namespace sat {
     class probing {
         solver &        s;
         unsigned        m_stopped_at;  // where did it stop
-        literal_set     m_assigned;    // literals assigned in the first branch
+        // Stamp array replaces literal_set hash table for O(1) insert/contains/reset.
+        // Uses generation counter: stamp[lit.index()] == generation means "assigned".
+        // Reset is O(1) by incrementing generation instead of clearing the array.
+        svector<unsigned>  m_assigned_stamp;
+        unsigned           m_assigned_gen;
         literal_vector  m_to_assert;
         // counters
         int             m_counter;       // track cost

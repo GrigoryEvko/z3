@@ -169,18 +169,29 @@ namespace sat {
 
 
     bool big::in_del(literal u, literal v) const {
-        if (u.index() > v.index()) 
+        if (u.index() > v.index())
             std::swap(u, v);
-        return m_del_bin[u.index()].contains(v);
+        auto const& vec = m_del_bin[u.index()];
+        auto lt = [](literal a, literal b) { return a.index() < b.index(); };
+        return std::binary_search(vec.begin(), vec.end(), v, lt);
     }
 
     void big::add_del(literal u, literal v) {
-        if (u.index() > v.index()) 
-            std::swap(u, v);		
-        m_del_bin[u.index()].push_back(v);
+        if (u.index() > v.index())
+            std::swap(u, v);
+        auto& vec = m_del_bin[u.index()];
+        auto lt = [](literal a, literal b) { return a.index() < b.index(); };
+        auto it = std::lower_bound(vec.begin(), vec.end(), v, lt);
+        if (it != vec.end() && it->index() == v.index())
+            return; // already present
+        // Insert v at sorted position: append then shift into place
+        unsigned pos = static_cast<unsigned>(it - vec.begin());
+        vec.push_back(v);
+        for (unsigned i = vec.size() - 1; i > pos; --i)
+            std::swap(vec[i - 1], vec[i]);
     }
 
-    unsigned big::reduce_tr(solver& s) {
+    unsigned big::reduce_tr(solver& s, int64_t* budget) {
         unsigned idx = 0;
         unsigned elim = 0;
         m_del_bin.reset();
@@ -188,11 +199,15 @@ namespace sat {
         for (watch_list & wlist : s.m_bin_watches) {
             if (s.inconsistent())
                 break;
+            if (budget && *budget <= 0)
+                break;
             literal u = to_literal(idx++);
             unsigned j = 0, sz = wlist.size();
             for (unsigned i = 0; i < sz; ++i) {
                 watched& w = wlist[i];
                 if (learned() ? w.is_binary_learned_clause() : w.is_binary_clause()) {
+                    if (budget)
+                        --(*budget);
                     literal v = w.get_literal();
                     if (u != get_parent(v) && ~u != get_parent(v) && safe_reach(u, v)) {
                         ++elim;
@@ -213,7 +228,7 @@ namespace sat {
                 wlist[j++] = wlist[i];
             }
             wlist.shrink(j);
-        }        
+        }
         s.propagate(false);
         return elim;
     }

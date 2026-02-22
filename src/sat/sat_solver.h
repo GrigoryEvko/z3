@@ -646,6 +646,7 @@ namespace sat {
     protected:
 
         unsigned m_conflicts_since_init { 0 };
+        unsigned m_last_decay_clause_id { 0 }; // watermark for incremental clause decay
         unsigned m_restarts { 0 };
         unsigned m_restart_next_out = 0;
         unsigned m_conflicts_since_restart = 0;
@@ -677,6 +678,7 @@ namespace sat {
         double   m_simplify_mult = 1.5;
         bool     m_simplify_enabled = true;
         bool     m_restart_enabled = true;
+        bool     m_search_initialized = false; // CaDiCaL-style: slowly-evolving limits initialized once
 
         // Propagation-proportional effort budgets for inprocessing (CaDiCaL SET_EFFORT_LIMIT).
         // Each technique's budget scales with propagations done since last call.
@@ -798,6 +800,7 @@ namespace sat {
         void protect_reasons();
         void unprotect_reasons();
         void flush_all_watches();
+        void shrink_watches();
         void collect_garbage_clauses(clause_vector& clauses);
         void collect_garbage();
 
@@ -809,9 +812,8 @@ namespace sat {
         unsigned       m_next_tier_recompute = 1000;
         void           recompute_tier_boundaries();
 
-        // gc for lemmas in the reinit-stack
+        // gc for lemmas in the reinit-stack (currently a no-op)
         void gc_reinit_stack(unsigned num_scopes);
-        bool is_asserting(unsigned new_lvl, clause_wrapper const& cw) const;
 
         clause& get_clause(watch_list::iterator it) const {
             SASSERT(it->get_kind() == watched::CLAUSE);
@@ -983,6 +985,7 @@ namespace sat {
         void simplify(bool learned = true);
         void asymmetric_branching();
         unsigned scc_bin();
+        unsigned dedup_bin_clauses();
 
         // -----------------------
         //
