@@ -214,6 +214,10 @@ namespace sat {
         bool               m_eager_subsume;
         unsigned           m_eager_subsume_limit;
 
+        // Incremental clause decay (CaDiCaL-style): age learned clauses from
+        // previous check() calls by incrementing their glue.
+        bool               m_incremental_decay;
+
         // simplifier configurations used outside of sat_simplifier
         bool               m_elim_vars;
 

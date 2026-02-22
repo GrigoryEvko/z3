@@ -269,6 +269,7 @@ namespace sat {
 
         m_eager_subsume       = p.eager_subsume();
         m_eager_subsume_limit = p.eager_subsume_limit();
+        m_incremental_decay   = p.incremental_decay();
 
         sat_simplifier_params ssp(_p);
         m_elim_vars = ssp.elim_vars();
