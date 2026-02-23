@@ -3495,6 +3495,7 @@ namespace sat {
         m_lemma.reset();
 
         unsigned idx = skip_literals_above_conflict_level();
+        m_max_marked_trail = idx;
 
         // save space for first uip
         m_lemma.push_back(null_literal);
@@ -3596,6 +3597,11 @@ namespace sat {
                 break;
             }
             
+            // Theory-propagated antecedents may appear at trail positions
+            // above idx (out-of-order trail). Bump idx to cover them.
+            if (m_max_marked_trail > idx)
+                idx = m_max_marked_trail;
+
             bool_var c_var;
             while (true) {
                 consequent = m_trail[idx];
@@ -4018,8 +4024,13 @@ namespace sat {
             if (tpos < li.min_trail)
                 li.min_trail = tpos;
 
-            if (var_lvl == m_conflict_lvl)
+            if (var_lvl == m_conflict_lvl) {
                 num_marks++;
+                // Track max trail position of conflict-level marks to handle
+                // theory-propagated antecedents at out-of-order trail positions.
+                if (tpos > m_max_marked_trail)
+                    m_max_marked_trail = tpos;
+            }
             else
                 m_lemma.push_back(~antecedent);
         }
