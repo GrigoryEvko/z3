@@ -21,6 +21,7 @@ Revision History:
 
 #include "util/debug.h"
 #include <ostream>
+#include <type_traits>
 #include "util/util.h"
 #include <climits>
 #include "util/memory_manager.h"
@@ -53,21 +54,29 @@ typedef enum { HT_FREE,
 
 template<typename T>
 class default_hash_entry {
-    unsigned         m_hash{ 0 }; //!< cached hash code
-    hash_entry_state m_state = HT_FREE;
-    T                m_data;
+    // State packed in top 2 bits of m_hash to eliminate the 4-byte m_state enum.
+    // Encoding: 00=FREE, 01=DELETED, 10=USED (saves 4 bytes per entry).
+    static constexpr unsigned STATE_MASK = 0xC0000000U;
+    static constexpr unsigned HASH_MASK  = 0x3FFFFFFFU;
+    static constexpr unsigned FREE_BITS  = 0x00000000U;
+    static constexpr unsigned DEL_BITS   = 0x40000000U;
+    static constexpr unsigned USED_BITS  = 0x80000000U;
+
+    unsigned m_hash{ 0 }; //!< top 2 bits = state, lower 30 bits = cached hash
+    T        m_data;
 public:
     typedef T         data;
-    unsigned get_hash() const  { return m_hash; }
-    bool is_free() const { return m_state == HT_FREE; }
-    bool is_deleted() const { return m_state == HT_DELETED; }
-    bool is_used() const { return m_state == HT_USED; }
+    static constexpr unsigned hash_mask() { return HASH_MASK; }
+    unsigned get_hash() const  { return m_hash & HASH_MASK; }
+    bool is_free() const { return (m_hash & STATE_MASK) == FREE_BITS; }
+    bool is_deleted() const { return (m_hash & STATE_MASK) == DEL_BITS; }
+    bool is_used() const { return (m_hash & STATE_MASK) == USED_BITS; }
     T & get_data()             { return m_data; }
     const T & get_data() const { return m_data; }
-    void set_data(T && d) { m_data = std::move(d); m_state = HT_USED; }
-    void set_hash(unsigned h)  { m_hash = h; }
-    void mark_as_deleted() { m_state = HT_DELETED; }
-    void mark_as_free() { m_state = HT_FREE; }
+    void set_data(T && d) { m_data = std::move(d); m_hash = (m_hash & HASH_MASK) | USED_BITS; }
+    void set_hash(unsigned h)  { m_hash = (h & HASH_MASK) | (m_hash & STATE_MASK); }
+    void mark_as_deleted() { m_hash = DEL_BITS; }
+    void mark_as_free() { m_hash = 0; }
 };
 
 /**
@@ -134,9 +143,22 @@ public:
     void mark_as_free() { m_ptr = 0; }
 };
 
+// SFINAE trait: detect Entry::hash_mask() for entry types that pack state in hash bits.
+// Falls back to ~0U (identity mask) for entry types without hash_mask().
+namespace ht_detail {
+    template<typename E, typename = void>
+    struct hash_mask_of { static constexpr unsigned value = ~0U; };
+    template<typename E>
+    struct hash_mask_of<E, std::void_t<decltype(E::hash_mask())>> {
+        static constexpr unsigned value = E::hash_mask();
+    };
+}
+
 template<typename Entry, typename HashProc, typename EqProc>
 class core_hashtable : private HashProc, private EqProc {
 protected:
+    static constexpr unsigned c_hash_mask = ht_detail::hash_mask_of<Entry>::value;
+
     Entry *  m_table;
     unsigned m_capacity = 0;
     unsigned m_size = 0;
@@ -146,7 +168,7 @@ protected:
 #endif
 
     Entry* alloc_table(unsigned size) {
-        Entry* entries = alloc_vect<Entry>(size); 
+        Entry* entries = alloc_vect<Entry>(size);
         return entries;
     }
 
@@ -159,7 +181,7 @@ public:
     typedef typename Entry::data data;
     typedef Entry                entry;
 protected:
-    unsigned get_hash(data const & e) const { return HashProc::operator()(e); }
+    unsigned get_hash(data const & e) const { return HashProc::operator()(e) & c_hash_mask; }
     bool equals(data const & e1, data const & e2) const { return EqProc::operator()(e1, e2); }
     
     static void copy_table(entry * source, unsigned source_capacity, entry * target, unsigned target_capacity) {
