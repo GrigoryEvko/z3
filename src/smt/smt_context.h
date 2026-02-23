@@ -427,10 +427,29 @@ namespace smt {
             return m_watches[l.index()];
         }
 
-        lbool get_assignment(expr * n) const;
+        lbool get_assignment(expr * n) const {
+            if (m.is_false(n))
+                return l_false;
+            expr* arg = nullptr;
+            if (m.is_not(n, arg))
+                return ~get_assignment_core(arg);
+            return get_assignment_core(n);
+        }
 
         // Similar to get_assignment, but returns l_undef if n is not internalized.
-        lbool find_assignment(expr * n) const;
+        lbool find_assignment(expr * n) const {
+            if (m.is_false(n))
+                return l_false;
+            expr* arg = nullptr;
+            if (m.is_not(n, arg)) {
+                if (b_internalized(arg))
+                    return ~get_assignment_core(arg);
+                return l_undef;
+            }
+            if (b_internalized(n))
+                return get_assignment(n);
+            return l_undef;
+        }
 
         lbool get_assignment(enode * n) const;
 
@@ -1374,7 +1393,10 @@ namespace smt {
         void add_rel_watch(literal l, expr * n) { m_relevancy_propagator->add_watch(bool_var2expr(l.var()), !l.sign(), n); }
 
     protected:
-        lbool get_assignment_core(expr * n) const;
+        lbool get_assignment_core(expr * n) const {
+            SASSERT(b_internalized(n));
+            return get_assignment(get_bool_var_of_id(n->get_id()));
+        }
 
         void propagate_relevancy(unsigned qhead);
 

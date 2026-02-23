@@ -1494,49 +1494,6 @@ namespace smt {
     }
 
     /**
-       \brief Return the truth assignment for an expression
-       that is attached to a boolean variable.
-
-       \pre The expression must be attached to a boolean variable.
-    */
-    inline lbool context::get_assignment_core(expr * n) const {
-        CTRACE(get_assignment_bug, !b_internalized(n), tout << "n:\n" << mk_pp(n, m) << "\n"; display(tout););
-        SASSERT(b_internalized(n));
-        unsigned id  = n->get_id();
-        bool_var var = get_bool_var_of_id(id);
-        SASSERT(var != null_bool_var);
-        return get_assignment(var);
-    }
-
-    /**
-       \brief Return the truth assignment for an expression.
-       If the expression is a not-application, then its child
-       is inspected instead.
-    */
-    lbool context::get_assignment(expr * n) const {
-        if (m.is_false(n))
-            return l_false;
-        expr* arg = nullptr;
-        if (m.is_not(n, arg))
-            return ~get_assignment_core(arg);
-        return get_assignment_core(n);
-    }
-
-    lbool context::find_assignment(expr * n) const {
-        if (m.is_false(n))
-            return l_false;
-        expr* arg = nullptr;
-        if (m.is_not(n, arg)) {
-            if (b_internalized(arg))
-                return ~get_assignment_core(arg);
-            return l_undef;
-        }
-        if (b_internalized(n))
-            return get_assignment(n);
-        return l_undef;
-    }
-
-    /**
        \brief Return the assignment of a 'boolean' enode.
        If the enode is not boolean, then return l_undef.
     */
