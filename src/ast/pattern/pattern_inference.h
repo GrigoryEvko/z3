@@ -73,13 +73,16 @@ class pattern_inference_cfg :  public default_rewriter_cfg {
     struct info {
         uint_set m_free_vars;
         unsigned m_size;
+        unsigned m_root_freq; // number of candidates sharing the same root func_decl (SInE rarity)
         info(uint_set const & vars, unsigned size):
             m_free_vars(vars),
-            m_size(size) {
+            m_size(size),
+            m_root_freq(0) {
         }
         info():
             m_free_vars(),
-            m_size(0) {
+            m_size(0),
+            m_root_freq(0) {
         }
     };
 

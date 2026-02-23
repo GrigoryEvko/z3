@@ -403,7 +403,14 @@ bool pattern_inference_cfg::pattern_weight_lt::operator()(expr * n1, expr * n2) 
     info const & i2 = e2->get_data().m_value;
     unsigned num_free_vars1 = i1.m_free_vars.num_elems();
     unsigned num_free_vars2 = i2.m_free_vars.num_elems();
-    return num_free_vars1 > num_free_vars2 || (num_free_vars1 == num_free_vars2 && i1.m_size < i2.m_size);
+    // Primary: prefer patterns covering more free variables
+    if (num_free_vars1 != num_free_vars2)
+        return num_free_vars1 > num_free_vars2;
+    // Secondary: prefer rarer root function symbols (SInE-style selectivity)
+    if (i1.m_root_freq != i2.m_root_freq)
+        return i1.m_root_freq < i2.m_root_freq;
+    // Tertiary: prefer smaller patterns
+    return i1.m_size < i2.m_size;
 }
 
 
@@ -569,6 +576,25 @@ void pattern_inference_cfg::mk_patterns(unsigned num_bindings,
     m_no_patterns     = no_patterns;
 
     m_collect(n, num_bindings);
+
+    // Compute root func_decl frequency for SInE-style rarity scoring.
+    // Patterns rooted at rarer symbols are more selective triggers.
+    if (!m_candidates.empty()) {
+        obj_map<func_decl, unsigned> root_freq;
+        for (unsigned i = 0; i < m_candidates.size(); ++i) {
+            func_decl * d = m_candidates.get(i)->get_decl();
+            unsigned cnt = 0;
+            root_freq.find(d, cnt);
+            root_freq.insert(d, cnt + 1);
+        }
+        for (unsigned i = 0; i < m_candidates.size(); ++i) {
+            expr2info::obj_map_entry * e = m_candidates_info.find_core(m_candidates.get(i));
+            SASSERT(e);
+            unsigned freq = 0;
+            root_freq.find(m_candidates.get(i)->get_decl(), freq);
+            e->get_data().m_value.m_root_freq = freq;
+        }
+    }
 
     TRACE(pattern_inference,
           tout << mk_pp(n, m);
