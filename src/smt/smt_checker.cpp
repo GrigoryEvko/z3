@@ -109,15 +109,19 @@ namespace smt {
     }
 
     bool checker::check(expr * n, bool is_true) {
-        bool r;
-        if (n->get_ref_count() > 1 && m_is_true_cache[is_true].find(n, r))
-            return r;
-        r = check_core(n, is_true);
         if (n->get_ref_count() > 1) {
-            m_is_true_cache[is_true].insert(n, r);
-            m_is_true_inserted[is_true].push_back(n);
+            unsigned id = n->get_id();
+            unsigned pol = static_cast<unsigned>(is_true);
+            if (id < m_bool_gen[pol].size() && m_bool_gen[pol][id] == m_cache_gen)
+                return m_bool_val[pol][id] != 0;
+            bool r = check_core(n, is_true);
+            m_bool_gen[pol].reserve(id + 1, 0);
+            m_bool_val[pol].reserve(id + 1, 0);
+            m_bool_gen[pol][id] = m_cache_gen;
+            m_bool_val[pol][id] = r ? 1 : 0;
+            return r;
         }
-        return r;
+        return check_core(n, is_true);
     }
 
     enode * checker::get_enode_eq_to_core(app * n) {
@@ -147,44 +151,18 @@ namespace smt {
             return e;
         if (!is_app(n) || to_app(n)->get_num_args() == 0)
             return nullptr;
-        enode * r = nullptr;
-        if (n->get_ref_count() > 1 && m_to_enode_cache.find(n, r))
-            return r;
-        r = get_enode_eq_to_core(to_app(n));
         if (n->get_ref_count() > 1) {
-            m_to_enode_cache.insert(n, r);
-            m_to_enode_inserted.push_back(n);
+            unsigned id = n->get_id();
+            if (id < m_enode_gen.size() && m_enode_gen[id] == m_cache_gen)
+                return m_enode_val[id];
+            enode * r = get_enode_eq_to_core(to_app(n));
+            m_enode_gen.reserve(id + 1, 0);
+            m_enode_val.reserve(id + 1, nullptr);
+            m_enode_gen[id] = m_cache_gen;
+            m_enode_val[id] = r;
+            return r;
         }
-        return r;
-    }
-
-    // O(entries) cache reset: only erase entries we actually inserted,
-    // instead of scanning the entire hash table capacity.
-    void checker::cache_reset() {
-        unsigned const FAST_THRESHOLD = 64;
-        // For small insert sets, erase individually (O(entries)).
-        // For large sets, full reset is more cache-friendly (O(capacity)).
-        if (m_is_true_inserted[0].size() < FAST_THRESHOLD) {
-            for (expr* e : m_is_true_inserted[0])
-                m_is_true_cache[0].erase(e);
-        } else {
-            m_is_true_cache[0].reset();
-        }
-        if (m_is_true_inserted[1].size() < FAST_THRESHOLD) {
-            for (expr* e : m_is_true_inserted[1])
-                m_is_true_cache[1].erase(e);
-        } else {
-            m_is_true_cache[1].reset();
-        }
-        if (m_to_enode_inserted.size() < FAST_THRESHOLD) {
-            for (expr* e : m_to_enode_inserted)
-                m_to_enode_cache.erase(e);
-        } else {
-            m_to_enode_cache.reset();
-        }
-        m_is_true_inserted[0].reset();
-        m_is_true_inserted[1].reset();
-        m_to_enode_inserted.reset();
+        return get_enode_eq_to_core(to_app(n));
     }
 
     bool checker::is_sat(expr * n, unsigned num_bindings, enode * const * bindings) {
@@ -209,11 +187,14 @@ namespace smt {
         if (!is_app(n))
             return false;
 
-        bool r;
-        if (n->get_ref_count() > 1 && m_is_true_cache[0].find(n, r))
-            return r;
+        if (n->get_ref_count() > 1) {
+            unsigned id = n->get_id();
+            if (id < m_bool_gen[0].size() && m_bool_gen[0][id] == m_cache_gen)
+                return m_bool_val[0][id] != 0;
+        }
 
         app * a = to_app(n);
+        bool r;
         if (a->get_family_id() == m_manager.get_basic_family_id()) {
             switch (a->get_decl_kind()) {
             case OP_TRUE:
@@ -274,8 +255,11 @@ namespace smt {
         }
 
         if (n->get_ref_count() > 1) {
-            m_is_true_cache[0].insert(n, r);
-            m_is_true_inserted[0].push_back(n);
+            unsigned id = n->get_id();
+            m_bool_gen[0].reserve(id + 1, 0);
+            m_bool_val[0].reserve(id + 1, 0);
+            m_bool_gen[0][id] = m_cache_gen;
+            m_bool_val[0][id] = r ? 1 : 0;
         }
         return r;
     }
@@ -291,6 +275,7 @@ namespace smt {
     checker::checker(context & c):
         m_context(c),
         m_manager(c.get_manager()),
+        m_cache_gen(1),
         m_num_bindings(0),
         m_bindings(nullptr) {
     }

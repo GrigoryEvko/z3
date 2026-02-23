@@ -19,7 +19,6 @@ Revision History:
 #pragma once
 
 #include "ast/ast.h"
-#include "util/obj_hashtable.h"
 
 namespace smt {
 
@@ -27,16 +26,17 @@ namespace smt {
 
     class checker {
 
-        typedef obj_map<expr, bool>    expr2bool;
-        typedef obj_map<expr, enode *> expr2enode;
-
         context &              m_context;
         ast_manager &          m_manager;
-        expr2bool              m_is_true_cache[2];
-        expr2enode             m_to_enode_cache;
-        // Track inserted entries for O(entries) cache reset instead of O(capacity).
-        ptr_vector<expr>       m_is_true_inserted[2];
-        ptr_vector<expr>       m_to_enode_inserted;
+
+        // Generation-stamped flat caches indexed by expr->get_id().
+        // Valid iff m_*_gen[id] == m_cache_gen. Reset is O(1): just bump m_cache_gen.
+        unsigned               m_cache_gen;
+        svector<unsigned>      m_bool_gen[2];   // generation stamps per polarity
+        svector<char>          m_bool_val[2];   // cached bool results per polarity
+        svector<unsigned>      m_enode_gen;      // generation stamps for enode cache
+        svector<enode*>        m_enode_val;      // cached enode* results
+
         unsigned               m_num_bindings;
         enode * const *        m_bindings;
 
@@ -49,7 +49,7 @@ namespace smt {
 
         bool all_terms_exist_core(expr * n);
 
-        void cache_reset();
+        void cache_reset() { m_cache_gen++; }
 
     public:
         checker(context & c);
