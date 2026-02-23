@@ -23,6 +23,7 @@ Revision History:
 #include "ast/rewriter/var_subst.h"
 #include "smt/smt_context.h"
 #include "smt/qi_queue.h"
+#include <cmath>
 #include <iostream>
 
 namespace smt {
@@ -117,9 +118,41 @@ namespace smt {
         return stat;
     }
 
+    // Compute the minimum ground term count across sub-patterns of a multi-pattern.
+    unsigned qi_queue::pattern_ground_terms(app * pat) {
+        unsigned min_gt = UINT_MAX;
+        unsigned nargs = pat->get_num_args();
+        for (unsigned i = 0; i < nargs; ++i) {
+            expr * arg = pat->get_arg(i);
+            if (is_app(arg)) {
+                unsigned gt = m_context.get_num_enodes_of(to_app(arg)->get_decl());
+                if (gt < min_gt) min_gt = gt;
+            }
+        }
+        return min_gt == UINT_MAX ? 0 : min_gt;
+    }
+
     float qi_queue::get_cost(quantifier * q, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
         q::quantifier_stat * stat = set_values(q, pat, generation, min_top_generation, max_top_generation, 0);
         float r = m_evaluator(m_cost_function, m_vals.size(), m_vals.data());
+        // Active trigger selectivity: penalize triggers that are less selective
+        // than the best trigger for the same quantifier. Only applies when the
+        // quantifier has multiple patterns; single-trigger quantifiers get no penalty.
+        double sel_w = m_params.m_qi_trigger_selectivity;
+        if (sel_w > 0.0 && pat != nullptr && q->get_num_patterns() > 1) {
+            unsigned this_gt = pattern_ground_terms(pat);
+            unsigned best_gt = UINT_MAX;
+            unsigned npats = q->get_num_patterns();
+            for (unsigned p = 0; p < npats; ++p) {
+                app * mp = to_app(q->get_pattern(p));
+                unsigned gt = pattern_ground_terms(mp);
+                if (gt < best_gt) best_gt = gt;
+            }
+            if (best_gt > 0 && this_gt > best_gt) {
+                double ratio = static_cast<double>(this_gt) / static_cast<double>(best_gt);
+                r += static_cast<float>(sel_w * std::log2(ratio));
+            }
+        }
         stat->update_max_cost(r);
         return r;
     }

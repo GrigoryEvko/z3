@@ -42,6 +42,7 @@ struct qi_params {
     unsigned           m_qi_max_instances = UINT_MAX;
     bool               m_qi_lazy_instantiation = false;
     bool               m_qi_conservative_final_check = false;
+    double             m_qi_trigger_selectivity = 0.0;
     bool               m_qe_lite = false;
 
     bool               m_mbqi = true;

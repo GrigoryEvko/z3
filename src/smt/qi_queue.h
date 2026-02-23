@@ -74,6 +74,7 @@ namespace smt {
 
         void init_parser_vars();
         q::quantifier_stat * set_values(quantifier * q, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation, float cost);
+        unsigned pattern_ground_terms(app * pat);
         float get_cost(quantifier * q, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation);
         unsigned get_new_gen(quantifier * q, unsigned generation, float cost);
         void instantiate(entry & ent, bool skip_sat_check = false);
