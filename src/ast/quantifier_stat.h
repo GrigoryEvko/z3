@@ -19,7 +19,6 @@ Revision History:
 #pragma once
 
 #include "ast/ast.h"
-#include "util/obj_hashtable.h"
 #include "util/approx_nat.h"
 #include "util/region.h"
 
@@ -144,7 +143,9 @@ namespace q {
         };
         ast_manager &           m_manager;
         region &                m_region;
-        obj_map<expr, unsigned> m_already_found; // expression to the max. depth it was reached.
+        unsigned                m_gen;           // generation counter for O(1) reset
+        svector<unsigned>       m_visited_gen;   // generation stamps indexed by expr->get_id()
+        svector<unsigned>       m_visited_depth; // cached depth values
         svector<entry>          m_todo;
         approx_nat              m_case_split_factor;
         void reset();

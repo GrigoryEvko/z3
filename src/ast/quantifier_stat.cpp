@@ -38,11 +38,12 @@ namespace q {
 
     quantifier_stat_gen::quantifier_stat_gen(ast_manager & m, region & r):
         m_manager(m),
-        m_region(r) {
+        m_region(r),
+        m_gen(1) {
     }
 
     void quantifier_stat_gen::reset() {
-        m_already_found.reset();
+        m_gen++;
         m_todo.reset();
         m_case_split_factor = 1;
     }
@@ -57,13 +58,16 @@ namespace q {
             unsigned depth  = e.m_depth;
             bool depth_only = e.m_depth_only;
             m_todo.pop_back();
-            unsigned old_depth;
-            if (m_already_found.find(n, old_depth)) {
-                if (old_depth >= depth)
+            unsigned id = n->get_id();
+            if (id < m_visited_gen.size() && m_visited_gen[id] == m_gen) {
+                if (m_visited_depth[id] >= depth)
                     continue;
-                depth_only  = true;
+                depth_only = true;
             }
-            m_already_found.insert(n, depth);
+            m_visited_gen.reserve(id + 1, 0);
+            m_visited_depth.reserve(id + 1, 0);
+            m_visited_gen[id] = m_gen;
+            m_visited_depth[id] = depth;
             if (depth >= r->m_depth) 
                 r->m_depth = depth;
             if (!depth_only) {
