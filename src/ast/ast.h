@@ -981,6 +981,15 @@ inline app const *        to_app(ast const * n)        { SASSERT(is_app(n)); ret
 inline var const *        to_var(ast const * n)        { SASSERT(is_var(n)); return static_cast<var const *>(n); }
 inline quantifier const * to_quantifier(ast const * n) { SASSERT(is_quantifier(n)); return static_cast<quantifier const *>(n); }
 
+inline sort* expr::get_sort() const {
+    switch (get_kind()) {
+    case AST_APP:        return to_app(this)->_get_sort();
+    case AST_VAR:        return to_var(this)->_get_sort();
+    case AST_QUANTIFIER: return to_quantifier(this)->_get_sort();
+    default:             UNREACHABLE(); return nullptr;
+    }
+}
+
 // -----------------------------------
 //
 // AST hash-consing
@@ -1732,7 +1741,7 @@ public:
     void check_sorts_core(ast const * n) const;
     bool check_sorts(ast const * n) const;
 
-    bool is_bool(expr const * n) const;
+    bool is_bool(expr const * n) const { return n->get_sort() == m_bool_sort; }
     bool is_bool(sort const * s) const { return s == m_bool_sort; }
     decl_kind get_eq_op(expr const * n) const { return OP_EQ; }
 

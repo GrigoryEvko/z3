@@ -373,20 +373,6 @@ quantifier::quantifier(unsigned num_decls, sort * const * decl_sorts, symbol con
 //
 // -----------------------------------
 
-sort* expr::get_sort() const {
-    switch (get_kind()) {
-    case AST_APP:
-        return to_app(this)->get_decl()->get_range();
-    case AST_VAR:
-        return to_var(this)->_get_sort();
-    case AST_QUANTIFIER:
-        return to_quantifier(this)->_get_sort();
-    default:
-        UNREACHABLE();
-        return nullptr;
-    }
-}
-
 // -----------------------------------
 //
 // AST hash-consing
@@ -1644,10 +1630,6 @@ void ast_manager::register_plugin(family_id id, decl_plugin * plugin) {
     SASSERT(m_plugins.get(id, 0) == 0);
     m_plugins.setx(id, plugin, 0);
     plugin->set_manager(this, id);
-}
-
-bool ast_manager::is_bool(expr const * n) const {
-    return n->get_sort() == m_bool_sort;
 }
 
 #ifdef Z3DEBUG
