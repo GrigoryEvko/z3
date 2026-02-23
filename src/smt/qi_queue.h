@@ -76,7 +76,7 @@ namespace smt {
         q::quantifier_stat * set_values(quantifier * q, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation, float cost);
         float get_cost(quantifier * q, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation);
         unsigned get_new_gen(quantifier * q, unsigned generation, float cost);
-        void instantiate(entry & ent);
+        void instantiate(entry & ent, bool skip_sat_check = false);
         void get_min_max_costs(float & min, float & max) const;
         void display_instance_profile(fingerprint * f, quantifier * q, unsigned num_bindings, enode * const * bindings, unsigned proof_id, unsigned generation);
 

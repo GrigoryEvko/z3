@@ -167,8 +167,9 @@ namespace smt {
             }
             else if (m_params.m_qi_promote_unsat && m_checker.is_unsat(qa->get_expr(), f->get_num_args(), f->get_args())) {
                 // do not delay instances that produce a conflict.
+                // Skip is_sat check — if is_unsat returned true, the instance is definitely not satisfied.
                 TRACE(qi_unsat, tout << "promoting instance that produces a conflict\n" << mk_pp(qa, m) << "\n";);
-                instantiate(curr);
+                instantiate(curr, /*skip_sat_check=*/true);
             }
             else if (m_checker.all_terms_exist(qa->get_expr(), f->get_num_args(), f->get_args())) {
                 // All subterms already in E-graph — instance creates no new
@@ -203,7 +204,7 @@ namespace smt {
         }
     }
 
-    void qi_queue::instantiate(entry & ent) {
+    void qi_queue::instantiate(entry & ent, bool skip_sat_check) {
         // set temporary flag to enable quantifier-specific tracing in within smt_internalizer.
         flet<bool> _coming_from_quant(m_context.m_coming_from_quant, true);
 
@@ -214,12 +215,12 @@ namespace smt {
         enode * const * bindings = f->get_args();
 
         ent.m_instantiated = true;
-                
+
         TRACE(qi_queue_profile, tout << q->get_qid() << ", gen: " << generation << " " << *f << " cost: " << ent.m_cost << "\n";);
 
         q::quantifier_stat * stat = m_qm.get_stat(q);
 
-        if (m_checker.is_sat(q->get_expr(), num_bindings, bindings)) {
+        if (!skip_sat_check && m_checker.is_sat(q->get_expr(), num_bindings, bindings)) {
             TRACE(checker, tout << "instance already satisfied\n";);
             // we log the "dummy" instantiations separately from "instance"
             STRACE(dummy, tout << "### " << static_cast<void*>(f) <<", " << q->get_qid() << "\n";);
