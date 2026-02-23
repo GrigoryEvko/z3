@@ -165,13 +165,9 @@ bool rewriter_tpl<Config>::visit(expr * t, unsigned max_depth) {
     SASSERT(max_depth <= RW_UNBOUNDED_DEPTH);
     bool c = must_cache(t);
     if (c) {
-#if 0
-        static unsigned checked_cache = 0;
-        checked_cache ++;
-        if (checked_cache % 100000 == 0)
-            std::cerr << "[rewriter] num-cache-checks: " << checked_cache << std::endl;
-#endif
         expr * r = get_cached(t);
+        if (!r && !ProofGen)
+            r = m_cfg.get_persistent_cached(t);
         if (r) {
             SASSERT(r->get_sort() == t->get_sort());
             result_stack().push_back(r);

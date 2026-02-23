@@ -313,8 +313,10 @@ protected:
     template<bool ProofGen>
     void cache_result(expr * t, expr * new_t, proof * pr, bool c) {
         if (c) {
-            if (!ProofGen)
+            if (!ProofGen) {
                 rewriter_core::cache_result(t, new_t);
+                m_cfg.persist_cache_result(t, new_t);
+            }
             else
                 rewriter_core::cache_result(t, new_t, pr);
         }
@@ -394,6 +396,8 @@ struct default_rewriter_cfg {
     bool get_macro(func_decl * d, expr * & def, quantifier * & q, proof * & def_pr) { return false; }
     bool reduce_macro() { return false; }
     bool get_subst(expr * s, expr * & t, proof * & t_pr) { return false; }
+    expr * get_persistent_cached(expr *) { return nullptr; }
+    void persist_cache_result(expr *, expr *) {}
     void reset() {}
     void cleanup() {}
 };

@@ -64,6 +64,10 @@ struct th_rewriter_cfg : public default_rewriter_cfg {
       // substitution support
     expr_dependency_ref m_used_dependencies; // set of dependencies of used substitutions
     expr_substitution * m_subst = nullptr;
+    // Persistent rewrite cache: survives reset()/set_substitution() calls.
+    // Only populated/consulted when m_subst is null or empty, ensuring
+    // entries are substitution-independent pure theory rewrites.
+    act_cache *         m_persistent_cache = nullptr;
     unsigned long long  m_max_memory; // in bytes
     bool                m_new_subst = false;
     expr_fast_mark1     m_visited;
@@ -894,6 +898,26 @@ struct th_rewriter_cfg : public default_rewriter_cfg {
         m_pinned(m),
         m_used_dependencies(m) {
         updt_local_params(p);
+        m_persistent_cache = alloc(act_cache, m);
+    }
+
+    ~th_rewriter_cfg() {
+        dealloc(m_persistent_cache);
+    }
+
+    bool subst_is_empty() const {
+        return m_subst == nullptr || m_subst->empty();
+    }
+
+    expr * get_persistent_cached(expr * k) {
+        if (subst_is_empty() && m_persistent_cache)
+            return m_persistent_cache->find(k);
+        return nullptr;
+    }
+
+    void persist_cache_result(expr * k, expr * v) {
+        if (subst_is_empty() && m_persistent_cache)
+            m_persistent_cache->insert(k, v);
     }
 
     void set_substitution(expr_substitution * s) {
