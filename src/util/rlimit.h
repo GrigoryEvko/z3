@@ -70,8 +70,14 @@ public:
     void pop_child();
     void pop_child(reslimit* r);
 
-    bool inc();
-    bool inc(unsigned offset);
+    bool inc() {
+        ++m_count;
+        return not_canceled();
+    }
+    bool inc(unsigned offset) {
+        m_count += offset;
+        return not_canceled();
+    }
     uint64_t count() const;
     void reset_count() { m_count = 0; }
 
