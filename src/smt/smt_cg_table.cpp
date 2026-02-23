@@ -22,47 +22,6 @@ Revision History:
 
 namespace smt {
 
-    // one table per func_decl implementation
-    unsigned cg_table::cg_hash::operator()(enode * n) const {
-        SASSERT(n->get_decl()->is_flat_associative() || n->get_num_args() >= 3);
-        unsigned a, b, c;
-        a = b = 0x9e3779b9;
-        c = 11;
-
-        unsigned i = n->get_num_args();
-        while (i >= 3) {
-            i--;
-            a += n->get_arg(i)->get_root_hash();
-            i--;
-            b += n->get_arg(i)->get_root_hash();
-            i--;
-            c += n->get_arg(i)->get_root_hash();
-            mix(a, b, c);
-        }
-
-        switch (i) {
-        case 2:
-            b += n->get_arg(1)->get_root_hash();
-            Z3_fallthrough;
-        case 1:
-            c += n->get_arg(0)->get_root_hash();
-        }
-        mix(a, b, c);
-        return c;
-    }
-
-    bool cg_table::cg_eq::operator()(enode * n1, enode * n2) const {
-        SASSERT(n1->get_decl() == n2->get_decl());
-        unsigned num = n1->get_num_args();
-        if (num != n2->get_num_args()) {
-            return false;
-        }
-        for (unsigned i = 0; i < num; ++i) 
-            if (n1->get_arg(i)->get_root() != n2->get_arg(i)->get_root())
-                return false;
-        return true;
-    }
-
     cg_table::cg_table(ast_manager & m):
         m_manager(m) {
     }

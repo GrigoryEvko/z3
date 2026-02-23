@@ -106,11 +106,42 @@ namespace smt {
         typedef chashtable<enode*, cg_comm_hash, cg_comm_eq> comm_table;
 
         struct cg_hash {
-            unsigned operator()(enode * n) const;
+            unsigned operator()(enode * n) const {
+                unsigned a, b, c;
+                a = b = 0x9e3779b9;
+                c = 11;
+                unsigned i = n->get_num_args();
+                while (i >= 3) {
+                    i--;
+                    a += n->get_arg(i)->get_root_hash();
+                    i--;
+                    b += n->get_arg(i)->get_root_hash();
+                    i--;
+                    c += n->get_arg(i)->get_root_hash();
+                    mix(a, b, c);
+                }
+                switch (i) {
+                case 2:
+                    b += n->get_arg(1)->get_root_hash();
+                    Z3_fallthrough;
+                case 1:
+                    c += n->get_arg(0)->get_root_hash();
+                }
+                mix(a, b, c);
+                return c;
+            }
         };
 
         struct cg_eq {
-            bool operator()(enode * n1, enode * n2) const;
+            bool operator()(enode * n1, enode * n2) const {
+                unsigned num = n1->get_num_args();
+                if (num != n2->get_num_args())
+                    return false;
+                for (unsigned i = 0; i < num; ++i)
+                    if (n1->get_arg(i)->get_root() != n2->get_arg(i)->get_root())
+                        return false;
+                return true;
+            }
         };
 
         typedef chashtable<enode*, cg_hash, cg_eq> table;
