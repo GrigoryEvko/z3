@@ -73,15 +73,9 @@ region::~region() {
     del_pages(m_free_pages);
 }
 
-void * region::allocate(size_t size) {
-    char * new_curr_ptr = m_curr_ptr + size;
-    if (new_curr_ptr <= m_curr_end_ptr) {
-        char * result = m_curr_ptr;
-        m_curr_ptr = ALIGN(char *, new_curr_ptr);
-        return result;
-    }
-    else if (size < DEFAULT_PAGE_SIZE) {
-        allocate_page(); 
+void * region::allocate_slow(size_t size) {
+    if (size < DEFAULT_PAGE_SIZE) {
+        allocate_page();
         char * result = m_curr_ptr;
         m_curr_ptr += size;
         m_curr_ptr = ALIGN(char *, m_curr_ptr);

@@ -18,6 +18,7 @@ Revision History:
 --*/
 #pragma once
 #include<cstdlib>
+#include<cstdint>
 #include<ostream>
 
 #ifdef Z3DEBUG
@@ -71,10 +72,22 @@ class region {
     mark *   m_mark;
     void allocate_page();
     void recycle_curr_page();
+    void * allocate_slow(size_t size); // out-of-line slow path
 public:
     region();
     ~region();
-    void * allocate(size_t size);
+    void * allocate(size_t size) {
+        // Inline fast path: bump pointer within current page
+        // Alignment: round up to next pointer-aligned boundary
+        char * new_curr_ptr = m_curr_ptr + size;
+        if (__builtin_expect(new_curr_ptr <= m_curr_end_ptr, 1)) {
+            char * result = m_curr_ptr;
+            m_curr_ptr = reinterpret_cast<char*>(
+                (reinterpret_cast<uintptr_t>(new_curr_ptr) + (sizeof(void*) - 1)) & ~(sizeof(void*) - 1));
+            return result;
+        }
+        return allocate_slow(size);
+    }
     void reset();
     void push_scope();
     void pop_scope();
