@@ -170,6 +170,12 @@ namespace smt {
                 TRACE(qi_unsat, tout << "promoting instance that produces a conflict\n" << mk_pp(qa, m) << "\n";);
                 instantiate(curr);
             }
+            else if (m_checker.all_terms_exist(qa->get_expr(), f->get_num_args(), f->get_args())) {
+                // All subterms already in E-graph — instance creates no new
+                // nodes, only propagations. Process immediately.
+                TRACE(qi_queue, tout << "promoting instance: all terms exist\n" << mk_pp(qa, m) << "\n";);
+                instantiate(curr);
+            }
             else {
                 TRACE(qi_queue, tout << "delaying quantifier instantiation... " << f << "\n" << mk_pp(qa, m) << "\ncost: " << curr.m_cost << "\n";);
                 m_delayed_entries.push_back(curr);

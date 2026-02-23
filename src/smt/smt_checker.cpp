@@ -173,13 +173,97 @@ namespace smt {
         return r;
     }
 
+    bool checker::all_terms_exist_core(expr * n) {
+        if (is_var(n))
+            return to_var(n)->get_idx() < m_num_bindings;
+        if (!is_app(n))
+            return false;
+
+        bool r;
+        if (n->get_ref_count() > 1 && m_is_true_cache[0].find(n, r))
+            return r;
+
+        app * a = to_app(n);
+        if (a->get_family_id() == m_manager.get_basic_family_id()) {
+            switch (a->get_decl_kind()) {
+            case OP_TRUE:
+            case OP_FALSE:
+                r = true;
+                break;
+            case OP_NOT:
+                r = all_terms_exist_core(a->get_arg(0));
+                break;
+            case OP_AND:
+            case OP_OR:
+                r = true;
+                for (expr * arg : *a) {
+                    if (!all_terms_exist_core(arg)) {
+                        r = false;
+                        break;
+                    }
+                }
+                break;
+            case OP_IMPLIES:
+            case OP_XOR:
+            case OP_OEQ:
+                r = all_terms_exist_core(a->get_arg(0)) &&
+                    all_terms_exist_core(a->get_arg(1));
+                break;
+            case OP_EQ:
+                if (m_manager.is_bool(a->get_arg(0)))
+                    r = all_terms_exist_core(a->get_arg(0)) &&
+                        all_terms_exist_core(a->get_arg(1));
+                else
+                    r = get_enode_eq_to(a->get_arg(0)) != nullptr &&
+                        get_enode_eq_to(a->get_arg(1)) != nullptr;
+                break;
+            case OP_DISTINCT:
+                r = true;
+                for (expr * arg : *a) {
+                    if (get_enode_eq_to(arg) == nullptr) {
+                        r = false;
+                        break;
+                    }
+                }
+                break;
+            case OP_ITE:
+                if (m_manager.is_bool(a))
+                    r = all_terms_exist_core(a->get_arg(0)) &&
+                        all_terms_exist_core(a->get_arg(1)) &&
+                        all_terms_exist_core(a->get_arg(2));
+                else
+                    r = get_enode_eq_to(a) != nullptr;
+                break;
+            default:
+                r = get_enode_eq_to(a) != nullptr;
+                break;
+            }
+        }
+        else {
+            r = get_enode_eq_to(a) != nullptr;
+        }
+
+        if (n->get_ref_count() > 1)
+            m_is_true_cache[0].insert(n, r);
+        return r;
+    }
+
+    bool checker::all_terms_exist(expr * n, unsigned num_bindings, enode * const * bindings) {
+        flet<unsigned>        l1(m_num_bindings, num_bindings);
+        flet<enode * const *> l2(m_bindings, bindings);
+        bool r = all_terms_exist_core(n);
+        m_is_true_cache[0].reset();
+        m_to_enode_cache.reset();
+        return r;
+    }
+
     checker::checker(context & c):
         m_context(c),
         m_manager(c.get_manager()),
         m_num_bindings(0),
         m_bindings(nullptr) {
     }
-   
+
 };
 
 

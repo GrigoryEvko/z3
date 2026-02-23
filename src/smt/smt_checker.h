@@ -44,10 +44,16 @@ namespace smt {
         enode * get_enode_eq_to_core(app * n);
         enode * get_enode_eq_to(expr * n);
 
+        bool all_terms_exist_core(expr * n);
+
     public:
         checker(context & c);
         bool is_sat(expr * n, unsigned num_bindings = 0, enode * const * bindings = nullptr);
         bool is_unsat(expr * n, unsigned num_bindings = 0, enode * const * bindings = nullptr);
+        // Returns true if all non-boolean subterms of n (with current bindings)
+        // already exist in the E-graph. Such instances create no new E-graph
+        // nodes and should be processed immediately.
+        bool all_terms_exist(expr * n, unsigned num_bindings, enode * const * bindings);
     };
 
 };
