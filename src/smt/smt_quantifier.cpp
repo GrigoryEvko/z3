@@ -297,11 +297,21 @@ namespace smt {
                           unsigned max_top_generation,
                           vector<std::tuple<enode *, enode *>> & used_enodes) {
 
+            // Skip multi-trigger instances if single-trigger already produced
+            // instances for this quantifier. Single-trigger matches are more
+            // precise; multi-trigger matches are expensive fallbacks.
+            if (pat && pat->get_num_args() > 1 && get_stat(q)->had_unary_instance()) {
+                TRACE(qi_queue, tout << "skipping multi-trigger instance (single-trigger active): " << q->get_qid() << "\n";);
+                return false;
+            }
+
             max_generation = std::max(max_generation, get_generation(q));
-            
+
             get_stat(q)->update_max_generation(max_generation);
             fingerprint * f = m_context.add_fingerprint(q, q->get_id(), num_bindings, bindings, def);
             if (f) {
+                if (pat && pat->get_num_args() == 1)
+                    get_stat(q)->set_had_unary_instance();
                 if (is_trace_enabled(TraceTag::causality)) {
                     log_causality(f,pat,used_enodes);
                 }

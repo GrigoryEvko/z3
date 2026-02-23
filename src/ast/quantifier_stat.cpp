@@ -32,7 +32,8 @@ namespace q {
         m_num_instances_curr_search(0),
         m_num_instances_curr_branch(0),
         m_max_generation(0),
-        m_max_cost(0.0f) {
+        m_max_cost(0.0f),
+        m_had_unary_instance(false) {
     }
 
     quantifier_stat_gen::quantifier_stat_gen(ast_manager & m, region & r):

@@ -42,6 +42,7 @@ namespace q {
         unsigned m_num_instances_curr_branch; //!< only updated if QI_TRACK_INSTANCES is true
         unsigned m_max_generation; //!< max. generation of an instance
         float    m_max_cost;
+        bool     m_had_unary_instance; //!< single-trigger produced instance this search
 
         friend class quantifier_stat_gen;
 
@@ -105,7 +106,11 @@ namespace q {
 
         void reset_num_instances_curr_search() {
             m_num_instances_curr_search = 0;
+            m_had_unary_instance = false;
         }
+
+        void set_had_unary_instance() { m_had_unary_instance = true; }
+        bool had_unary_instance() const { return m_had_unary_instance; }
 
         void update_max_generation(unsigned g) {
             if (m_max_generation < g)
