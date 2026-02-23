@@ -36,11 +36,13 @@ namespace lp {
         // -1 means that such a value is not found, -2 means that at least two of such monoids were found
         int                                m_column_of_l; // index of an unlimited from below monoid
         impq                               m_rs;
+        unsigned                           m_row_index;
 
     public :
         // constructor
         bound_analyzer_on_row(
             const C & it,
+            unsigned row_index,
             const numeric_pair<mpq>& rs,
             B & bp)
             :
@@ -48,14 +50,16 @@ namespace lp {
             m_bp(bp),
             m_column_of_u(-1),
             m_column_of_l(-1),
-            m_rs(rs)
+            m_rs(rs),
+            m_row_index(row_index)
             {}
 
-    
+
         static unsigned analyze_row(const C & row,
+                                    unsigned row_index,
                                     const numeric_pair<mpq>& rs,
                                     B & bp) {
-            bound_analyzer_on_row a(row, rs, bp);
+            bound_analyzer_on_row a(row, row_index, rs, bp);
             return a.analyze();
         }
 
@@ -310,28 +314,7 @@ namespace lp {
         // }
 
         void limit_j(unsigned bound_j, const mpq& u, bool coeff_before_j_is_pos, bool is_lower_bound, bool strict) {
-            auto* lar = &m_bp.lp();
-            const auto* row_ptr = &this->m_row;
-            auto explain = [row_ptr, bound_j, coeff_before_j_is_pos, is_lower_bound, strict, lar]() {
-                (void) strict;
-                TRACE(bound_analyzer, tout << "explain_bound_on_var_on_coeff, bound_j = " << bound_j << ", coeff_before_j_is_pos = " << coeff_before_j_is_pos << ", is_lower_bound = " << is_lower_bound << ", strict = " << strict << "\n";);
-                int bound_sign = (is_lower_bound ? 1 : -1);
-                int j_sign = (coeff_before_j_is_pos ? 1 : -1) * bound_sign;
-
-                u_dependency* ret = nullptr;
-                for (auto const& r : *row_ptr) {
-                    unsigned j = r.var();
-                    if (j == bound_j)
-                        continue;
-                    mpq const& a = r.coeff();
-                    int a_sign = is_pos(a) ? 1 : -1;
-                    int sign = j_sign * a_sign;
-                    u_dependency* witness = sign > 0 ? lar->get_column_upper_bound_witness(j) : lar->get_column_lower_bound_witness(j);
-                    ret = lar->join_deps(ret, witness);
-                }
-                return ret;
-            };
-            m_bp.add_bound(u, bound_j, is_lower_bound, strict, explain);
+            m_bp.add_bound(u, bound_j, is_lower_bound, strict, m_row_index, coeff_before_j_is_pos);
         }
 
         void advance_u(unsigned j) {
