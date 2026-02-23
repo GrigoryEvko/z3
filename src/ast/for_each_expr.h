@@ -123,22 +123,22 @@ void for_each_expr(ForEachProc & proc, expr_mark & visited, expr * n) {
 
 template<typename ForEachProc>
 void for_each_expr(ForEachProc & proc, expr * n) {
-    expr_mark visited;
-    for_each_expr_core<ForEachProc, expr_mark, false, false>(proc, visited, n);
+    expr_fast_mark3 visited;
+    for_each_expr_core<ForEachProc, expr_fast_mark3, false, false>(proc, visited, n);
 }
 
 template<typename ForEachProc>
 void for_each_expr(ForEachProc & proc, unsigned n, expr * const* es) {
-    expr_mark visited;
-    for (unsigned i = 0; i < n; ++i) 
-        for_each_expr_core<ForEachProc, expr_mark, false, false>(proc, visited, es[i]);
+    expr_fast_mark3 visited;
+    for (unsigned i = 0; i < n; ++i)
+        for_each_expr_core<ForEachProc, expr_fast_mark3, false, false>(proc, visited, es[i]);
 }
 
 template<typename ForEachProc>
 void for_each_expr(ForEachProc & proc, expr_ref_vector const& es) {
-    expr_mark visited;
-    for (expr* e : es) 
-        for_each_expr_core<ForEachProc, expr_mark, false, false>(proc, visited, e);
+    expr_fast_mark3 visited;
+    for (expr* e : es)
+        for_each_expr_core<ForEachProc, expr_fast_mark3, false, false>(proc, visited, e);
 }
 
 template<typename ForEachProc>

@@ -467,15 +467,10 @@ protected:
     unsigned m_mark1:1;
     unsigned m_mark2:1;
     // Private mark used by shared_occs functor
-    // Motivation for this field:
-    //  - A mark cannot be used by more than one owner.
-    //    So, it is only safe to use mark by "self-contained" code.
-    //    They should be viewed as temporary information.
-    //  - The functor shared_occs is used by some AST pretty printers.
-    //  - So, a code that uses marks could not use the pretty printer if
-    //    shared_occs used one of the public marks.
-    //  - This was a constant source of assertion violations.
     unsigned m_mark_shared_occs:1;
+    // Third public mark bit (used by for_each_expr convenience wrappers
+    // so they don't conflict with mark1/mark2 held by callers)
+    unsigned m_mark3:1;
     friend class shared_occs_mark;
     void mark_so(bool flag) { m_mark_shared_occs = flag; }
     void reset_mark_so() { m_mark_shared_occs = false; }
@@ -483,9 +478,9 @@ protected:
     unsigned m_ref_count = 0;
     unsigned m_hash = 0;
 #ifdef Z3DEBUG
-    // In debug mode, we store who is the owner of the mark.
     void *   m_mark1_owner;
     void *   m_mark2_owner;
+    void *   m_mark3_owner;
 #endif
 
     void inc_ref() {
@@ -498,10 +493,11 @@ protected:
         --m_ref_count;
     }
 
-    ast(ast_kind k): m_kind(k), m_mark1(false), m_mark2(false), m_mark_shared_occs(false) {
+    ast(ast_kind k): m_kind(k), m_mark1(false), m_mark2(false), m_mark_shared_occs(false), m_mark3(false) {
         DEBUG_CODE({
             m_mark1_owner = 0;
             m_mark2_owner = 0;
+            m_mark3_owner = 0;
         });
     }
 public:
@@ -513,29 +509,41 @@ public:
 #ifdef Z3DEBUG
     void mark1(bool flag, void * owner) { SASSERT(m_mark1_owner == 0 || m_mark1_owner == owner); m_mark1 = flag; m_mark1_owner = owner; }
     void mark2(bool flag, void * owner) { SASSERT(m_mark2_owner == 0 || m_mark2_owner == owner); m_mark2 = flag; m_mark2_owner = owner; }
+    void mark3(bool flag, void * owner) { SASSERT(m_mark3_owner == 0 || m_mark3_owner == owner); m_mark3 = flag; m_mark3_owner = owner; }
     void reset_mark1(void * owner) { SASSERT(m_mark1_owner == 0 || m_mark1_owner == owner); m_mark1 = false; m_mark1_owner = 0; }
     void reset_mark2(void * owner) { SASSERT(m_mark2_owner == 0 || m_mark2_owner == owner); m_mark2 = false; m_mark2_owner = 0; }
+    void reset_mark3(void * owner) { SASSERT(m_mark3_owner == 0 || m_mark3_owner == owner); m_mark3 = false; m_mark3_owner = 0; }
     bool is_marked1(void * owner) const { SASSERT(m_mark1_owner == 0 || m_mark1_owner == owner); return m_mark1; }
     bool is_marked2(void * owner) const { SASSERT(m_mark2_owner == 0 || m_mark2_owner == owner); return m_mark2; }
+    bool is_marked3(void * owner) const { SASSERT(m_mark3_owner == 0 || m_mark3_owner == owner); return m_mark3; }
 #define AST_MARK1(A,F,O) A->mark1(F, O)
 #define AST_MARK2(A,F,O) A->mark2(F, O)
+#define AST_MARK3(A,F,O) A->mark3(F, O)
 #define AST_RESET_MARK1(A,O) A->reset_mark1(O)
 #define AST_RESET_MARK2(A,O) A->reset_mark2(O)
+#define AST_RESET_MARK3(A,O) A->reset_mark3(O)
 #define AST_IS_MARKED1(A,O) A->is_marked1(O)
 #define AST_IS_MARKED2(A,O) A->is_marked2(O)
+#define AST_IS_MARKED3(A,O) A->is_marked3(O)
 #else
     void mark1(bool flag) { m_mark1 = flag; }
     void mark2(bool flag) { m_mark2 = flag; }
+    void mark3(bool flag) { m_mark3 = flag; }
     void reset_mark1() { m_mark1 = false; }
     void reset_mark2() { m_mark2 = false; }
+    void reset_mark3() { m_mark3 = false; }
     bool is_marked1() const { return m_mark1; }
     bool is_marked2() const { return m_mark2; }
+    bool is_marked3() const { return m_mark3; }
 #define AST_MARK1(A,F,O) A->mark1(F)
 #define AST_MARK2(A,F,O) A->mark2(F)
+#define AST_MARK3(A,F,O) A->mark3(F)
 #define AST_RESET_MARK1(A,O) A->reset_mark1()
 #define AST_RESET_MARK2(A,O) A->reset_mark2()
+#define AST_RESET_MARK3(A,O) A->reset_mark3()
 #define AST_IS_MARKED1(A,O) A->is_marked1()
 #define AST_IS_MARKED2(A,O) A->is_marked2()
+#define AST_IS_MARKED3(A,O) A->is_marked3()
 #endif
 };
 
@@ -2535,25 +2543,28 @@ public:
     ~ast_fast_mark() {
         reset();
     }
-    bool is_marked(ast * n) { return IDX == 1 ? AST_IS_MARKED1(n, this) : AST_IS_MARKED2(n, this); }
+    bool is_marked(ast * n) {
+        if (IDX == 1) return AST_IS_MARKED1(n, this);
+        if (IDX == 2) return AST_IS_MARKED2(n, this);
+        return AST_IS_MARKED3(n, this);
+    }
     void reset_mark(ast * n) {
-        if (IDX == 1) {
-            AST_RESET_MARK1(n, this);
-        }
-        else {
-            AST_RESET_MARK2(n, this);
-        }
+        if (IDX == 1) AST_RESET_MARK1(n, this);
+        else if (IDX == 2) AST_RESET_MARK2(n, this);
+        else AST_RESET_MARK3(n, this);
     }
     void mark(ast * n) {
         if (IDX == 1) {
-            if (AST_IS_MARKED1(n, this))
-                return;
+            if (AST_IS_MARKED1(n, this)) return;
             AST_MARK1(n, true, this);
         }
-        else {
-            if (AST_IS_MARKED2(n, this))
-                return;
+        else if (IDX == 2) {
+            if (AST_IS_MARKED2(n, this)) return;
             AST_MARK2(n, true, this);
+        }
+        else {
+            if (AST_IS_MARKED3(n, this)) return;
+            AST_MARK3(n, true, this);
         }
         m_to_unmark.push_back(n);
     }
@@ -2580,8 +2591,10 @@ public:
 
 typedef ast_fast_mark<1> ast_fast_mark1;
 typedef ast_fast_mark<2> ast_fast_mark2;
+typedef ast_fast_mark<3> ast_fast_mark3;
 typedef ast_fast_mark1   expr_fast_mark1;
 typedef ast_fast_mark2   expr_fast_mark2;
+typedef ast_fast_mark3   expr_fast_mark3;
 
 /**
    Similar to ast_fast_mark, but increases reference counter.
