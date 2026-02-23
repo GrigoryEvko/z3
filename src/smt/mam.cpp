@@ -3615,17 +3615,21 @@ namespace {
                         // Remark: equality is never in the inverted path index.
                         if (curr_parent->is_eq())
                             continue;
+                        // Check mark FIRST — cheapest test, high filter rate.
+                        // Avoids hash computation and relevancy check for revisited parents.
+                        if (curr_parent->is_marked())
+                            continue;
                         func_decl * lbl            = curr_parent->get_decl();
-                        bool is_flat_assoc         = lbl->is_flat_associative();
+                        if (!filter.may_contain(m_lbl_hasher(lbl)))
+                            continue;
+                        if (!m_context.is_relevant(curr_parent))
+                            continue;
                         enode * curr_parent_root   = curr_parent->get_root();
                         enode * curr_parent_cg     = curr_parent->get_cg();
                         TRACE(mam_path_tree, tout << "processing parent:\n" << mk_pp(curr_parent->get_expr(), m) << "\n";);
-                        TRACE(mam_path_tree, tout << "parent is marked: " << curr_parent->is_marked() << "\n";);
-                        if (filter.may_contain(m_lbl_hasher(lbl)) &&
-                            !curr_parent->is_marked() &&
-                            (curr_parent_cg == curr_parent || !is_eq(curr_parent_cg, curr_parent_root)) &&
-                            m_context.is_relevant(curr_parent)
+                        if (curr_parent_cg == curr_parent || !is_eq(curr_parent_cg, curr_parent_root)
                             ) {
+                            bool is_flat_assoc     = lbl->is_flat_associative();
                             path_tree * curr_tree = t;
                             while (curr_tree) {
                                 if (curr_tree->m_label == lbl &&

@@ -166,7 +166,7 @@ class theory_lra::imp {
 
     svector<unsigned>       m_bv_to_propagate;      // Boolean variables that can be propagated
     
-    svector<std::pair<theory_var, theory_var> >       m_assume_eq_candidates; 
+    svector<std::pair<theory_var, theory_var> >       m_assume_eq_candidates;
     unsigned                                          m_assume_eq_head;
     indexed_uint_set                                         m_tmp_var_set;
     
@@ -1517,11 +1517,11 @@ public:
                     m_tmp_var_set.insert(other);
                     vars.push_back(other_j);
                 }
-            } 
+            }
         }
-        TRACE(arith, 
-              for (theory_var v = 0; v < sz; ++v) 
-                  if (th.is_relevant_and_shared(get_enode(v)))  
+        TRACE(arith,
+              for (theory_var v = 0; v < sz; ++v)
+                  if (th.is_relevant_and_shared(get_enode(v)))
                       tout << "v" << v << " ";
               tout << "\n"; );
         if (!vars.empty()) {
@@ -1533,34 +1533,34 @@ public:
 
         if (delayed_assume_eqs())
             return true;
-        
+
         TRACE(arith_verbose, display(tout););
         random_update();
         m_model_eqs.reset();
-        
-        theory_var sz = static_cast<theory_var>(th.get_num_vars());            
+
+        theory_var sz = static_cast<theory_var>(th.get_num_vars());
         unsigned old_sz = m_assume_eq_candidates.size();
         unsigned num_candidates = 0;
         int start = ctx().get_random_value();
         for (theory_var i = 0; i < sz; ++i) {
             theory_var v = (i + start) % sz;
             enode* n1 = get_enode(v);
-            if (!th.is_relevant_and_shared(n1))                   
+            if (!th.is_relevant_and_shared(n1))
                 continue;
             ensure_column(v);
             if (!is_registered_var(v))
-                continue;            
+                continue;
             theory_var other = m_model_eqs.insert_if_not_there(v);
-            if (other == v) 
+            if (other == v)
                 continue;
             enode* n2 = get_enode(other);
             if (n1->get_root() == n2->get_root())
                 continue;
             m_assume_eq_candidates.push_back({v, other});
-            num_candidates++;            
+            num_candidates++;
         }
-            
-        if (num_candidates > 0) 
+
+        if (num_candidates > 0)
             ctx().push_trail(restore_vector(m_assume_eq_candidates, old_sz));
 
         return delayed_assume_eqs();
