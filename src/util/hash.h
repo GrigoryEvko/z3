@@ -137,22 +137,22 @@ struct default_kind_hash_proc { unsigned operator()(Composite const & c) const {
 
 struct int_hash {
     typedef int data_t;
-    unsigned operator()(int x) const { return static_cast<unsigned>(x); }
+    unsigned operator()(int x) const { return hash_u(static_cast<unsigned>(x)); }
 };
 
 struct unsigned_hash {
     typedef unsigned data_t;
-    unsigned operator()(unsigned x) const { return x; }
+    unsigned operator()(unsigned x) const { return hash_u(x); }
 };
 
 struct size_t_hash {
     typedef size_t data_t;
-    unsigned operator()(size_t x) const { return static_cast<unsigned>(x); }
+    unsigned operator()(size_t x) const { return hash_ull(static_cast<unsigned long long>(x)); }
 };
 
 struct uint64_hash {
     typedef uint64_t data_t;
-    unsigned operator()(uint64_t x) const { return static_cast<unsigned>(x); }
+    unsigned operator()(uint64_t x) const { return hash_ull(x); }
 };
 
 struct bool_hash {
@@ -240,7 +240,7 @@ struct pair_hash : private Hash1 {
 
 template<typename T>
 inline unsigned get_ptr_hash(T * ptr) {
-    return static_cast<unsigned>(reinterpret_cast<size_t>(ptr));
+    return hash_ull(reinterpret_cast<unsigned long long>(ptr));
 }
 
 template<typename T>
