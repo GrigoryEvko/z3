@@ -1215,7 +1215,10 @@ namespace smt {
 
         bool is_ext_diseq(enode * n1, enode * n2, unsigned depth);
 
-        enode * get_enode_eq_to(func_decl * f, unsigned num_args, enode * const * args);
+        enode * get_enode_eq_to(func_decl * f, unsigned num_args, enode * const * args) {
+            enode * tmp = m_tmp_enode.set(f, num_args, args);
+            return m_cg_table.find(tmp);
+        }
 
         bool guess(bool_var var, lbool phase);
 

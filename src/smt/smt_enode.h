@@ -474,7 +474,19 @@ namespace smt {
     public:
         tmp_enode();
         ~tmp_enode();
-        enode * set(func_decl * f, unsigned num_args, enode * const * args);
+        enode * set(func_decl * f, unsigned num_args, enode * const * args) {
+            if (__builtin_expect(num_args > m_capacity, 0))
+                set_capacity(num_args * 2);
+            enode * r = get_enode();
+            if (m_app.get_app()->get_decl() != f) {
+                r->m_func_decl_id = UINT_MAX;
+            }
+            m_app.set_decl(f);
+            m_app.set_num_args(num_args);
+            r->m_commutative = num_args == 2 && f->is_commutative();
+            memcpy(r->m_args, args, sizeof(enode*) * num_args);
+            return r;
+        }
         void reset();
     };
 

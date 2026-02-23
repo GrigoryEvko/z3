@@ -1269,37 +1269,6 @@ namespace smt {
     }
 
     /**
-       \brief Return an enode n congruent to (f args). If there is no such enode in the E-graph, then return 0.
-     */
-    enode * context::get_enode_eq_to(func_decl * f, unsigned num_args, enode * const * args) {
-        enode * tmp = m_tmp_enode.set(f, num_args, args);
-        enode * r   = m_cg_table.find(tmp);
-#ifdef Z3DEBUG
-        if (r != nullptr) {
-            SASSERT(r->get_expr()->get_decl() == f);
-            SASSERT(r->get_num_args() == num_args);
-            if (r->is_commutative()) {
-                // TODO
-            }
-            else {
-                for (unsigned i = 0; i < num_args; ++i) {
-                    expr * arg   = r->get_expr()->get_arg(i);
-                    SASSERT(e_internalized(arg));
-                    enode * _arg = get_enode(arg);
-                    CTRACE(eq_to_bug, args[i]->get_root() != _arg->get_root(),
-                           tout << "#" << args[i]->get_expr_id() << " #" << args[i]->get_root()->get_expr_id()
-                           << " #" << _arg->get_expr_id() << " #" << _arg->get_root()->get_expr_id() << "\n";
-                           tout << "#" << r->get_expr_id() << "\n";
-                           display(tout););
-                    SASSERT(args[i]->get_root() == _arg->get_root());
-                }
-            }
-        }
-#endif
-        return r;
-    }
-
-    /**
        \brief Process the equality propagation queue.
 
        \remark The method assign_eq adds a new entry on this queue.

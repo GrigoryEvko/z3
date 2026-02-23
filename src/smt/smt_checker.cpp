@@ -125,8 +125,24 @@ namespace smt {
     }
 
     enode * checker::get_enode_eq_to_core(app * n) {
-        ptr_buffer<enode> buffer;
         unsigned num = n->get_num_args();
+        // Specialize for binary (most common) and unary to avoid ptr_buffer overhead
+        if (num == 2) {
+            enode * a0 = get_enode_eq_to(n->get_arg(0));
+            if (!a0) return nullptr;
+            enode * a1 = get_enode_eq_to(n->get_arg(1));
+            if (!a1) return nullptr;
+            enode * args[2] = { a0, a1 };
+            enode * e = m_context.get_enode_eq_to(n->get_decl(), 2, args);
+            return (e && m_context.is_relevant(e)) ? e : nullptr;
+        }
+        if (num == 1) {
+            enode * a0 = get_enode_eq_to(n->get_arg(0));
+            if (!a0) return nullptr;
+            enode * e = m_context.get_enode_eq_to(n->get_decl(), 1, &a0);
+            return (e && m_context.is_relevant(e)) ? e : nullptr;
+        }
+        ptr_buffer<enode> buffer;
         for (unsigned i = 0; i < num; ++i) {
             enode * arg = get_enode_eq_to(n->get_arg(i));
             if (arg == nullptr)

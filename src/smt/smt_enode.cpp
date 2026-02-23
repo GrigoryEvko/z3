@@ -359,20 +359,6 @@ namespace smt {
         n->m_root_hash     = 0;
     }
 
-    enode * tmp_enode::set(func_decl * f, unsigned num_args, enode * const * args) {
-        if (num_args > m_capacity)
-            set_capacity(num_args * 2);
-        enode * r = get_enode();
-        if (m_app.get_app()->get_decl() != f) {
-            r->m_func_decl_id = UINT_MAX;
-        }
-        m_app.set_decl(f);
-        m_app.set_num_args(num_args);
-        r->m_commutative  = num_args == 2 && f->is_commutative();
-        memcpy(get_enode()->m_args, args, sizeof(enode*)*num_args);
-        return r;
-    }
-
     void tmp_enode::reset() {
         get_enode()->m_func_decl_id = UINT_MAX;
     }
