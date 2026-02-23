@@ -30,6 +30,15 @@ Revision History:
 #define DEFAULT_HASHTABLE_INITIAL_CAPACITY 8
 #define SMALL_TABLE_CAPACITY               64
 
+#ifdef __GNUC__
+#define HT_PREFETCH(addr) __builtin_prefetch(addr, 0, 1)
+#elif defined(_MSC_VER)
+#include <intrin.h>
+#define HT_PREFETCH(addr) _mm_prefetch(reinterpret_cast<const char*>(addr), _MM_HINT_T1)
+#else
+#define HT_PREFETCH(addr) ((void)0)
+#endif
+
 //  #define HASHTABLE_STATISTICS
 
 #ifdef HASHTABLE_STATISTICS
@@ -388,9 +397,11 @@ public:
         entry * curr      = begin;
         entry * del_entry = nullptr;
         for (; curr != end; ++curr) {
+            HT_PREFETCH(curr + 4);
             INSERT_LOOP_BODY();
         }
         for (curr = m_table; curr != begin; ++curr) {
+            HT_PREFETCH(curr + 4);
             INSERT_LOOP_BODY();
         }
         UNREACHABLE();
@@ -443,9 +454,11 @@ public:
         entry * curr      = begin;
         entry * del_entry = nullptr;
         for (; curr != end; ++curr) {
+            HT_PREFETCH(curr + 4);
             INSERT_LOOP_CORE_BODY();
         }
         for (curr = m_table; curr != begin; ++curr) {
+            HT_PREFETCH(curr + 4);
             INSERT_LOOP_CORE_BODY();
         }
         UNREACHABLE();
@@ -500,9 +513,11 @@ public:
         entry * end   = m_table + m_capacity;
         entry * curr  = begin;
         for (; curr != end; ++curr) {
+            HT_PREFETCH(curr + 4);
             FIND_LOOP_BODY();
         }
         for (curr = m_table; curr != begin; ++curr) {
+            HT_PREFETCH(curr + 4);
             FIND_LOOP_BODY();
         }
         return nullptr;
