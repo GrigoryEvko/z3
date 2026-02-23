@@ -213,6 +213,7 @@ namespace {
     struct bind : public instruction {
         func_decl *    m_label;
         unsigned short m_num_args;
+        unsigned char  m_lbl_hash;   // precomputed label_hasher(m_label) for plbls filter
         unsigned       m_ireg;
         unsigned       m_oreg;
     };
@@ -695,6 +696,7 @@ namespace {
             bind * r = mk_instr<bind>(op, sizeof(bind));
             r->m_label    = lbl;
             r->m_num_args = num_args;
+            r->m_lbl_hash = static_cast<unsigned char>(m_lbl_hasher(lbl));
             r->m_ireg     = ireg;
             r->m_oreg     = oreg;
             return r;
@@ -2451,6 +2453,9 @@ namespace {
 #define BIND_COMMON()                                                                                                   \
                  m_n1   = m_registers[static_cast<const bind *>(m_pc)->m_ireg];                                         \
                  SASSERT(m_n1 != 0);                                                                                    \
+                 if (m_use_filters &&                                                                                    \
+                     !m_n1->get_root()->get_lbls().may_contain(static_cast<const bind *>(m_pc)->m_lbl_hash))             \
+                     goto backtrack;                                                                                    \
                  m_oreg = static_cast<const bind *>(m_pc)->m_oreg;                                                      \
                  m_curr_max_generation = m_max_generation;                                                              \
                  m_curr_used_enodes_size = m_used_enodes.size();                                                        \
