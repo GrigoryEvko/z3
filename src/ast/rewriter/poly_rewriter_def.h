@@ -402,30 +402,90 @@ br_status poly_rewriter<Config>::mk_flat_add_core(unsigned num_args, expr * cons
         if (is_add(args[i]))
             break;
     }
-    if (i < num_args) {
-        // has nested ADDs
-        ptr_buffer<expr> flat_args;
-        flat_args.append(i, args);
-        for (; i < num_args; ++i) {
-            expr * arg = args[i];
-            // Remark: all rewrites are depth 1.
-            if (is_add(arg)) {
-                unsigned num = to_app(arg)->get_num_args();
-                for (unsigned j = 0; j < num; ++j)
-                    flat_args.push_back(to_app(arg)->get_arg(j));
+    if (i == num_args) {
+        // No nested ADDs — use existing optimized path
+        return mk_nflat_add_core(num_args, args, result);
+    }
+
+    // Has nested ADDs: flatten and merge coefficients in a single pass.
+    // This combines what was previously: build flat_args buffer, then
+    // scan for duplicates (expr_fast_mark), then accumulate coefficients
+    // (m_expr2pos), then build result — into one pass + result build.
+    numeral c;
+    numeral a;
+    buffer<numeral> coeffs;
+    ptr_buffer<expr> pps;
+    m_expr2pos.reset();
+
+    for (unsigned j = 0; j < num_args; ++j) {
+        expr * arg = args[j];
+        // Depth-1 flattening: splice children of nested ADDs
+        if (is_add(arg)) {
+            unsigned num = to_app(arg)->get_num_args();
+            for (unsigned k = 0; k < num; ++k) {
+                expr * child = to_app(arg)->get_arg(k);
+                if (is_numeral(child, a)) {
+                    c += a;
+                }
+                else {
+                    expr * pp = get_power_product(child, a);
+                    unsigned pos;
+                    if (m_expr2pos.find(pp, pos)) {
+                        coeffs[pos] += a;
+                    }
+                    else {
+                        m_expr2pos.insert(pp, coeffs.size());
+                        coeffs.push_back(a);
+                        pps.push_back(pp);
+                    }
+                }
+            }
+        }
+        else if (is_numeral(arg, a)) {
+            c += a;
+        }
+        else {
+            expr * pp = get_power_product(arg, a);
+            unsigned pos;
+            if (m_expr2pos.find(pp, pos)) {
+                coeffs[pos] += a;
             }
             else {
-                flat_args.push_back(arg);
+                m_expr2pos.insert(pp, coeffs.size());
+                coeffs.push_back(a);
+                pps.push_back(pp);
             }
         }
-        br_status st = mk_nflat_add_core(flat_args.size(), flat_args.data(), result);
-        if (st == BR_FAILED) {
-            result = mk_add_app(flat_args.size(), flat_args.data());
-            return BR_DONE;
-        }
-        return st;
     }
-    return mk_nflat_add_core(num_args, args, result);
+    normalize(c);
+
+    // Build result from accumulated coefficients
+    expr_ref_buffer new_args(M());
+    if (!c.is_zero())
+        new_args.push_back(mk_numeral(c));
+    for (unsigned j = 0; j < pps.size(); ++j) {
+        normalize(coeffs[j]);
+        if (!coeffs[j].is_zero())
+            new_args.push_back(mk_mul_app(coeffs[j], pps[j]));
+    }
+
+    if (new_args.empty()) {
+        result = mk_numeral(numeral(0));
+        return BR_DONE;
+    }
+
+    if (m_sort_sums) {
+        unsigned start = (!c.is_zero()) ? 1 : 0;
+        if (start < new_args.size())
+            std::sort(new_args.data() + start, new_args.data() + new_args.size(), mon_lt(*this));
+    }
+
+    result = mk_add_app(new_args.size(), new_args.data());
+    if (hoist_multiplication(result))
+        return BR_REWRITE_FULL;
+    if (hoist_ite(result))
+        return BR_REWRITE_FULL;
+    return BR_DONE;
 }
 
 template<typename Config>
