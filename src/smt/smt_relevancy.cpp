@@ -159,7 +159,9 @@ namespace smt {
         bool                           m_propagating = false;
 
         relevancy_propagator_imp(context & ctx):
-            relevancy_propagator(ctx), m_relevant_exprs(ctx.get_manager()) {}
+            relevancy_propagator(ctx), m_relevant_exprs(ctx.get_manager()) {
+            m_relevant_set = &m_is_relevant;
+        }
 
         ~relevancy_propagator_imp() override {
             ast_manager & m = get_manager();

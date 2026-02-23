@@ -19,6 +19,7 @@ Revision History:
 #pragma once
 
 #include "ast/ast.h"
+#include "util/uint_set.h"
 
 namespace smt {
     class context;
@@ -85,11 +86,15 @@ namespace smt {
     class relevancy_propagator {
     protected:
         context & m_context;
+        uint_set const * m_relevant_set = nullptr; // non-null when relevancy enabled; set by imp
     public:
         relevancy_propagator(context & ctx);
         virtual ~relevancy_propagator() = default;
 
         context & get_context() { return m_context; }
+
+        // Direct bitset access for fast is_relevant checks (avoids virtual dispatch)
+        uint_set const * get_relevant_set() const { return m_relevant_set; }
 
 
         /**

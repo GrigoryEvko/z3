@@ -1354,7 +1354,9 @@ namespace smt {
         void relevant_eh(expr * n);
 
         bool is_relevant(expr * n) const {
-            return !relevancy() || is_relevant_core(n);
+            if (!relevancy()) return true;
+            uint_set const * rs = m_relevancy_propagator->get_relevant_set();
+            return rs && rs->contains(n->get_id());
         }
 
         bool is_relevant(enode * n) const {
