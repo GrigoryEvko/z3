@@ -35,7 +35,7 @@ namespace smt {
         struct cg_unary_hash {
             unsigned operator()(enode * n) const {
                 SASSERT(n->get_num_args() == 1);
-                return n->get_arg(0)->get_root()->hash();
+                return n->get_arg(0)->get_root_hash();
             }
         };
 
@@ -53,7 +53,7 @@ namespace smt {
         struct cg_binary_hash {
             unsigned operator()(enode * n) const {
                 SASSERT(n->get_num_args() == 2);
-                return combine_hash(n->get_arg(0)->get_root()->hash(), n->get_arg(1)->get_root()->hash());
+                return combine_hash(n->get_arg(0)->get_root_hash(), n->get_arg(1)->get_root_hash());
             }
         };
 
@@ -73,8 +73,8 @@ namespace smt {
         struct cg_comm_hash {
             unsigned operator()(enode * n) const {
                 SASSERT(n->get_num_args() == 2);
-                unsigned h1 = n->get_arg(0)->get_root()->hash();
-                unsigned h2 = n->get_arg(1)->get_root()->hash();
+                unsigned h1 = n->get_arg(0)->get_root_hash();
+                unsigned h2 = n->get_arg(1)->get_root_hash();
                 if (h1 > h2)
                     std::swap(h1, h2);
                 return hash_u(h1 + h2);

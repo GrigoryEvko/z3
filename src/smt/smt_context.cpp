@@ -544,9 +544,11 @@ namespace smt {
 
             remove_parents_from_cg_table(r1);
 
+            unsigned r2_hash = r2->hash();
             enode * curr = r1;
             do {
                 curr->m_root = r2;
+                curr->m_root_hash = r2_hash;
                 curr = curr->m_next;
             }
             while(curr != r1);
@@ -946,9 +948,11 @@ namespace smt {
             }
         }
 
+        unsigned r1_hash = r1->hash();
         enode * curr = r1;
         do {
             curr->m_root = r1;
+            curr->m_root_hash = r1_hash;
             curr = curr->m_next;
         }
         while (curr != r1);

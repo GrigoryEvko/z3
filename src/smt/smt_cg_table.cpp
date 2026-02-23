@@ -27,25 +27,25 @@ namespace smt {
         SASSERT(n->get_decl()->is_flat_associative() || n->get_num_args() >= 3);
         unsigned a, b, c;
         a = b = 0x9e3779b9;
-        c = 11;    
-        
+        c = 11;
+
         unsigned i = n->get_num_args();
         while (i >= 3) {
             i--;
-            a += n->get_arg(i)->get_root()->hash();
+            a += n->get_arg(i)->get_root_hash();
             i--;
-            b += n->get_arg(i)->get_root()->hash();
+            b += n->get_arg(i)->get_root_hash();
             i--;
-            c += n->get_arg(i)->get_root()->hash();
+            c += n->get_arg(i)->get_root_hash();
             mix(a, b, c);
         }
-        
+
         switch (i) {
         case 2:
-            b += n->get_arg(1)->get_root()->hash();
+            b += n->get_arg(1)->get_root_hash();
             Z3_fallthrough;
         case 1:
-            c += n->get_arg(0)->get_root()->hash();
+            c += n->get_arg(0)->get_root_hash();
         }
         mix(a, b, c);
         return c;

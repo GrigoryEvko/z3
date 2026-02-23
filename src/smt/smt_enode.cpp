@@ -37,6 +37,7 @@ namespace smt {
         n->m_class_size       = 1;
         n->m_generation       = generation;
         n->m_func_decl_id     = UINT_MAX;
+        n->m_root_hash        = owner->hash();
         n->m_mark             = false;
         n->m_mark2            = false;
         n->m_interpreted      = false;
@@ -353,6 +354,7 @@ namespace smt {
         n->m_class_size    = 1;
         n->m_cgc_enabled   = true;
         n->m_func_decl_id  = UINT_MAX;
+        n->m_root_hash     = 0;
     }
 
     enode * tmp_enode::set(func_decl * f, unsigned num_args, enode * const * args) {

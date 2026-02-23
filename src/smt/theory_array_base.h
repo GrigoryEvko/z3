@@ -103,10 +103,10 @@ namespace smt {
         // --------------------------------------------------
         struct value_chasher {
             unsigned operator()(enode const * n, unsigned idx) const {
-                return n->get_arg(idx+1)->get_root()->hash();
+                return n->get_arg(idx+1)->get_root_hash();
             }
         };
-        struct value_khasher { unsigned operator()(enode * n) const { return n->get_arg(0)->get_root()->hash(); } };
+        struct value_khasher { unsigned operator()(enode * n) const { return n->get_arg(0)->get_root_hash(); } };
         struct value_hash_proc { 
             unsigned operator()(enode * n) const {
                 return get_composite_hash<enode *, value_khasher, value_chasher>(n, n->get_num_args() - 1);
@@ -156,12 +156,12 @@ namespace smt {
         
         // I need a set of select enodes where select(A,i) = select(B,j) if i->get_root() == j->get_root()
         struct sel_khasher {
-            unsigned operator()(enode const * n) const { return n->get_arg(0)->get_root()->hash(); }
+            unsigned operator()(enode const * n) const { return n->get_arg(0)->get_root_hash(); }
         };
 
         struct sel_chasher {
-            unsigned operator()(enode const * n, unsigned idx) const { 
-                return n->get_arg(idx+1)->get_root()->hash();
+            unsigned operator()(enode const * n, unsigned idx) const {
+                return n->get_arg(idx+1)->get_root_hash();
             }
         };
         
