@@ -142,8 +142,9 @@ namespace smt {
                 return nullptr;
             return m_bindings[m_num_bindings - idx - 1];
         }
-        if (m_context.e_internalized(n) && m_context.is_relevant(n))
-            return m_context.get_enode(n);
+        enode * e = m_context.get_enode_or_null(n);
+        if (e && m_context.is_relevant(n))
+            return e;
         if (!is_app(n) || to_app(n)->get_num_args() == 0)
             return nullptr;
         enode * r = nullptr;

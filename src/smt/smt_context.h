@@ -320,6 +320,10 @@ namespace smt {
             return m_app2enode[n->get_id()];
         }
 
+        enode * get_enode_or_null(expr const * n) const {
+            return m_app2enode.get(n->get_id(), nullptr);
+        }
+
         void get_specrels(func_decl_set& rels) const;
 
 
