@@ -34,6 +34,9 @@ namespace smt {
         ast_manager &          m_manager;
         expr2bool              m_is_true_cache[2];
         expr2enode             m_to_enode_cache;
+        // Track inserted entries for O(entries) cache reset instead of O(capacity).
+        ptr_vector<expr>       m_is_true_inserted[2];
+        ptr_vector<expr>       m_to_enode_inserted;
         unsigned               m_num_bindings;
         enode * const *        m_bindings;
 
@@ -46,6 +49,8 @@ namespace smt {
 
         bool all_terms_exist_core(expr * n);
 
+        void cache_reset();
+
     public:
         checker(context & c);
         bool is_sat(expr * n, unsigned num_bindings = 0, enode * const * bindings = nullptr);
@@ -57,5 +62,4 @@ namespace smt {
     };
 
 };
-
 
