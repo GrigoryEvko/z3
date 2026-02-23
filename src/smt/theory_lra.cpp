@@ -2265,19 +2265,32 @@ public:
 
     bool bound_is_interesting(unsigned vi, lp::lconstraint_kind kind, const rational & bval) const {
         theory_var v = lp().local_to_external(vi);
-        if (v == null_theory_var) 
+        if (v == null_theory_var)
             return false;
 
-        if (should_refine_bounds()) 
+        if (should_refine_bounds())
             return true;
 
-        if (static_cast<unsigned>(v) < m_bounds.size()) 
-            for (api_bound* b : m_bounds[v]) 
+        if (static_cast<unsigned>(v) >= m_unassigned_bounds.size() || m_unassigned_bounds[v] == 0)
+            return false;
+
+        if (static_cast<unsigned>(v) < m_bounds.size())
+            for (api_bound* b : m_bounds[v])
                 if (ctx().get_assignment(b->get_lit()) == l_undef &&
-                    null_literal != is_bound_implied(kind, bval, *b)) 
+                    null_literal != is_bound_implied(kind, bval, *b))
                     return true;
 
         return false;
+    }
+
+    // O(1) per-variable check: does this LP variable have any unassigned bound literals?
+    bool var_has_interesting_bounds(unsigned vi) const {
+        if (should_refine_bounds())
+            return true;
+        theory_var v = lp().local_to_external(vi);
+        if (v == null_theory_var)
+            return false;
+        return static_cast<unsigned>(v) < m_unassigned_bounds.size() && m_unassigned_bounds[v] > 0;
     }
 
 #if 0

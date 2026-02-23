@@ -146,6 +146,16 @@ public:
     }
 
 
+    // Row-level pre-filter: skip entire row if no variable has unassigned bounds.
+    // O(row_length) with only integer comparisons — avoids expensive mpq arithmetic.
+    template <typename Row>
+    bool row_has_bound_candidates(const Row& row) const {
+        for (const auto& c : row)
+            if (m_imp.var_has_interesting_bounds(c.var()))
+                return true;
+        return false;
+    }
+
     void add_bound(mpq const& v, unsigned j, bool is_low, bool strict, std::function<u_dependency* ()> explain_bound) {
         lconstraint_kind kind = is_low ? GE : LE;
         if (strict)

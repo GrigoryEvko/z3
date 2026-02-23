@@ -376,6 +376,15 @@ namespace arith {
         return false;
     }
 
+    bool solver::var_has_interesting_bounds(unsigned vi) const {
+        if (should_refine_bounds())
+            return true;
+        theory_var v = lp().local_to_external(vi);
+        if (v == euf::null_theory_var)
+            return false;
+        return m_unassigned_bounds.size() > static_cast<unsigned>(v) && m_unassigned_bounds[v] > 0;
+    }
+
     void solver::refine_bound(theory_var v, const lp::implied_bound& be) {
         lpvar vi = be.m_j;
         if (lp().column_has_term(vi))

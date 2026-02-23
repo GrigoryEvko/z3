@@ -111,11 +111,15 @@ class lar_solver : public column_namer {
 
     template <typename T>
     unsigned calculate_implied_bounds_for_row(unsigned row_index, lp_bound_propagator<T>& bp) {
-        if (A_r().m_rows[row_index].size() > settings().max_row_length_for_bound_propagation || row_has_a_big_num(row_index))
+        auto const& row = A_r().m_rows[row_index];
+        if (row.size() > settings().max_row_length_for_bound_propagation || row_has_a_big_num(row_index))
+            return 0;
+        // Skip rows where no variable has unassigned bound literals.
+        if (!bp.row_has_bound_candidates(row))
             return 0;
 
         return bound_analyzer_on_row<row_strip<mpq>, lp_bound_propagator<T>>::analyze_row(
-            A_r().m_rows[row_index],
+            row,
             zero_of_type<numeric_pair<mpq>>(),
             bp);
     }
