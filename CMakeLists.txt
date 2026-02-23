@@ -301,6 +301,20 @@ find_package(Threads)
 list(APPEND Z3_DEPENDENT_LIBS Threads::Threads)
 
 ################################################################################
+# mimalloc — fast allocator override (optional)
+################################################################################
+option(Z3_USE_MIMALLOC "Use mimalloc as the global allocator" ON)
+if (Z3_USE_MIMALLOC)
+  find_library(MIMALLOC_LIB mimalloc)
+  if (MIMALLOC_LIB)
+    message(STATUS "Using mimalloc: ${MIMALLOC_LIB}")
+    list(APPEND Z3_DEPENDENT_LIBS ${MIMALLOC_LIB})
+  else()
+    message(STATUS "mimalloc not found, using system allocator")
+  endif()
+endif()
+
+################################################################################
 # Compiler warnings
 ################################################################################
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_warnings.cmake)
