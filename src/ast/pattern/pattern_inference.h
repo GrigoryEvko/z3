@@ -60,6 +60,8 @@ class pattern_inference_cfg :  public default_rewriter_cfg {
     pattern_inference_params const & m_params;
     family_id                  m_bfid;
     family_id                  m_afid;
+    family_id                  m_array_fid;
+    family_id                  m_dt_fid;
     svector<family_id>         m_forbidden;
     obj_hashtable<func_decl>   m_preferred;        
     smaller_pattern            m_le;
@@ -74,17 +76,22 @@ class pattern_inference_cfg :  public default_rewriter_cfg {
         uint_set m_free_vars;
         unsigned m_size;
         unsigned m_root_freq; // number of candidates sharing the same root func_decl (SInE rarity)
+        unsigned m_weight;    // trigger quality: 0=UF(best), 1=select/store/constructor, 2=other(worst)
         info(uint_set const & vars, unsigned size):
             m_free_vars(vars),
             m_size(size),
-            m_root_freq(0) {
+            m_root_freq(0),
+            m_weight(2) {
         }
         info():
             m_free_vars(),
             m_size(0),
-            m_root_freq(0) {
+            m_root_freq(0),
+            m_weight(2) {
         }
     };
+
+    unsigned trigger_weight(func_decl * f) const;
 
     typedef obj_map<expr, info> expr2info;
 

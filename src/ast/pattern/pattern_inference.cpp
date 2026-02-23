@@ -19,6 +19,7 @@ Revision History:
 
 #include "util/warning.h"
 #include "ast/pattern/pattern_inference.h"
+#include "ast/array_decl_plugin.h"
 #include "ast/ast_ll_pp.h"
 #include "ast/ast_pp.h"
 #include "ast/ast_util.h"
@@ -106,6 +107,8 @@ pattern_inference_cfg::pattern_inference_cfg(ast_manager & m, pattern_inference_
     m_params(params),
     m_bfid(m.get_basic_family_id()),
     m_afid(m.mk_family_id("arith")),
+    m_array_fid(m.mk_family_id("array")),
+    m_dt_fid(m.get_family_id("datatype")),
     m_le(),
     m_nested_arith_only(true),
     m_block_loop_patterns(params.m_pi_block_loop_patterns),
@@ -117,6 +120,23 @@ pattern_inference_cfg::pattern_inference_cfg(ast_manager & m, pattern_inference_
     m_database(m) {
     if (params.m_pi_arith == AP_NO)
         register_forbidden_family(m_afid);
+}
+
+unsigned pattern_inference_cfg::trigger_weight(func_decl * f) const {
+    family_id fid = f->get_family_id();
+    // Tier 0 (best): uninterpreted functions — most selective triggers
+    if (fid == null_family_id)
+        return 0;
+    // Tier 1 (medium): array select/store, datatype constructors/accessors
+    if (fid == m_array_fid) {
+        decl_kind k = f->get_decl_kind();
+        if (k == OP_SELECT || k == OP_STORE)
+            return 1;
+    }
+    if (fid == m_dt_fid)
+        return 1;
+    // Tier 2 (worst): arithmetic, boolean, everything else
+    return 2;
 }
 
 void pattern_inference_cfg::collect::operator()(expr * n, unsigned num_bindings) {
@@ -275,7 +295,9 @@ void pattern_inference_cfg::add_candidate(app * n, uint_set const & free_vars, u
     }
 
     if (!m_candidates_info.contains(n)) {
-        m_candidates_info.insert(n, info(free_vars, size));
+        info i(free_vars, size);
+        i.m_weight = trigger_weight(n->get_decl());
+        m_candidates_info.insert(n, i);
         m_candidates.push_back(n);
     }
 }
@@ -406,10 +428,13 @@ bool pattern_inference_cfg::pattern_weight_lt::operator()(expr * n1, expr * n2) 
     // Primary: prefer patterns covering more free variables
     if (num_free_vars1 != num_free_vars2)
         return num_free_vars1 > num_free_vars2;
-    // Secondary: prefer rarer root function symbols (SInE-style selectivity)
+    // Secondary: prefer better trigger quality tier (0=UF > 1=select/ctor > 2=other)
+    if (i1.m_weight != i2.m_weight)
+        return i1.m_weight < i2.m_weight;
+    // Tertiary: prefer rarer root function symbols (SInE-style selectivity)
     if (i1.m_root_freq != i2.m_root_freq)
         return i1.m_root_freq < i2.m_root_freq;
-    // Tertiary: prefer smaller patterns
+    // Quaternary: prefer smaller patterns
     return i1.m_size < i2.m_size;
 }
 
