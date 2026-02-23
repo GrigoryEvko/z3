@@ -156,6 +156,11 @@ public:
         return false;
     }
 
+    // Per-variable O(1) check forwarded to the theory layer.
+    bool var_has_interesting_bounds(unsigned j) const {
+        return m_imp.var_has_interesting_bounds(j);
+    }
+
     void add_bound(mpq const& v, unsigned j, bool is_low, bool strict, std::function<u_dependency* ()> explain_bound) {
         lconstraint_kind kind = is_low ? GE : LE;
         if (strict)

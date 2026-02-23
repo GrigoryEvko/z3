@@ -112,10 +112,12 @@ class lar_solver : public column_namer {
     template <typename T>
     unsigned calculate_implied_bounds_for_row(unsigned row_index, lp_bound_propagator<T>& bp) {
         auto const& row = A_r().m_rows[row_index];
-        if (row.size() > settings().max_row_length_for_bound_propagation || row_has_a_big_num(row_index))
+        if (row.size() > settings().max_row_length_for_bound_propagation)
             return 0;
-        // Skip rows where no variable has unassigned bound literals.
+        // Cheap integer-only check before expensive mpq bignum scan.
         if (!bp.row_has_bound_candidates(row))
+            return 0;
+        if (row_has_a_big_num(row_index))
             return 0;
 
         return bound_analyzer_on_row<row_strip<mpq>, lp_bound_propagator<T>>::analyze_row(

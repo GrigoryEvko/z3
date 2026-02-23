@@ -69,16 +69,25 @@ namespace lp {
                 analyze_bound_on_var_on_coeff(c.var(), c.coeff());
             }
             ++num_prop;
-            if (m_column_of_u >= 0)
-                limit_monoid_u_from_below();
+            if (m_column_of_u >= 0) {
+                // Single-target: skip O(n) mpq sum if target has no unassigned bounds.
+                if (m_bp.var_has_interesting_bounds(m_column_of_u))
+                    limit_monoid_u_from_below();
+                else
+                    --num_prop;
+            }
             else if (m_column_of_u == -1)
                 limit_all_monoids_from_below();
             else
                 --num_prop;
 
             ++num_prop;
-            if (m_column_of_l >= 0)
-                limit_monoid_l_from_above();
+            if (m_column_of_l >= 0) {
+                if (m_bp.var_has_interesting_bounds(m_column_of_l))
+                    limit_monoid_l_from_above();
+                else
+                    --num_prop;
+            }
             else if (m_column_of_l == -1)
                 limit_all_monoids_from_above();
             else
@@ -155,8 +164,11 @@ namespace lp {
                 if (str)
                     strict++;
             }
-        
+
             for (const auto &p : m_row) {
+                // Skip mpq division for variables with no unassigned bound literals.
+                if (!m_bp.var_has_interesting_bounds(p.var()))
+                    continue;
                 bool str;
                 bool a_is_pos = is_pos(p.coeff());
                 m_bound = m_total;
@@ -204,12 +216,14 @@ namespace lp {
             }
 
             for (const auto& p : m_row) {
+                if (!m_bp.var_has_interesting_bounds(p.var()))
+                    continue;
                 bool str;
                 bool a_is_pos = is_pos(p.coeff());
                 m_bound = m_total;
                 m_bound /= p.coeff();
                 m_bound += monoid_max_no_mult(a_is_pos, p.var(), str);
-                bool astrict = strict - static_cast<int>(str) > 0; 
+                bool astrict = strict - static_cast<int>(str) > 0;
                 if (a_is_pos) {
                     limit_j(p.var(), m_bound, true, true, astrict);
                 }
