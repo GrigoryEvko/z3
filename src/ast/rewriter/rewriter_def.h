@@ -142,6 +142,13 @@ template<typename Config>
 template<bool ProofGen>
 bool rewriter_tpl<Config>::visit(expr * t, unsigned max_depth) {
     TRACE(rewriter_visit, tout << "visiting\n" << mk_ismt2_pp(t, m()) << "\n";);
+    // Fast path for free variables with no bindings — skip get_subst/cache/pre_visit
+    if (t->get_kind() == AST_VAR && m_num_qvars == 0) {
+        result_stack().push_back(t);
+        if (ProofGen)
+            result_pr_stack().push_back(nullptr);
+        return true;
+    }
     expr *  new_t = nullptr;
     proof * new_t_pr = nullptr;
     if (m_cfg.get_subst(t, new_t, new_t_pr)) {
