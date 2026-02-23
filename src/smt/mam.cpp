@@ -3619,9 +3619,16 @@ namespace {
                         // Avoids hash computation and relevancy check for revisited parents.
                         if (curr_parent->is_marked())
                             continue;
-                        func_decl * lbl            = curr_parent->get_decl();
-                        if (!filter.may_contain(m_lbl_hasher(lbl)))
+                        unsigned char lbl_hash;
+                        if (curr_parent->has_func_lbl_hash()) {
+                            lbl_hash = curr_parent->get_func_lbl_hash();
+                        } else {
+                            lbl_hash = m_lbl_hasher(curr_parent->get_decl());
+                            curr_parent->set_func_lbl_hash(lbl_hash);
+                        }
+                        if (!filter.may_contain(lbl_hash))
                             continue;
+                        func_decl * lbl            = curr_parent->get_decl();
                         if (!m_context.is_relevant(curr_parent))
                             continue;
                         enode * curr_parent_root   = curr_parent->get_root();

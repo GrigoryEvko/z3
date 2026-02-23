@@ -79,6 +79,8 @@ namespace smt {
         unsigned            m_merge_tf:1;       //!< True if the enode should be merged with true/false when the associated boolean variable is assigned.
         unsigned            m_cgc_enabled:1;    //!< True if congruence closure is enabled for this enode.
         unsigned            m_is_shared:2;      //!< 0 - not shared, 1 - shared, 2 - invalid state
+        unsigned            m_func_lbl_hash:6;  //!< Cached label hash for bloom filter in MAM collect_parents [0,63].
+        unsigned            m_func_lbl_valid:1;  //!< True if m_func_lbl_hash has been computed.
         unsigned            m_iscope_lvl;       //!< When the enode was internalized
         bool                m_proof_is_logged;  //!< Indicates that the proof for the enode being equal to its root is in the log.
         signed char         m_lbl_hash;         //!< It is different from -1, if enode is used in a pattern
@@ -310,6 +312,10 @@ namespace smt {
         bool is_cgc_enabled() const {
             return m_cgc_enabled;
         }
+
+        bool has_func_lbl_hash() const { return m_func_lbl_valid; }
+        unsigned char get_func_lbl_hash() const { return static_cast<unsigned char>(m_func_lbl_hash); }
+        void set_func_lbl_hash(unsigned char h) { m_func_lbl_hash = h; m_func_lbl_valid = true; }
 
         bool is_commutative() const {
             return m_commutative;

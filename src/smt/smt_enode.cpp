@@ -47,6 +47,8 @@ namespace smt {
         n->m_bool             = m.is_bool(owner);
         n->m_merge_tf         = merge_tf;
         n->m_cgc_enabled      = cgc_enabled;
+        n->m_func_lbl_hash    = 0;
+        n->m_func_lbl_valid   = false;
         n->m_iscope_lvl       = iscope_lvl;
         n->m_lbl_hash         = -1;
         n->m_proof_is_logged = false;
