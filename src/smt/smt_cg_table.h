@@ -167,6 +167,14 @@ namespace smt {
         ptr_vector<void>              m_tables;
         obj_map<func_decl, unsigned>  m_func_decl2id;
 
+        // Direct-mapped cache to accelerate set_func_decl_id lookups.
+        // Avoids hash table probing for repeated func_decl → table_id queries.
+        static constexpr unsigned     DCACHE_BITS = 8;
+        static constexpr unsigned     DCACHE_SIZE = 1u << DCACHE_BITS;
+        static constexpr unsigned     DCACHE_MASK = DCACHE_SIZE - 1;
+        struct dcache_entry { func_decl * m_decl; unsigned m_tid; };
+        dcache_entry                  m_dcache[DCACHE_SIZE];
+
         enum table_kind {
             UNARY,
             BINARY,

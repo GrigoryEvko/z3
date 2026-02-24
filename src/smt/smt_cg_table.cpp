@@ -24,6 +24,7 @@ namespace smt {
 
     cg_table::cg_table(ast_manager & m):
         m_manager(m) {
+        memset(m_dcache, 0, sizeof(m_dcache));
     }
 
     cg_table::~cg_table() {
@@ -64,20 +65,26 @@ namespace smt {
 
     unsigned cg_table::set_func_decl_id(enode * n) {
         func_decl * f = n->get_decl();
+        // Check direct-mapped cache first
+        unsigned cidx = (static_cast<unsigned>(reinterpret_cast<uintptr_t>(f) >> 3)) & DCACHE_MASK;
+        dcache_entry & ce = m_dcache[cidx];
+        if (ce.m_decl == f) {
+            n->set_func_decl_id(ce.m_tid);
+            return ce.m_tid;
+        }
+        // Fall back to hash table
         unsigned tid;
         if (!m_func_decl2id.find(f, tid)) {
             tid = m_tables.size();
             m_func_decl2id.insert(f, tid);
             m_manager.inc_ref(f);
-            SASSERT(tid <= m_tables.size());
             m_tables.push_back(mk_table_for(f));
         }
         SASSERT(tid < m_tables.size());
         n->set_func_decl_id(tid);
-        DEBUG_CODE({
-            unsigned tid_prime;
-            SASSERT(m_func_decl2id.find(n->get_decl(), tid_prime) && tid == tid_prime);
-        });
+        // Update cache
+        ce.m_decl = f;
+        ce.m_tid = tid;
         return tid;
     }
     
@@ -103,6 +110,7 @@ namespace smt {
             m_manager.dec_ref(kv.m_key);
         }
         m_func_decl2id.reset();
+        memset(m_dcache, 0, sizeof(m_dcache));
     }
 
     void cg_table::display(std::ostream & out) const {
@@ -110,20 +118,20 @@ namespace smt {
             void * t = m_tables[kv.m_value];
             out << mk_pp(kv.m_key, m_manager) << ": ";
             switch (GET_TAG(t)) {
-            case UNARY: 
+            case UNARY:
                 display_unary(out, t);
-                break;            
-            case BINARY: 
+                break;
+            case BINARY:
                 display_binary(out, t);
                 break;
-            case BINARY_COMM: 
+            case BINARY_COMM:
                 display_binary_comm(out, t);
-                break;            
-            case NARY: 
+                break;
+            case NARY:
                 display_nary(out, t);
                 break;
             }
-        }        
+        }
     }
 
     void cg_table::display_binary(std::ostream& out, void* t) const {
