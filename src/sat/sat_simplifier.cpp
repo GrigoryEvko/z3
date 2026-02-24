@@ -2407,11 +2407,13 @@ namespace sat {
                     continue;
                 m_new_cls.reset();
                 if (resolve(c1, c2, pos_l, m_new_cls)) {
-                    // On-the-fly self-subsumption detection (Han & Somenzi, SAT'09):
+                    // On-the-fly self-subsumption heuristic (Han & Somenzi, SAT'09):
                     // If the resolvent is strictly smaller than a non-binary antecedent,
-                    // the resolvent subsumes that antecedent minus its pivot literal.
-                    // We skip counting such resolvents; physical strengthening is
-                    // deferred to the adding phase (after model converter save).
+                    // it would subsume that antecedent minus its pivot.  We skip
+                    // counting such resolvents to make the cost estimate more favorable,
+                    // enabling more eliminations.  The resolvent is still produced in
+                    // the adding phase (physical OTFS strengthening is not applied due
+                    // to unsound interactions with propagation during elimination).
                     unsigned rsz = m_new_cls.size();
                     if ((!c1.is_binary() && c1.size() > rsz) ||
                         (!c2.is_binary() && c2.size() > rsz)) {
@@ -2495,52 +2497,6 @@ namespace sat {
                 m_new_cls.reset();
                 if (!resolve(c1, c2, pos_l, m_new_cls))
                     continue;
-
-                // On-the-fly self-subsumption (Han & Somenzi, SAT'09):
-                // If the resolvent is strictly smaller than a non-binary antecedent,
-                // strengthen the antecedent by removing its pivot literal and skip
-                // adding the resolvent (it's subsumed by the strengthened clause).
-                {
-                    unsigned rsz = m_new_cls.size();
-                    bool otf_c1 = !c1.is_binary() && c1.size() > rsz;
-                    bool otf_c2 = !c2.is_binary() && c2.size() > rsz;
-
-                    if (otf_c1 && otf_c2) {
-                        TRACE(sat_simplifier, tout << "otf double self-sub (adding): " << c1
-                              << " and " << c2 << " resolvent size " << rsz << "\n";);
-                        clause& cl1 = *c1.get_clause();
-                        elim_lit(cl1, pos_l);
-                        m_num_elim_otf_sub++;
-                        if (!s.inconsistent() && !c2.was_removed()) {
-                            clause& cl2 = *c2.get_clause();
-                            elim_lit(cl2, neg_l);
-                            m_num_elim_otf_sub++;
-                        }
-                        if (s.inconsistent())
-                            return true;
-                        continue;
-                    }
-                    if (otf_c1) {
-                        TRACE(sat_simplifier, tout << "otf self-sub c1 (adding): " << c1
-                              << " resolvent size " << rsz << "\n";);
-                        clause& cl1 = *c1.get_clause();
-                        elim_lit(cl1, pos_l);
-                        m_num_elim_otf_sub++;
-                        if (s.inconsistent())
-                            return true;
-                        continue;
-                    }
-                    if (otf_c2) {
-                        TRACE(sat_simplifier, tout << "otf self-sub c2 (adding): " << c2
-                              << " resolvent size " << rsz << "\n";);
-                        clause& cl2 = *c2.get_clause();
-                        elim_lit(cl2, neg_l);
-                        m_num_elim_otf_sub++;
-                        if (s.inconsistent())
-                            return true;
-                        continue;
-                    }
-                }
 
                 TRACE(sat_simplifier, tout << c1 << "\n" << c2 << "\n-->\n" << m_new_cls << "\n";);
                 if (cleanup_clause(m_new_cls)) {
