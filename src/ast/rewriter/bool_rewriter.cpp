@@ -183,6 +183,29 @@ br_status bool_rewriter::mk_flat_and_core(unsigned num_args, expr * const * args
 }
 
 br_status bool_rewriter::mk_nflat_or_core(unsigned num_args, expr * const * args, expr_ref & result) {
+    // Fast path for binary OR — avoids mark sets, buffer, and loop overhead.
+    // This is the dominant case during bit-blasting (carry/xor3/adder circuits).
+    if (num_args == 2) {
+        expr * a = args[0];
+        expr * b = args[1];
+        if (m().is_true(a) || m().is_true(b)) { result = m().mk_true(); return BR_DONE; }
+        if (m().is_false(a)) { result = b; return BR_DONE; }
+        if (m().is_false(b)) { result = a; return BR_DONE; }
+        if (a == b) { result = a; return BR_DONE; }
+        expr * atom;
+        if (m().is_not(a, atom) && atom == b) { result = m().mk_true(); return BR_DONE; }
+        if (m().is_not(b, atom) && atom == a) { result = m().mk_true(); return BR_DONE; }
+        if (m_local_ctx && m_local_ctx_cost <= m_local_ctx_limit) {
+            if (local_ctx_simp(2, args, result))
+                return BR_DONE;
+        }
+        if (m_sort_disjunctions && lt(b, a)) {
+            result = m().mk_or(b, a);
+            return BR_DONE;
+        }
+        return BR_FAILED;
+    }
+
     bool s = false; // whether we have canceled some disjuncts or found some out or order
     ptr_buffer<expr> buffer;
     expr_fast_mark1 neg_lits;

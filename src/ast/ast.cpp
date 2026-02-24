@@ -2127,7 +2127,16 @@ app * ast_manager::mk_app_core(func_decl * decl, unsigned num_args, expr * const
     unsigned sz = app::get_obj_size(num_args);
     void * mem = allocate_node(sz);
     try {
-        if (m_int_real_coercions && coercion_needed(decl, num_args, args)) {
+        // Fast path for basic_family_id (Boolean AND/OR/NOT/ITE/EQ etc.):
+        // these never need int/real coercion and sort checking is redundant
+        // for well-formed Boolean terms produced by the rewriter pipeline.
+        if (decl->get_family_id() == basic_family_id) {
+            SASSERT(!m_int_real_coercions || !coercion_needed(decl, num_args, args));
+            DEBUG_CODE(check_args(decl, num_args, args););
+            new_node = new (mem)app(decl, num_args, args);
+            r = register_node(new_node);
+        }
+        else if (m_int_real_coercions && coercion_needed(decl, num_args, args)) {
             expr_ref_buffer new_args(*this);
             for (unsigned i = 0; i < num_args; ++i) {
                 sort * d = decl->is_associative() ? decl->get_domain(0) : decl->get_domain(i);
