@@ -75,6 +75,41 @@ br_status bool_rewriter::mk_app_core(func_decl * f, unsigned num_args, expr * co
 }
 
 void bool_rewriter::mk_and_as_or(unsigned num_args, expr * const * args, expr_ref & result) {
+    // Fast path for binary AND — the dominant case during bit-blasting.
+    // Avoids expr_ref_buffer allocation, adds AND-specific simplifications
+    // before DeMorgan, and dispatches directly to mk_nflat_or_core.
+    if (num_args == 2) {
+        expr *a = args[0], *b = args[1];
+
+        // AND-specific simplifications — return immediately without creating nodes
+        if (m().is_true(a))  { result = b; return; }
+        if (m().is_true(b))  { result = a; return; }
+        if (m().is_false(a) || m().is_false(b)) { result = m().mk_false(); return; }
+        if (a == b) { result = a; return; }
+        expr *atom;
+        if (m().is_not(a, atom) && atom == b) { result = m().mk_false(); return; }
+        if (m().is_not(b, atom) && atom == a) { result = m().mk_false(); return; }
+
+        // DeMorgan: AND(a,b) = NOT(OR(NOT(a), NOT(b)))
+        expr_ref not_a(m()), not_b(m());
+        if (mk_not_core(a, not_a) != BR_DONE)
+            not_a = m().mk_not(a);
+        if (mk_not_core(b, not_b) != BR_DONE)
+            not_b = m().mk_not(b);
+
+        // Direct dispatch — bit-blaster sets flat=false, so mk_nflat_or_core is the target
+        expr_ref or_result(m());
+        expr * or_args[2] = { not_a.get(), not_b.get() };
+        if (mk_nflat_or_core(2, or_args, or_result) == BR_FAILED)
+            or_result = m().mk_or(not_a, not_b);
+
+        // Final NOT (mk_not_core handles double-negation when OR collapsed to NOT node)
+        if (mk_not_core(or_result, result) != BR_DONE)
+            result = m().mk_not(or_result);
+        return;
+    }
+
+    // General path for num_args > 2
     expr_ref_buffer new_args(m());
     for (unsigned i = 0; i < num_args; ++i) {
         expr_ref tmp(m());
@@ -769,53 +804,16 @@ bool bool_rewriter::try_ite_eq(expr* lhs, expr* rhs, expr_ref& r) {
 
 
 br_status bool_rewriter::mk_eq_core(expr * lhs, expr * rhs, expr_ref & result) {
-    if (m().are_equal(lhs, rhs)) {
+    // Fast pointer equality — hash-consing guarantees structural identity
+    if (lhs == rhs) {
         result = m().mk_true();
         return BR_DONE;
     }
 
-    if (m().are_distinct(lhs, rhs)) {
-        result = m().mk_false();
-        return BR_DONE;
-    }
-
-    br_status r = BR_FAILED;
-    
-
-    if (try_ite_eq(lhs, rhs, result))
-        return BR_REWRITE1;
-
-    if (try_ite_eq(rhs, lhs, result))
-        return BR_REWRITE1;
-    
-    if (m_ite_extra_rules) {
-        expr* c1, * t1, * e1;
-        expr* c2, * t2, * e2;
-        if (m().is_ite(lhs) && m().is_value(rhs)) {
-            r = try_ite_value(to_app(lhs), to_app(rhs), result);
-            CTRACE(try_ite_value, r != BR_FAILED,
-                   tout << mk_bounded_pp(lhs, m()) << "\n" << mk_bounded_pp(rhs, m()) << "\n--->\n" << mk_bounded_pp(result, m()) << "\n";);
-        }
-        else if (m().is_ite(rhs) && m().is_value(lhs)) {
-            r = try_ite_value(to_app(rhs), to_app(lhs), result);
-            CTRACE(try_ite_value, r != BR_FAILED,
-                   tout << mk_bounded_pp(lhs, m()) << "\n" << mk_bounded_pp(rhs, m()) << "\n--->\n" << mk_bounded_pp(result, m()) << "\n";);
-        }
-        else if (m().is_ite(lhs, c1, t1, e1) && m().is_ite(rhs, c2, t2, e2) &&
-            m().is_value(t1) && m().is_value(e1) && m().is_value(t2) && m().is_value(e2)) {
-            expr_ref_vector args(m());
-            args.push_back(m().mk_or(c1, c2, m().mk_eq(e1, e2)));
-            auto nc1 = m().mk_not(c1); auto nc2 = m().mk_not(c2);
-            args.push_back(m().mk_or(nc1, nc2, m().mk_eq(t1, t2)));
-            args.push_back(m().mk_or(nc1, c2, m().mk_eq(t1, e2)));
-            args.push_back(m().mk_or(c1, nc2, m().mk_eq(e1, t2)));            
-            result = m().mk_and(args);
-            return BR_REWRITE_FULL;
-        }
-        if (r != BR_FAILED)
-            return r;
-    }
-
+    // Boolean fast-path: skip expensive are_equal/are_distinct plugin dispatch
+    // and try_ite_eq/ITE-extra-rules that almost never match during bit-blasting.
+    // Pointer equality (above) subsumes are_equal for hash-consed boolean exprs.
+    // are_distinct only matches for distinct constants (true vs false), handled below.
     if (m().is_bool(lhs)) {
         bool unfolded = false;
         if (m().is_not(lhs) && m().is_not(rhs)) {
@@ -846,12 +844,12 @@ br_status bool_rewriter::mk_eq_core(expr * lhs, expr * rhs, expr_ref & result) {
 
         if (m().is_not(rhs))
             std::swap(lhs, rhs);
-	
+
         if (m().is_not(lhs, lhs)) {
             result = m().mk_not(m().mk_eq(lhs, rhs));
             return BR_REWRITE2;
         }
-	    
+
         if (unfolded) {
             result = m().mk_eq(lhs, rhs);
             return BR_REWRITE1;
@@ -869,7 +867,60 @@ br_status bool_rewriter::mk_eq_core(expr * lhs, expr * rhs, expr_ref & result) {
                 return BR_DONE;
             }
         }
+        if (m_order_eq && lhs->get_id() > rhs->get_id()) {
+            result = m().mk_eq(rhs, lhs);
+            return BR_DONE;
+        }
+        return BR_FAILED;
     }
+
+    // Non-boolean path: use full semantic equality checks
+    if (m().are_equal(lhs, rhs)) {
+        result = m().mk_true();
+        return BR_DONE;
+    }
+
+    if (m().are_distinct(lhs, rhs)) {
+        result = m().mk_false();
+        return BR_DONE;
+    }
+
+    br_status r = BR_FAILED;
+
+    if (try_ite_eq(lhs, rhs, result))
+        return BR_REWRITE1;
+
+    if (try_ite_eq(rhs, lhs, result))
+        return BR_REWRITE1;
+
+    if (m_ite_extra_rules) {
+        expr* c1, * t1, * e1;
+        expr* c2, * t2, * e2;
+        if (m().is_ite(lhs) && m().is_value(rhs)) {
+            r = try_ite_value(to_app(lhs), to_app(rhs), result);
+            CTRACE(try_ite_value, r != BR_FAILED,
+                   tout << mk_bounded_pp(lhs, m()) << "\n" << mk_bounded_pp(rhs, m()) << "\n--->\n" << mk_bounded_pp(result, m()) << "\n";);
+        }
+        else if (m().is_ite(rhs) && m().is_value(lhs)) {
+            r = try_ite_value(to_app(rhs), to_app(lhs), result);
+            CTRACE(try_ite_value, r != BR_FAILED,
+                   tout << mk_bounded_pp(lhs, m()) << "\n" << mk_bounded_pp(rhs, m()) << "\n--->\n" << mk_bounded_pp(result, m()) << "\n";);
+        }
+        else if (m().is_ite(lhs, c1, t1, e1) && m().is_ite(rhs, c2, t2, e2) &&
+            m().is_value(t1) && m().is_value(e1) && m().is_value(t2) && m().is_value(e2)) {
+            expr_ref_vector args(m());
+            args.push_back(m().mk_or(c1, c2, m().mk_eq(e1, e2)));
+            auto nc1 = m().mk_not(c1); auto nc2 = m().mk_not(c2);
+            args.push_back(m().mk_or(nc1, nc2, m().mk_eq(t1, t2)));
+            args.push_back(m().mk_or(nc1, c2, m().mk_eq(t1, e2)));
+            args.push_back(m().mk_or(c1, nc2, m().mk_eq(e1, t2)));
+            result = m().mk_and(args);
+            return BR_REWRITE_FULL;
+        }
+        if (r != BR_FAILED)
+            return r;
+    }
+
     if (m_order_eq && lhs->get_id() > rhs->get_id()) {
         result = m().mk_eq(rhs, lhs);
         return BR_DONE;
@@ -1156,9 +1207,33 @@ br_status bool_rewriter::mk_not_core(expr * t, expr_ref & result) {
 }
 
 void bool_rewriter::mk_xor(expr * lhs, expr * rhs, expr_ref & result) {
-    expr_ref tmp(m());
-    mk_not(lhs, tmp);
-    mk_eq(tmp, rhs, result);
+    // XOR(a, b) = NOT(EQ(a, b))
+    // Avoid the roundtrip: mk_not(a) → mk_eq(NOT(a), b) → mk_eq_core unwraps NOT → NOT(EQ(a, b))
+    // Instead: normalize NOTs, compute EQ directly, then negate.
+
+    // Trivial cases
+    if (lhs == rhs) { result = m().mk_false(); return; }
+    if (m().is_true(lhs))  { mk_not(rhs, result); return; }
+    if (m().is_false(lhs)) { result = rhs; return; }
+    if (m().is_true(rhs))  { mk_not(lhs, result); return; }
+    if (m().is_false(rhs)) { result = lhs; return; }
+    expr *atom;
+    if (m().is_not(lhs, atom) && atom == rhs) { result = m().mk_true(); return; }
+    if (m().is_not(rhs, atom) && atom == lhs) { result = m().mk_true(); return; }
+
+    // Strip NOTs: XOR(NOT(a), b) = EQ(a, b), XOR(NOT(a), NOT(b)) = XOR(a, b) = NOT(EQ(a, b))
+    expr *a = lhs, *b = rhs;
+    bool negate = true;  // XOR = NOT(EQ), so start with negate
+    if (m().is_not(a, a)) negate = !negate;
+    if (m().is_not(b, b)) negate = !negate;
+
+    expr_ref eq_result(m());
+    mk_eq(a, b, eq_result);
+
+    if (negate)
+        mk_not(eq_result, result);
+    else
+        result = eq_result;
 }
 
 void bool_rewriter::mk_implies(expr * lhs, expr * rhs, expr_ref & result) {
