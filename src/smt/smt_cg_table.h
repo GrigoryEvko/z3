@@ -53,7 +53,10 @@ namespace smt {
         struct cg_binary_hash {
             unsigned operator()(enode * n) const {
                 SASSERT(n->get_num_args() == 2);
-                return combine_hash(n->get_arg(0)->get_root_hash(), n->get_arg(1)->get_root_hash());
+                enode * a0 = n->get_arg(0);
+                enode * a1 = n->get_arg(1);
+                __builtin_prefetch(a1, 0, 1);
+                return combine_hash(a0->get_root_hash(), a1->get_root_hash());
             }
         };
 
@@ -62,9 +65,13 @@ namespace smt {
                 SASSERT(n1->get_num_args() == 2);
                 SASSERT(n2->get_num_args() == 2);
                 SASSERT(n1->get_decl() == n2->get_decl());
-                return 
-                    n1->get_arg(0)->get_root() == n2->get_arg(0)->get_root() &&
-                    n1->get_arg(1)->get_root() == n2->get_arg(1)->get_root();
+                enode * a1_1 = n1->get_arg(1);
+                enode * a2_1 = n2->get_arg(1);
+                __builtin_prefetch(a1_1, 0, 1);
+                __builtin_prefetch(a2_1, 0, 1);
+                if (n1->get_arg(0)->get_root() != n2->get_arg(0)->get_root())
+                    return false;
+                return a1_1->get_root() == a2_1->get_root();
             }
         };
 
@@ -73,8 +80,11 @@ namespace smt {
         struct cg_comm_hash {
             unsigned operator()(enode * n) const {
                 SASSERT(n->get_num_args() == 2);
-                unsigned h1 = n->get_arg(0)->get_root_hash();
-                unsigned h2 = n->get_arg(1)->get_root_hash();
+                enode * a0 = n->get_arg(0);
+                enode * a1 = n->get_arg(1);
+                __builtin_prefetch(a1, 0, 1);
+                unsigned h1 = a0->get_root_hash();
+                unsigned h2 = a1->get_root_hash();
                 if (h1 > h2)
                     std::swap(h1, h2);
                 return hash_u(h1 + h2);
@@ -88,10 +98,16 @@ namespace smt {
                 SASSERT(n1->get_num_args() == 2);
                 SASSERT(n2->get_num_args() == 2);
                 SASSERT(n1->get_decl() == n2->get_decl());
-                enode * c1_1 = n1->get_arg(0)->get_root();
-                enode * c1_2 = n1->get_arg(1)->get_root();
-                enode * c2_1 = n2->get_arg(0)->get_root();
-                enode * c2_2 = n2->get_arg(1)->get_root();
+                enode * a1_0 = n1->get_arg(0);
+                enode * a1_1 = n1->get_arg(1);
+                enode * a2_0 = n2->get_arg(0);
+                enode * a2_1 = n2->get_arg(1);
+                __builtin_prefetch(a1_1, 0, 1);
+                __builtin_prefetch(a2_1, 0, 1);
+                enode * c1_1 = a1_0->get_root();
+                enode * c1_2 = a1_1->get_root();
+                enode * c2_1 = a2_0->get_root();
+                enode * c2_2 = a2_1->get_root();
                 if (c1_1 == c2_1 && c1_2 == c2_2) {
                     return true;
                 }
