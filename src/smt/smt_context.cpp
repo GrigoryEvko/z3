@@ -657,6 +657,8 @@ namespace smt {
                     SASSERT(parent->is_cgr());
                     SASSERT(m_cg_table.contains_ptr(parent));
                     r2_parents.push_back(parent);
+                    if (parent->is_eq())
+                        r2->m_has_eq_parent = true;
                     continue;
                 }
                 parent->m_cg = parent_prime;
@@ -671,6 +673,8 @@ namespace smt {
                 // If congruence closure is not enabled for parent, then I just copy it
                 // to r2_parents
                 r2_parents.push_back(parent);
+                if (parent->is_eq())
+                    r2->m_has_eq_parent = true;
             }
         }
     }
@@ -1425,6 +1429,8 @@ namespace smt {
             TRACE(push_new_th_diseqs, tout << m.get_family_name(th->get_id()) << " not using diseqs\n";);
             return;
         }
+        if (!r->has_eq_parent())
+            return;
         theory_id th_id = th->get_id();
         TRACE(push_new_th_diseqs, tout << "#" << r->get_owner_id() << " " << mk_bounded_pp(r->get_expr(), m) << " v" << v << " th: " << th_id << "\n";);
         for (enode * parent : r->get_parents()) {

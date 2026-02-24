@@ -49,6 +49,7 @@ namespace smt {
         n->m_cgc_enabled      = cgc_enabled;
         n->m_func_lbl_hash    = 0;
         n->m_func_lbl_valid   = false;
+        n->m_has_eq_parent    = false;
         n->m_iscope_lvl       = iscope_lvl;
         n->m_lbl_hash         = -1;
         n->m_proof_is_logged = false;
@@ -59,8 +60,12 @@ namespace smt {
             n->m_args[i] = arg;
             arg->get_root()->m_is_shared = 2;
             SASSERT(n->get_arg(i) == arg);
-            if (update_children_parent)
-                arg->get_root()->m_parents.push_back(n);
+            if (update_children_parent) {
+                enode * arg_root = arg->get_root();
+                arg_root->m_parents.push_back(n);
+                if (n->m_eq)
+                    arg_root->m_has_eq_parent = true;
+            }
         }
         TRACE(mk_enode_detail, tout << "new enode suppress_args: " << n->m_suppress_args << "\n";);
         SASSERT(n->m_suppress_args == suppress_args);

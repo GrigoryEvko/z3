@@ -81,6 +81,7 @@ namespace smt {
         unsigned            m_is_shared:2;      //!< 0 - not shared, 1 - shared, 2 - invalid state
         unsigned            m_func_lbl_hash:6;  //!< Cached label hash for bloom filter in MAM collect_parents [0,63].
         unsigned            m_func_lbl_valid:1;  //!< True if m_func_lbl_hash has been computed.
+        unsigned            m_has_eq_parent:1;   //!< True if an equality enode was ever added as a parent (monotonic).
         unsigned            m_iscope_lvl;       //!< When the enode was internalized
         bool                m_proof_is_logged;  //!< Indicates that the proof for the enode being equal to its root is in the log.
         signed char         m_lbl_hash;         //!< It is different from -1, if enode is used in a pattern
@@ -316,6 +317,9 @@ namespace smt {
         bool has_func_lbl_hash() const { return m_func_lbl_valid; }
         unsigned char get_func_lbl_hash() const { return static_cast<unsigned char>(m_func_lbl_hash); }
         void set_func_lbl_hash(unsigned char h) { m_func_lbl_hash = h; m_func_lbl_valid = true; }
+
+        bool has_eq_parent() const { return m_has_eq_parent; }
+        void set_has_eq_parent() { m_has_eq_parent = true; }
 
         bool is_commutative() const {
             return m_commutative;
