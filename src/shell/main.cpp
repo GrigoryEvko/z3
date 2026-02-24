@@ -323,7 +323,7 @@ static void parse_cmd_line_args(std::string& input_file, int argc, char ** argv)
                 exit(ERR_CMD_LINE);
             }
         }
-        else if (argv[i][0] != '"' && argv[i][0] != '/' && argv[i][0] != '.' && (eq_pos = strchr(argv[i], '='))) {
+        else if (argv[i][0] != '"' && argv[i][0] != '/' && argv[i][0] != '.' && !get_extension(arg) && (eq_pos = strchr(argv[i], '='))) {
             char * key   = argv[i];
             *eq_pos      = 0;
             char * value = eq_pos+1; 
