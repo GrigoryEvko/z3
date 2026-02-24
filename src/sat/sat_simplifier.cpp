@@ -27,11 +27,6 @@ Revision History:
 
 namespace sat {
 
-    // CaDiCaL-style occurrence list length limits for subsumption (options.hpp:215-222).
-    // Prevents quadratic blowup on instances with heavy variable reuse.
-    static const unsigned SUBSUME_CLS_LIMIT = 100;   // max clause length to connect
-    static const unsigned SUBSUME_OCC_LIMIT = 100;    // max occurrence list length per literal
-
     void use_list::init(unsigned num_vars) {
         m_use_list.reset();
         unsigned num_lits = 2 * num_vars;
@@ -156,20 +151,11 @@ namespace sat {
         std::stable_sort(cs.begin(), cs.end(), size_lt());
         for (clause* c : cs) {
             if (!c->frozen()) {
-                // CaDiCaL-style limits: skip clauses too long for subsumption
-                if (c->size() > SUBSUME_CLS_LIMIT)
-                    continue;
-                // Skip if every literal's occurrence list is already full.
-                // Find the minimum-occurrence literal; if even that exceeds
-                // the limit, the clause would not help subsumption checks.
-                unsigned min_occ = UINT_MAX;
-                for (literal l : *c) {
-                    unsigned occ = m_use_list.get(l).size();
-                    if (occ < min_occ)
-                        min_occ = occ;
-                }
-                if (min_occ >= SUBSUME_OCC_LIMIT)
-                    continue;
+                // All clauses MUST be registered in the use list.
+                // Variable elimination iterates the use list to find ALL
+                // clauses containing a variable. Skipping clauses here
+                // causes elimination to produce incomplete resolvents,
+                // silently losing information (soundness bug).
                 m_use_list.insert(*c);
                 if (c->strengthened()) {
                     mark_subsume(*c);
@@ -802,8 +788,7 @@ namespace sat {
         }
         for (unsigned i = num_clauses; i < s.m_clauses.size(); ++i) {
             clause & c = *s.m_clauses[i];
-            if (c.size() <= SUBSUME_CLS_LIMIT)
-                m_use_list.insert(c);
+            m_use_list.insert(c);
         }
     }
 
@@ -2417,8 +2402,8 @@ namespace sat {
             for (unsigned j = 0; j < m_neg_cls.size(); ++j) {
                 clause_wrapper & c2 = m_neg_cls[j];
                 bool c2_is_gate = (m_gate_type != GATE_NONE) && m_gate_marks[m_pos_cls.size() + j];
-                // Gate-aware skipping: only resolve (gate, non-gate) pairs.
-                if (m_gate_type != GATE_NONE && c1_is_gate == c2_is_gate)
+                // Gate-aware skipping: skip (gate, gate) pairs (always tautological).
+                if (m_gate_type != GATE_NONE && c1_is_gate && c2_is_gate)
                     continue;
                 m_new_cls.reset();
                 if (resolve(c1, c2, pos_l, m_new_cls)) {
@@ -2504,8 +2489,8 @@ namespace sat {
                 if (c2.is_binary() && !c2.contains(neg_l))
                     continue;
                 bool c2_is_gate = (m_gate_type != GATE_NONE) && m_gate_marks[m_pos_cls.size() + j];
-                // Gate-aware skipping (same logic as bounding phase).
-                if (m_gate_type != GATE_NONE && c1_is_gate == c2_is_gate)
+                // Gate-aware skipping: skip (gate, gate) pairs (always tautological).
+                if (m_gate_type != GATE_NONE && c1_is_gate && c2_is_gate)
                     continue;
                 m_new_cls.reset();
                 if (!resolve(c1, c2, pos_l, m_new_cls))
@@ -2586,8 +2571,7 @@ namespace sat {
                     if (s.m_config.m_drat) s.m_drat.add(*new_c, status::redundant());
                     s.m_clauses.push_back(new_c);
 
-                    if (new_c->size() <= SUBSUME_CLS_LIMIT)
-                        m_use_list.insert(*new_c);
+                    m_use_list.insert(*new_c);
                     mark_subsume(*new_c);
                     if (m_sub_counter > 0)
                         back_subsumption1(*new_c);
@@ -3131,11 +3115,9 @@ namespace sat {
                 clause * new_c = s.alloc_clause(resolvent.size(), resolvent.data(), false);
                 if (s.m_config.m_drat) s.m_drat.add(*new_c, status::redundant());
                 s.m_clauses.push_back(new_c);
-                if (new_c->size() <= SUBSUME_CLS_LIMIT) {
-                    m_use_list.insert(*new_c);
-                    mark_subsume(*new_c);
-                    m_sub_todo.insert(*new_c);
-                }
+                m_use_list.insert(*new_c);
+                mark_subsume(*new_c);
+                m_sub_todo.insert(*new_c);
             }
         }
         return true;
@@ -3191,11 +3173,9 @@ namespace sat {
                 clause * nc = s.alloc_clause(new_cls.size(), new_cls.data(), false);
                 if (s.m_config.m_drat) s.m_drat.add(*nc, status::redundant());
                 s.m_clauses.push_back(nc);
-                if (nc->size() <= SUBSUME_CLS_LIMIT) {
-                    m_use_list.insert(*nc);
-                    mark_subsume(*nc);
-                    m_sub_todo.insert(*nc);
-                }
+                m_use_list.insert(*nc);
+                mark_subsume(*nc);
+                m_sub_todo.insert(*nc);
             }
         }
 
