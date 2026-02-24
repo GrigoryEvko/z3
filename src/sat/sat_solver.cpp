@@ -3997,6 +3997,14 @@ namespace sat {
         SASSERT(var < num_vars());
         TRACE(sat_verbose, tout << "process " << var << "@" << var_lvl << " marked " << is_marked(var) << " conflict " << m_conflict_lvl << "\n";);
         if (!is_marked(var) && var_lvl > 0) {
+            // Guard against unassigned antecedents: after OTFS clause
+            // strengthening, a reason clause may contain a literal whose
+            // variable was unassigned by backtracking.  Its stale lvl()
+            // could match m_conflict_lvl, corrupting num_marks and
+            // m_max_marked_trail.  Skip such variables safely — they
+            // contribute no information to the resolvent.
+            if (value(antecedent) == l_undef)
+                return;
             mark(var);
             // In focused mode, bump via VMTF queue (move-to-front).
             // In stable mode (or no dual mode), use the standard VSIDS/CHB bump.
