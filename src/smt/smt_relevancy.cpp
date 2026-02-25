@@ -342,20 +342,19 @@ namespace smt {
         void mark_as_relevant(expr * n) override {
             if (!enabled())
                 return;
-            if (!is_relevant_core(n)) {
-                enode * e    = m_context.find_enode(n);
-                if (e != nullptr) {
-                    enode * curr = e;
-                    do {
-                        if (!is_relevant_core(curr->get_expr()))
-                            set_relevant(curr->get_expr());
-                        curr = curr->get_next();
-                    }
-                    while (curr != e);
-                }
-                else {
-                    set_relevant(n);
-                }
+            if (is_relevant_core(n))
+                return;
+            enode * e = m_context.find_enode(n);
+            if (e == nullptr) {
+                set_relevant(n);
+                return;
+            }
+            // First member (n) is known not relevant — skip redundant check.
+            set_relevant(n);
+            // Walk remaining equivalence class members (often empty for singletons).
+            for (enode * curr = e->get_next(); curr != e; curr = curr->get_next()) {
+                if (!is_relevant_core(curr->get_expr()))
+                    set_relevant(curr->get_expr());
             }
         }
         

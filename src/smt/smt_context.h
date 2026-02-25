@@ -430,26 +430,38 @@ namespace smt {
         }
 
         lbool get_assignment(expr * n) const {
-            if (m.is_false(n))
-                return l_false;
+            // Fast path: direct bool_var lookup (most exprs are positive atoms).
+            bool_var v = get_bool_var_of_id_option(n->get_id());
+            if (v != null_bool_var)
+                return get_assignment(v);
+            // NOT(x) doesn't get its own bool_var — look through to x.
             expr* arg = nullptr;
             if (m.is_not(n, arg))
                 return ~get_assignment_core(arg);
-            return get_assignment_core(n);
+            // Constant false without bool_var.
+            if (m.is_false(n))
+                return l_false;
+            UNREACHABLE();
+            return l_undef;
         }
 
         // Similar to get_assignment, but returns l_undef if n is not internalized.
+        // Fast path tries direct bool_var lookup first (single array access),
+        // avoiding is_false/is_not checks and double ID→bool_var lookup.
         lbool find_assignment(expr * n) const {
-            if (m.is_false(n))
-                return l_false;
+            bool_var v = get_bool_var_of_id_option(n->get_id());
+            if (v != null_bool_var)
+                return get_assignment(v);
+            // Slow path: NOT(x) doesn't get its own bool_var — look through it.
             expr* arg = nullptr;
             if (m.is_not(n, arg)) {
-                if (b_internalized(arg))
-                    return ~get_assignment_core(arg);
-                return l_undef;
+                v = get_bool_var_of_id_option(arg->get_id());
+                if (v != null_bool_var)
+                    return ~get_assignment(v);
             }
-            if (b_internalized(n))
-                return get_assignment(n);
+            // Constant false without bool_var (shouldn't happen in practice).
+            if (m.is_false(n))
+                return l_false;
             return l_undef;
         }
 
