@@ -1169,10 +1169,10 @@ namespace sat {
                     wlist.set_end(it2);         \
             }
         for (; it != end; ++it) {
-            // Prefetch the clause data for the next watch entry.
-            // While we process the current entry, the memory fetch for
-            // the next clause is issued to hide DRAM latency.
-            if (it + 1 < end && (it + 1)->is_clause()) {
+            // Prefetch clause data for the next watch entry unconditionally.
+            // Prefetch never faults, so if the next entry is not a clause
+            // (ext_constraint), we just prefetch irrelevant memory harmlessly.
+            if (it + 1 < end) {
                 const char* next_cls = reinterpret_cast<const char*>((it + 1)->get_clause_offset());
 #if defined(__GNUC__) || defined(__clang__)
                 __builtin_prefetch(next_cls, 0, 1);
