@@ -2233,12 +2233,18 @@ namespace sat {
 
         // CaDiCaL-style three-phase decision cascade (decide.cpp:138-154):
         //   Stable mode:  target -> best -> saved
-        //   Focused mode: saved only
+        //   Focused mode: initial phase (negative polarity)
         // Target phase records the deepest conflict-free trail prefix and
         // provides guided restart: the solver rebuilds the same prefix and
         // extends it further each time.
+        //
+        // Critical: focused mode must NOT use saved phase -- using saved
+        // phase defeats the exploration purpose of VMTF.  CaDiCaL uses the
+        // initial phase (negative) so VMTF variable ordering is the sole
+        // exploratory signal.
         lbool tp = m_target_phase.get(next, l_undef);
         bool stable = m_config.m_dual_mode ? m_stable_mode : (m_search_state == s_sat);
+        bool focused = m_config.m_dual_mode && !m_stable_mode;
 
         switch (m_config.m_phase) {
         case PS_ALWAYS_TRUE:
@@ -2246,6 +2252,8 @@ namespace sat {
         case PS_ALWAYS_FALSE:
             return false;
         case PS_BASIC_CACHING:
+            if (focused)
+                return false;  // initial phase (negative polarity)
             if (stable && tp != l_undef)
                 return tp == l_true;
             return m_phase[next];
@@ -2253,7 +2261,9 @@ namespace sat {
             return m_best_phase[next];
         case PS_SAT_CACHING:
         case PS_LOCAL_SEARCH:
-            // CaDiCaL cascade: stable prefers target, then best; focused uses saved.
+            if (focused)
+                return false;  // initial phase (negative polarity)
+            // CaDiCaL cascade: stable prefers target, then best.
             if (stable) {
                 if (tp != l_undef)
                     return tp == l_true;
@@ -2670,6 +2680,8 @@ namespace sat {
             m_stab_phases = 0;
             m_stabilize_inc = 0;
             m_stabilize_last_ticks = 0;
+            m_stabilize_last_decisions = m_stats.m_decision;
+            m_stabilize_last_conflicts = 0;
             m_stabilize_limit = m_config.m_stabilize_initial;
             reluctant_enable();
         }
@@ -2882,6 +2894,12 @@ namespace sat {
         if (should_compact()) {
             compact_vars();
         }
+
+        // After heavy simplification (SCC, variable elimination, probing),
+        // the VMTF bump timestamps are stale -- they reflect pre-simplification
+        // conflict patterns, not the restructured formula.  Reinitialize the
+        // queue so focused mode starts fresh with the new problem structure.
+        vmtf_reinit_after_simplify();
 
         if (m_next_simplify == 0) {
             m_next_simplify = static_cast<unsigned>(scale_by_density(m_config.m_next_simplify1));
@@ -3134,8 +3152,14 @@ namespace sat {
 
         // Check for dual-mode switching before evaluating restart condition.
         // stabilizing() may toggle m_stable_mode and swap EMA averages.
-        if (m_config.m_dual_mode)
+        // If a mode switch occurs, force a restart so the solver starts
+        // fresh in the new mode (CaDiCaL always restarts on mode switch).
+        if (m_config.m_dual_mode) {
+            bool was_stable = m_stable_mode;
             stabilizing();
+            if (was_stable != m_stable_mode)
+                return true;  // force restart on mode switch
+        }
 
         // CaDiCaL-style tick-based restart forcing: if the total search work
         // (propagation + minimization) since the last restart greatly exceeds
@@ -3145,8 +3169,15 @@ namespace sat {
         // if we burn more than restart_threshold*64 ticks without enough
         // conflicts, the solver is doing expensive work that should trigger
         // a restart consideration.
+        //
+        // Exception: in focused mode with zero conflicts since last restart,
+        // tick-forced restarts cause deterministic decision loops (VMTF picks
+        // the same variables in the same order since nothing was bumped).
+        // Suppress them so the solver explores deeper until it hits a conflict.
         uint64_t ticks_since_restart = m_search_ticks - m_ticks_at_last_restart;
         bool tick_forced = ticks_since_restart > static_cast<uint64_t>(m_restart_threshold) * 64;
+        if (tick_forced && m_config.m_dual_mode && !m_stable_mode && m_conflicts_since_restart == 0)
+            tick_forced = false;
 
         // In stable mode with dual-mode, use reluctant doubling for restart timing.
         if (m_config.m_dual_mode && m_stable_mode) {
@@ -4006,20 +4037,24 @@ namespace sat {
             if (value(antecedent) == l_undef)
                 return;
             mark(var);
-            // In focused mode, bump via VMTF queue (move-to-front).
-            // In stable mode (or no dual mode), use the standard VSIDS/CHB bump.
+            // CaDiCaL-style: focused mode bumps ONLY the VMTF queue (recency);
+            // stable mode bumps ONLY VSIDS/CHB scores.  Bumping both corrupts
+            // VSIDS scores with focused-mode exploration noise, destroying the
+            // benefit of having two independent heuristics.
             if (m_config.m_dual_mode && !m_stable_mode) {
                 vmtf_bump(var);
             }
-            switch (m_config.m_branching_heuristic) {
-            case BH_VSIDS:
-                inc_activity(var);
-                break;
-            case BH_CHB:
-                m_last_conflict[var] = m_stats.m_conflict;
-                break;
-            default:
-                break;
+            else {
+                switch (m_config.m_branching_heuristic) {
+                case BH_VSIDS:
+                    inc_activity(var);
+                    break;
+                case BH_CHB:
+                    m_last_conflict[var] = m_stats.m_conflict;
+                    break;
+                default:
+                    break;
+                }
             }
 
             // CaDiCaL-style per-level seen tracking for minimization early abort.
@@ -5118,6 +5153,11 @@ namespace sat {
     // CaDiCaL-style reason-side literal bumping for VSIDS (analyze.cpp:342-424).
     void solver::bump_reason_literals() {
         if (!m_config.m_bump_reason || m_config.m_branching_heuristic != BH_VSIDS || m_lemma.empty())
+            return;
+        // CaDiCaL-style: reason-side bumping is a VSIDS-only technique.
+        // In focused mode, VMTF recency is the sole signal -- skip reason
+        // bumping to avoid corrupting VSIDS scores and wasting time.
+        if (m_config.m_dual_mode && !m_stable_mode)
             return;
         uint64_t decisions_this = m_stats.m_decision - m_decisions_at_last_conflict;
         m_decisions_at_last_conflict = m_stats.m_decision;

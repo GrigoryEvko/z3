@@ -12,7 +12,7 @@ Abstract:
     (VSIDS heap + reluctant doubling restarts).
 
     VMTF queue: doubly-linked list ordered by bump timestamp.
-    Mode switching: quadratically increasing intervals.
+    Mode switching: geometrically doubling intervals.
     Each mode has its own EMA averages for restart decisions.
 
 Author:
@@ -100,6 +100,43 @@ namespace sat {
         return res;
     }
 
+    void solver::vmtf_reinit_after_simplify() {
+        // After simplification (variable elimination, SCC, etc.), the VMTF
+        // bump timestamps reflect pre-simplification conflict patterns and
+        // are meaningless for the post-simplification formula.  Reset all
+        // timestamps to a uniform sequential order so focused mode starts
+        // fresh.  This mirrors CaDiCaL's behavior where the queue is
+        // effectively reinitialized after inprocessing.
+        if (!m_config.m_dual_mode || m_vmtf_links.empty())
+            return;
+
+        unsigned nv = num_vars();
+        m_vmtf_counter = 0;
+
+        // Rebuild the queue from scratch in variable-ID order.
+        // Variable-ID order is a reasonable default: variables created
+        // later by bit-blasting tend to be structurally deeper and often
+        // more useful for focused-mode decisions.
+        m_vmtf_links.reset();
+        m_vmtf_links.resize(nv);
+        m_vmtf_bumped.reset();
+        m_vmtf_bumped.resize(nv, 0);
+        m_vmtf_queue_head = null_bool_var;
+        m_vmtf_queue_tail = null_bool_var;
+        m_vmtf_search = null_bool_var;
+        for (bool_var v = 0; v < static_cast<bool_var>(nv); ++v) {
+            if (was_eliminated(v))
+                continue;
+            m_vmtf_bumped[v] = ++m_vmtf_counter;
+            vmtf_enqueue(v);
+            if (value(v) == l_undef)
+                m_vmtf_search = v;
+        }
+
+        IF_VERBOSE(3, verbose_stream() << "(sat.vmtf-reinit :vars " << nv
+                   << " :counter " << m_vmtf_counter << ")\n");
+    }
+
     // -----------------------
     //
     // Dual-mode switching
@@ -112,29 +149,52 @@ namespace sat {
     bool solver::stabilizing() {
         if (!m_config.m_dual_mode)
             return false;
-        if (m_conflicts_since_init <= m_stabilize_limit)
+
+        // Primary trigger: conflict count exceeds limit.
+        bool conflict_trigger = m_conflicts_since_init > m_stabilize_limit;
+
+        // Fallback trigger: if the solver has done many decisions without
+        // generating any new conflicts (stuck in VMTF deterministic loop),
+        // force a mode switch based on decision count.  Without this, focused
+        // mode can loop forever on problems where VMTF ordering never produces
+        // conflicts (common in QF_BV after heavy simplification).
+        bool decision_trigger = false;
+        if (!m_stable_mode && !conflict_trigger) {
+            uint64_t decisions_in_mode = m_stats.m_decision - m_stabilize_last_decisions;
+            uint64_t conflicts_in_mode = m_conflicts_since_init -
+                (m_stabilize_last_conflicts > m_conflicts_since_init ? 0 : m_stabilize_last_conflicts);
+            // If we've done 10x more decisions than the stabilize interval
+            // with zero new conflicts, the VMTF queue is not productive.
+            if (conflicts_in_mode == 0 &&
+                decisions_in_mode > 2 * static_cast<uint64_t>(m_config.m_stabilize_initial))
+                decision_trigger = true;
+        }
+
+        if (!conflict_trigger && !decision_trigger)
             return m_stable_mode;
 
         // Time to switch modes.
-        uint64_t delta = m_conflicts_since_init > m_stabilize_last_ticks
-                       ? m_conflicts_since_init - m_stabilize_last_ticks : 1;
+        // CaDiCaL-style doubling: each full cycle (focused + stable) the
+        // interval doubles.  Quadratic growth (sp*sp) starves stable mode
+        // on problems where focused mode is unproductive.
         if (m_stabilize_inc == 0)
-            m_stabilize_inc = delta;
+            m_stabilize_inc = m_config.m_stabilize_initial;
         if (m_stabilize_inc == 0)
-            m_stabilize_inc = 1;
+            m_stabilize_inc = 1000;
 
-        // Quadratic scaling of phase duration.
         uint64_t next_delta = m_stabilize_inc;
-        uint64_t sp = static_cast<uint64_t>(m_stab_phases) + 1;
-        next_delta *= sp * sp;
 
         bool next_stable = !m_stable_mode;
         m_stabilize_limit = m_conflicts_since_init + next_delta;
         m_stabilize_last_ticks = m_conflicts_since_init;
+        m_stabilize_last_decisions = m_stats.m_decision;
+        m_stabilize_last_conflicts = m_conflicts_since_init;
         m_stable_mode = next_stable;
 
         if (m_stable_mode) {
             m_stab_phases++;
+            // Double the interval for the next cycle (geometric growth).
+            m_stabilize_inc = std::min(m_stabilize_inc * 2, static_cast<uint64_t>(1u << 20));
             reluctant_enable();
         }
 

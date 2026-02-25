@@ -194,6 +194,8 @@ namespace sat {
         uint64_t                m_stabilize_limit = 0;
         uint64_t                m_stabilize_inc = 0;
         uint64_t                m_stabilize_last_ticks = 0;
+        uint64_t                m_stabilize_last_decisions = 0;
+        uint64_t                m_stabilize_last_conflicts = 0;
         unsigned                m_stab_phases = 0;
 
         // Reluctant doubling (Knuth/Luby) for stable-mode restarts.
@@ -701,6 +703,7 @@ namespace sat {
         void vmtf_dequeue(bool_var v);
         void vmtf_enqueue(bool_var v);
         void vmtf_update_search(bool_var v);
+        void vmtf_reinit_after_simplify();
 
         // Dual-mode switching (implemented in sat_dual_mode.cpp)
         bool stabilizing();
