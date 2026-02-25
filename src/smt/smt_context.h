@@ -315,6 +315,8 @@ namespace smt {
             return std::min(m_relevancy_lvl, m_fparams.m_relevancy_lvl);
         }
 
+        relevancy_propagator const & get_relevancy_propagator() const { return *m_relevancy_propagator; }
+
         enode * get_enode(expr const * n) const {
             SASSERT(e_internalized(n));
             return m_app2enode[n->get_id()];

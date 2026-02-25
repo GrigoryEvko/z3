@@ -19,6 +19,7 @@ Revision History:
 #pragma once
 
 #include "ast/ast.h"
+#include "util/uint_set.h"
 
 namespace smt {
 
@@ -40,6 +41,12 @@ namespace smt {
         unsigned               m_num_bindings;
         enode * const *        m_bindings;
 
+        // Cached relevancy state — avoids repeated pointer chases through
+        // m_context.relevancy() → relevancy_lvl() → std::min(...) and
+        // m_relevancy_propagator->get_relevant_set() on every is_relevant call.
+        bool                   m_relevancy_enabled;
+        uint_set const *       m_relevant_set;
+
         bool all_args(app * a, bool is_true);
         bool any_arg(app * a, bool is_true);
         bool check_core(expr * n, bool is_true);
@@ -50,6 +57,16 @@ namespace smt {
         bool all_terms_exist_core(expr * n);
 
         void cache_reset() { m_cache_gen++; }
+
+        // Fast relevancy check using cached state.
+        // Avoids 2 pointer indirections per call vs m_context.is_relevant().
+        bool is_relevant(expr * n) const {
+            if (!m_relevancy_enabled) return true;
+            return m_relevant_set && m_relevant_set->contains(n->get_id());
+        }
+        bool is_relevant(enode * n) const;
+
+        void init_relevancy_cache();
 
     public:
         checker(context & c);

@@ -40,9 +40,14 @@ namespace smt {
 
     bool checker::check_core(expr * n, bool is_true) {
         SASSERT(m_manager.is_bool(n));
-        if (m_context.b_internalized(n) && m_context.is_relevant(n)) {
-            lbool val = m_context.get_assignment(n);
-            return val != l_undef && is_true == (val == l_true);
+        // Fast path: if n is already internalized and relevant, check its assignment.
+        // Combined b_internalized + get_assignment to avoid double ID lookup.
+        {
+            bool_var v = m_context.get_bool_var_of_id_option(n->get_id());
+            if (v != null_bool_var && is_relevant(n)) {
+                lbool val = m_context.get_assignment(v);
+                return val != l_undef && is_true == (val == l_true);
+            }
         }
         if (!is_app(n))
             return false;
@@ -63,10 +68,9 @@ namespace smt {
                 if (!m_manager.is_iff(a)) {
                     enode * lhs = get_enode_eq_to(a->get_arg(0));
                     enode * rhs = get_enode_eq_to(a->get_arg(1));
-                    if (lhs && rhs && m_context.is_relevant(lhs) && m_context.is_relevant(rhs)) {
+                    if (lhs && rhs && is_relevant(lhs) && is_relevant(rhs)) {
                         if (is_true && lhs->get_root() == rhs->get_root())
                             return true;
-                        // if (!is_true && m_context.is_ext_diseq(lhs, rhs, 2))
                         if (!is_true && m_context.is_diseq(lhs, rhs))
                             return true;
                     }
@@ -87,7 +91,7 @@ namespace smt {
                          check(a->get_arg(1), true));
                 }
             case OP_ITE: {
-                if (m_context.lit_internalized(a->get_arg(0)) && m_context.is_relevant(a->get_arg(0))) {
+                if (m_context.lit_internalized(a->get_arg(0)) && is_relevant(a->get_arg(0))) {
                     switch (m_context.get_assignment(a->get_arg(0))) {
                     case l_false: return check(a->get_arg(2), is_true);
                     case l_undef: return false;
@@ -101,7 +105,7 @@ namespace smt {
             }
         }
         enode * e = get_enode_eq_to(a);
-        if (e && e->is_bool() && m_context.is_relevant(e)) {
+        if (e && e->is_bool() && is_relevant(e)) {
             lbool val = m_context.get_assignment(e->get_expr());
             return val != l_undef && is_true == (val == l_true);
         }
@@ -130,17 +134,21 @@ namespace smt {
         if (num == 2) {
             enode * a0 = get_enode_eq_to(n->get_arg(0));
             if (!a0) return nullptr;
+            // Prefetch a0's cache line — CG table hash will read a0->m_root_hash
+            // and equality will read a0->m_root. The recursive call to resolve arg1
+            // provides enough time for the prefetch to complete.
+            __builtin_prefetch(a0, 0, 1);
             enode * a1 = get_enode_eq_to(n->get_arg(1));
             if (!a1) return nullptr;
             enode * args[2] = { a0, a1 };
             enode * e = m_context.get_enode_eq_to(n->get_decl(), 2, args);
-            return (e && m_context.is_relevant(e)) ? e : nullptr;
+            return (e && is_relevant(e)) ? e : nullptr;
         }
         if (num == 1) {
             enode * a0 = get_enode_eq_to(n->get_arg(0));
             if (!a0) return nullptr;
             enode * e = m_context.get_enode_eq_to(n->get_decl(), 1, &a0);
-            return (e && m_context.is_relevant(e)) ? e : nullptr;
+            return (e && is_relevant(e)) ? e : nullptr;
         }
         ptr_buffer<enode> buffer;
         for (unsigned i = 0; i < num; ++i) {
@@ -152,7 +160,7 @@ namespace smt {
         enode * e = m_context.get_enode_eq_to(n->get_decl(), num, buffer.data());
         if (e == nullptr)
             return nullptr;
-        return m_context.is_relevant(e) ? e : nullptr;
+        return is_relevant(e) ? e : nullptr;
     }
 
     enode * checker::get_enode_eq_to(expr * n) {
@@ -163,7 +171,7 @@ namespace smt {
             return m_bindings[m_num_bindings - idx - 1];
         }
         enode * e = m_context.get_enode_or_null(n);
-        if (e && m_context.is_relevant(n))
+        if (e && is_relevant(n))
             return e;
         if (!is_app(n) || to_app(n)->get_num_args() == 0)
             return nullptr;
@@ -181,9 +189,23 @@ namespace smt {
         return get_enode_eq_to_core(to_app(n));
     }
 
+    void checker::init_relevancy_cache() {
+        m_relevancy_enabled = m_context.relevancy();
+        if (m_relevancy_enabled)
+            m_relevant_set = m_context.get_relevancy_propagator().get_relevant_set();
+        else
+            m_relevant_set = nullptr;
+    }
+
+    bool checker::is_relevant(enode * n) const {
+        if (!m_relevancy_enabled) return true;
+        return m_relevant_set && m_relevant_set->contains(n->get_expr()->get_id());
+    }
+
     bool checker::is_sat(expr * n, unsigned num_bindings, enode * const * bindings) {
         flet<unsigned>        l1(m_num_bindings, num_bindings);
         flet<enode * const *> l2(m_bindings, bindings);
+        init_relevancy_cache();
         bool r = check(n, true);
         cache_reset();
         return r;
@@ -192,6 +214,7 @@ namespace smt {
     bool checker::is_unsat(expr * n, unsigned num_bindings, enode * const * bindings) {
         flet<unsigned>        l1(m_num_bindings, num_bindings);
         flet<enode * const *> l2(m_bindings, bindings);
+        init_relevancy_cache();
         bool r = check(n, false);
         cache_reset();
         return r;
@@ -283,6 +306,7 @@ namespace smt {
     bool checker::all_terms_exist(expr * n, unsigned num_bindings, enode * const * bindings) {
         flet<unsigned>        l1(m_num_bindings, num_bindings);
         flet<enode * const *> l2(m_bindings, bindings);
+        init_relevancy_cache();
         bool r = all_terms_exist_core(n);
         cache_reset();
         return r;
@@ -293,7 +317,9 @@ namespace smt {
         m_manager(c.get_manager()),
         m_cache_gen(1),
         m_num_bindings(0),
-        m_bindings(nullptr) {
+        m_bindings(nullptr),
+        m_relevancy_enabled(false),
+        m_relevant_set(nullptr) {
     }
 
 };
