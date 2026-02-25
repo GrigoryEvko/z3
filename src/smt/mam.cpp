@@ -3617,6 +3617,9 @@ namespace {
                     enode_vector::const_iterator end2 = curr_child->end_parents();
                     for (; it2 != end2; ++it2) {
                         enode * curr_parent        = *it2;
+                        // Prefetch next parent enode's bitfield cache line.
+                        if (it2 + 1 < end2)
+                            __builtin_prefetch(*(it2 + 1), 0, 1);
 #ifdef _PROFILE_PATH_TREE
                         if (curr_parent->is_eq())
                             t->m_num_eq_visited++;
