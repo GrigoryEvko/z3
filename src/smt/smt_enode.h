@@ -82,6 +82,7 @@ namespace smt {
         unsigned            m_func_lbl_hash:6;  //!< Cached label hash for bloom filter in MAM collect_parents [0,63].
         unsigned            m_func_lbl_valid:1;  //!< True if m_func_lbl_hash has been computed.
         unsigned            m_has_eq_parent:1;   //!< True if an equality enode was ever added as a parent (monotonic).
+        unsigned            m_cached_num_args:10; //!< Cached arity (0 if m_suppress_args). Avoids m_owner pointer chase.
         unsigned            m_iscope_lvl;       //!< When the enode was internalized
         bool                m_proof_is_logged;  //!< Indicates that the proof for the enode being equal to its root is in the log.
         signed char         m_lbl_hash;         //!< It is different from -1, if enode is used in a pattern
@@ -220,8 +221,8 @@ namespace smt {
             return m_next; 
         }
 
-        unsigned get_num_args() const { 
-            return m_suppress_args ? 0 : m_owner->get_num_args(); 
+        unsigned get_num_args() const {
+            return m_cached_num_args;
         }
 
         enode * get_arg(unsigned idx) const {
@@ -487,6 +488,7 @@ namespace smt {
             }
             m_app.set_decl(f);
             m_app.set_num_args(num_args);
+            r->m_cached_num_args = num_args;
             r->m_commutative = num_args == 2 && f->is_commutative();
             memcpy(r->m_args, args, sizeof(enode*) * num_args);
             return r;

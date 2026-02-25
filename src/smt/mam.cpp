@@ -1890,11 +1890,15 @@ namespace {
         enode * get_first_f_app(func_decl * lbl, unsigned num_expected_args, enode * curr) {
             enode * first = curr;
             do {
-                if (curr->get_decl() == lbl && curr->is_cgr() && curr->get_num_args() == num_expected_args) {
+                enode * next = curr->get_next();
+                __builtin_prefetch(next, 0, 1);
+                // Check is_cgr() first — it only touches the enode's own cache line
+                // (m_cg == this), avoiding the m_owner pointer chase for non-root nodes.
+                if (curr->is_cgr() && curr->get_decl() == lbl && curr->get_num_args() == num_expected_args) {
                     update_max_generation(curr, first);
                     return curr;
                 }
-                curr = curr->get_next();
+                curr = next;
             }
             while (curr != first);
             return nullptr;
@@ -1903,11 +1907,13 @@ namespace {
         enode * get_next_f_app(func_decl * lbl, unsigned num_expected_args, enode * first, enode * curr) {
             curr = curr->get_next();
             while (curr != first) {
-                if (curr->get_decl() == lbl && curr->is_cgr() && curr->get_num_args() == num_expected_args) {
+                enode * next = curr->get_next();
+                __builtin_prefetch(next, 0, 1);
+                if (curr->is_cgr() && curr->get_decl() == lbl && curr->get_num_args() == num_expected_args) {
                     update_max_generation(curr, first);
                     return curr;
                 }
-                curr = curr->get_next();
+                curr = next;
             }
             return nullptr;
         }

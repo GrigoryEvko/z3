@@ -42,6 +42,7 @@ namespace smt {
         n->m_mark2            = false;
         n->m_interpreted      = false;
         n->m_suppress_args    = suppress_args;
+        n->m_cached_num_args  = suppress_args ? 0 : owner->get_num_args();
         n->m_eq               = m.is_eq(owner);
         n->m_commutative      = n->get_num_args() == 2 && owner->get_decl()->is_commutative();
         n->m_bool             = m.is_bool(owner);
