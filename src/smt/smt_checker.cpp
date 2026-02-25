@@ -116,12 +116,12 @@ namespace smt {
         if (n->get_ref_count() > 1) {
             unsigned id = n->get_id();
             unsigned pol = static_cast<unsigned>(is_true);
-            if (id < m_bool_gen[pol].size() && m_bool_gen[pol][id] == m_cache_gen)
+            if (id < m_bool_gen[pol].size() && m_bool_gen[pol][id] == m_bool_cache_gen)
                 return m_bool_val[pol][id] != 0;
             bool r = check_core(n, is_true);
             m_bool_gen[pol].reserve(id + 1, 0);
             m_bool_val[pol].reserve(id + 1, 0);
-            m_bool_gen[pol][id] = m_cache_gen;
+            m_bool_gen[pol][id] = m_bool_cache_gen;
             m_bool_val[pol][id] = r ? 1 : 0;
             return r;
         }
@@ -177,12 +177,12 @@ namespace smt {
             return nullptr;
         if (n->get_ref_count() > 1) {
             unsigned id = n->get_id();
-            if (id < m_enode_gen.size() && m_enode_gen[id] == m_cache_gen)
+            if (id < m_enode_gen.size() && m_enode_gen[id] == m_enode_cache_gen)
                 return m_enode_val[id];
             enode * r = get_enode_eq_to_core(to_app(n));
             m_enode_gen.reserve(id + 1, 0);
             m_enode_val.reserve(id + 1, nullptr);
-            m_enode_gen[id] = m_cache_gen;
+            m_enode_gen[id] = m_enode_cache_gen;
             m_enode_val[id] = r;
             return r;
         }
@@ -205,18 +205,20 @@ namespace smt {
     bool checker::is_sat(expr * n, unsigned num_bindings, enode * const * bindings) {
         flet<unsigned>        l1(m_num_bindings, num_bindings);
         flet<enode * const *> l2(m_bindings, bindings);
+        begin_check(num_bindings, bindings);
         init_relevancy_cache();
         bool r = check(n, true);
-        cache_reset();
+        cache_reset_bool();
         return r;
     }
 
     bool checker::is_unsat(expr * n, unsigned num_bindings, enode * const * bindings) {
         flet<unsigned>        l1(m_num_bindings, num_bindings);
         flet<enode * const *> l2(m_bindings, bindings);
+        begin_check(num_bindings, bindings);
         init_relevancy_cache();
         bool r = check(n, false);
-        cache_reset();
+        cache_reset_bool();
         return r;
     }
 
@@ -228,7 +230,7 @@ namespace smt {
 
         if (n->get_ref_count() > 1) {
             unsigned id = n->get_id();
-            if (id < m_bool_gen[0].size() && m_bool_gen[0][id] == m_cache_gen)
+            if (id < m_bool_gen[0].size() && m_bool_gen[0][id] == m_bool_cache_gen)
                 return m_bool_val[0][id] != 0;
         }
 
@@ -297,7 +299,7 @@ namespace smt {
             unsigned id = n->get_id();
             m_bool_gen[0].reserve(id + 1, 0);
             m_bool_val[0].reserve(id + 1, 0);
-            m_bool_gen[0][id] = m_cache_gen;
+            m_bool_gen[0][id] = m_bool_cache_gen;
             m_bool_val[0][id] = r ? 1 : 0;
         }
         return r;
@@ -306,18 +308,22 @@ namespace smt {
     bool checker::all_terms_exist(expr * n, unsigned num_bindings, enode * const * bindings) {
         flet<unsigned>        l1(m_num_bindings, num_bindings);
         flet<enode * const *> l2(m_bindings, bindings);
+        begin_check(num_bindings, bindings);
         init_relevancy_cache();
         bool r = all_terms_exist_core(n);
-        cache_reset();
+        cache_reset_bool();
         return r;
     }
 
     checker::checker(context & c):
         m_context(c),
         m_manager(c.get_manager()),
-        m_cache_gen(1),
+        m_bool_cache_gen(1),
+        m_enode_cache_gen(1),
         m_num_bindings(0),
         m_bindings(nullptr),
+        m_prev_num_bindings(UINT_MAX),
+        m_prev_bindings(nullptr),
         m_relevancy_enabled(false),
         m_relevant_set(nullptr) {
     }
