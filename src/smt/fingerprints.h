@@ -63,8 +63,11 @@ namespace smt {
         unsigned_vector          m_scopes;
         ptr_vector<enode>        m_tmp;
         fingerprint              m_dummy;
+        static constexpr unsigned INLINE_ARGS = 4;
+        enode*                   m_inline_args[INLINE_ARGS];
 
         fingerprint * mk_dummy(void * data, unsigned data_hash, unsigned num_args, enode * const * args);
+        static unsigned compute_hash(unsigned data_hash, unsigned num_args, enode * const * args);
 
     public:
         fingerprint_set(ast_manager& m, region & r): m_region(r), m_defs(m) {}

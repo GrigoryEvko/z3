@@ -42,13 +42,66 @@ namespace smt {
         return true;
     }
 
+    // Pointer-based arg hash: fingerprint equality uses pointer identity,
+    // so hash the pointer directly. Avoids double pointer chase (enode→owner→hash).
+    static inline unsigned fp_arg_hash(enode * e) {
+        return hash_u(static_cast<unsigned>(reinterpret_cast<uintptr_t>(e) >> 3));
+    }
+
+    unsigned fingerprint_set::compute_hash(unsigned data_hash, unsigned num_args, enode * const * args) {
+        unsigned a, b, c;
+        a = b = 0x9e3779b9;
+        c = 11;
+        switch (num_args) {
+        case 0:
+            return c;
+        case 1:
+            a += data_hash;
+            b  = fp_arg_hash(args[0]);
+            mix(a, b, c);
+            return c;
+        case 2:
+            a += data_hash;
+            b += fp_arg_hash(args[0]);
+            c += fp_arg_hash(args[1]);
+            mix(a, b, c);
+            return c;
+        default: {
+            unsigned i = num_args;
+            while (i >= 3) {
+                i--;
+                a += fp_arg_hash(args[i]);
+                i--;
+                b += fp_arg_hash(args[i]);
+                i--;
+                c += fp_arg_hash(args[i]);
+                mix(a, b, c);
+            }
+            switch (i) {
+            case 2: b += fp_arg_hash(args[1]); Z3_fallthrough;
+            case 1: c += fp_arg_hash(args[0]);
+            }
+            a += data_hash;
+            mix(a, b, c);
+            return c;
+        }
+        }
+    }
+
     fingerprint * fingerprint_set::mk_dummy(void * data, unsigned data_hash, unsigned num_args, enode * const * args) {
-        m_tmp.reset();
-        m_tmp.append(num_args, args);
+        enode ** buf;
+        if (num_args <= INLINE_ARGS) {
+            memcpy(m_inline_args, args, sizeof(enode*) * num_args);
+            buf = m_inline_args;
+        } else {
+            m_tmp.reset();
+            m_tmp.append(num_args, args);
+            buf = m_tmp.data();
+        }
         m_dummy.m_data      = data;
         m_dummy.m_data_hash = data_hash;
         m_dummy.m_num_args  = num_args;
-        m_dummy.m_args      = m_tmp.data();
+        m_dummy.m_args      = buf;
         return &m_dummy;
     }
 
@@ -61,34 +114,14 @@ namespace smt {
         return out;
     }
 
-    
-    static unsigned compute_fingerprint_hash(unsigned data_hash, unsigned num_args, enode * const * args) {
-        struct arg_data {
-            unsigned data_hash;
-            enode* const* args;
-        };
-        struct khash {
-            unsigned operator()(arg_data const& d) const {
-                return d.data_hash;
-            }
-        };
-        struct arghash {
-            unsigned operator()(arg_data const& d, unsigned i) const {
-                return d.args[i]->hash();
-            }
-        };
-        arg_data ad({ data_hash, args });
-        khash kh;
-        arghash ah;
-        return get_composite_hash(ad, num_args, kh, ah);
-    }
-
     fingerprint * fingerprint_set::insert(void * data, unsigned data_hash, unsigned num_args, enode * const * args, expr* def) {
-        unsigned composite_hash = compute_fingerprint_hash(data_hash, num_args, args);
-        fingerprint * d = mk_dummy(data, composite_hash, num_args, args);
+        unsigned h = compute_hash(data_hash, num_args, args);
+        fingerprint * d = mk_dummy(data, h, num_args, args);
         if (m_set.contains(d))
             return nullptr;
-        // Check if all args are already roots — skip second lookup if so
+        // Normalize args to equivalence class roots and re-check.
+        // Stored fingerprints use root-normalized args, so a second probe
+        // catches equivalent bindings via different enode pointers.
         bool all_roots = true;
         for (unsigned i = 0; i < num_args; ++i) {
             enode * r = d->m_args[i]->get_root();
@@ -98,14 +131,14 @@ namespace smt {
             }
         }
         if (!all_roots) {
-            d->m_data_hash = compute_fingerprint_hash(data_hash, num_args, d->m_args);
+            d->m_data_hash = compute_hash(data_hash, num_args, d->m_args);
             if (m_set.contains(d)) {
                 TRACE(fingerprint_bug, tout << "failed: " << *d;);
                 return nullptr;
             }
         }
         TRACE(fingerprint_bug, tout << "inserting @" << m_scopes.size() << " " << *d;);
-        unsigned final_hash = all_roots ? composite_hash : d->m_data_hash;
+        unsigned final_hash = all_roots ? h : d->m_data_hash;
         fingerprint * f = new (m_region) fingerprint(m_region, data, final_hash, def, num_args, d->m_args);
         m_fingerprints.push_back(f);
         m_defs.push_back(def);
@@ -114,8 +147,8 @@ namespace smt {
     }
 
     bool fingerprint_set::contains(void * data, unsigned data_hash, unsigned num_args, enode * const * args) {
-        unsigned composite_hash = compute_fingerprint_hash(data_hash, num_args, args);
-        fingerprint * d = mk_dummy(data, composite_hash, num_args, args);
+        unsigned h = compute_hash(data_hash, num_args, args);
+        fingerprint * d = mk_dummy(data, h, num_args, args);
         if (m_set.contains(d))
             return true;
         bool all_roots = true;
@@ -128,10 +161,8 @@ namespace smt {
         }
         if (all_roots)
             return false;
-        d->m_data_hash = compute_fingerprint_hash(data_hash, num_args, d->m_args);
-        if (m_set.contains(d))
-            return true;
-        return false;
+        d->m_data_hash = compute_hash(data_hash, num_args, d->m_args);
+        return m_set.contains(d);
     }
     
     void fingerprint_set::reset() {
