@@ -761,20 +761,11 @@ void rewriter_tpl<Config>::resume_core(expr_ref & result, proof_ref & result_pr)
         TRACE(rewriter_step, tout << "step\n" << mk_ismt2_pp(t, m()) << "\n";);
         m_num_steps++;
         check_max_steps();
-        if (first_visit(fr) && fr.m_cache_result) {
-            expr * r = get_cached(t);
-            if (r) {
-                SASSERT(r->get_sort() == t->get_sort());
-                result_stack().push_back(r);
-                if (ProofGen) {
-                    proof * pr = get_cached_pr(t);
-                    result_pr_stack().push_back(pr);
-                }
-                frame_stack().pop_back();
-                set_new_child_flag(t, r);
-                continue;
-            }
-        }
+        // Note: visit() already checked get_cached(t) before pushing this frame.
+        // Since resume_core() is only called from main_loop() (resume() is unused)
+        // and processing is strict DFS, no other subtree can populate the cache
+        // between visit() and here. Skipping this redundant check saves one hash
+        // lookup per frame.
         switch (t->get_kind()) {
         case AST_APP:
             process_app<ProofGen>(to_app(t), fr);

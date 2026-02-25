@@ -1929,7 +1929,12 @@ namespace {
             enode * root = n->get_root();
             enode_vector const & all = m_context.enodes_of(lbl);
             enode_vector * v = mk_enode_vector();
-            for (enode * e : all) {
+            unsigned sz = all.size();
+            for (unsigned i = 0; i < sz; ++i) {
+                enode * e = all[i];
+                // Prefetch next enode — they're heap-scattered, so prefetch hides latency.
+                if (i + 1 < sz)
+                    __builtin_prefetch(all[i + 1], 0, 1);
                 if (e->get_root() == root && e->is_cgr() && e->get_num_args() == num_expected_args)
                     v->push_back(e);
             }
