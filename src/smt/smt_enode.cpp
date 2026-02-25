@@ -48,8 +48,12 @@ namespace smt {
         n->m_bool             = m.is_bool(owner);
         n->m_merge_tf         = merge_tf;
         n->m_cgc_enabled      = cgc_enabled;
-        n->m_func_lbl_hash    = 0;
-        n->m_func_lbl_valid   = false;
+        {   // Eagerly compute func_lbl_hash to avoid branch misprediction in collect_parents.
+            unsigned a = 17, b = 3, c = owner->get_decl()->get_small_id();
+            mix(a, b, c);
+            n->m_func_lbl_hash = c & (APPROX_SET_CAPACITY - 1);
+            n->m_func_lbl_valid = true;
+        }
         n->m_has_eq_parent    = false;
         n->m_iscope_lvl       = iscope_lvl;
         n->m_lbl_hash         = -1;

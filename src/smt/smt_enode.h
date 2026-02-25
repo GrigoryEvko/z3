@@ -491,6 +491,7 @@ namespace smt {
             m_app.set_num_args(num_args);
             r->m_cached_num_args = num_args;
             r->m_decl = f;
+            { unsigned a = 17, b = 3, c = f->get_small_id(); mix(a, b, c); r->m_func_lbl_hash = c & (APPROX_SET_CAPACITY - 1); r->m_func_lbl_valid = true; }
             r->m_commutative = num_args == 2 && f->is_commutative();
             memcpy(r->m_args, args, sizeof(enode*) * num_args);
             return r;
