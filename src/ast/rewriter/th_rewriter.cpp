@@ -134,10 +134,13 @@ struct th_rewriter_cfg : public default_rewriter_cfg {
     bool cache_all_results() const { return m_cache_all; }
 
     bool max_steps_exceeded(unsigned num_steps) const {
-        if (m_max_memory != SIZE_MAX && 
+        if (num_steps > m_max_steps)
+            return true;
+        // Throttle expensive memory check to every 1024 steps.
+        if ((num_steps & 0x3FF) == 0 && m_max_memory != SIZE_MAX &&
             memory::get_allocation_size() > m_max_memory)
             throw rewriter_exception(Z3_MAX_MEMORY_MSG);
-        return num_steps > m_max_steps;
+        return false;
     }
 
 
