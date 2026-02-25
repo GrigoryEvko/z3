@@ -36,7 +36,9 @@ Revision History:
 #include "util/hashtable.h"
 #endif
 
+#ifdef Z3DEBUG
 #define CH_STATISTICS
+#endif
 
 #ifdef CH_STATISTICS
 #define CHS_CODE(CODE) { CODE }
