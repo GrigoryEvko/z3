@@ -86,6 +86,7 @@ namespace smt {
         unsigned            m_iscope_lvl;       //!< When the enode was internalized
         bool                m_proof_is_logged;  //!< Indicates that the proof for the enode being equal to its root is in the log.
         signed char         m_lbl_hash;         //!< It is different from -1, if enode is used in a pattern
+        func_decl *         m_decl;             //!< Cached func_decl (= m_owner->get_decl()). Avoids pointer chase to app object.
         /*
           The following property is valid for m_parents
           
@@ -176,8 +177,8 @@ namespace smt {
         unsigned get_owner_id() const { return m_owner->get_id(); }
         unsigned get_expr_id() const { return m_owner->get_id(); }
 
-        func_decl * get_decl() const { return m_owner->get_decl(); }
-        unsigned get_decl_id() const { return m_owner->get_decl()->get_small_id(); }
+        func_decl * get_decl() const { return m_decl; }
+        unsigned get_decl_id() const { return m_decl->get_small_id(); }
 
         sort* get_sort() const { return m_owner->get_sort(); }
 
@@ -489,6 +490,7 @@ namespace smt {
             m_app.set_decl(f);
             m_app.set_num_args(num_args);
             r->m_cached_num_args = num_args;
+            r->m_decl = f;
             r->m_commutative = num_args == 2 && f->is_commutative();
             memcpy(r->m_args, args, sizeof(enode*) * num_args);
             return r;

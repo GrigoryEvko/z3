@@ -1139,6 +1139,7 @@ namespace smt {
             m.inc_ref(eq);
             m_is_diseq_tmp->m_func_decl_id = UINT_MAX;
             m_is_diseq_tmp->m_owner = eq;
+            m_is_diseq_tmp->m_decl = eq->get_decl();
         }
         m_is_diseq_tmp->m_args[0] = n1;
         m_is_diseq_tmp->m_args[1] = n2;

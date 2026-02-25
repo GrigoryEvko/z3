@@ -53,6 +53,7 @@ namespace smt {
         n->m_has_eq_parent    = false;
         n->m_iscope_lvl       = iscope_lvl;
         n->m_lbl_hash         = -1;
+        n->m_decl             = owner->get_decl();
         n->m_proof_is_logged = false;
         n->m_is_shared        = 2;
         unsigned num_args     = n->get_num_args();
