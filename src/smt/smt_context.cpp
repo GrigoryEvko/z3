@@ -547,6 +547,7 @@ namespace smt {
             unsigned r2_hash = r2->hash();
             enode * curr = r1;
             do {
+                __builtin_prefetch(curr->m_next, 1, 1);
                 curr->m_root = r2;
                 curr->m_root_hash = r2_hash;
                 curr = curr->m_next;
@@ -583,7 +584,12 @@ namespace smt {
     */
     void context::remove_parents_from_cg_table(enode * r1) {
         // Remove parents from the congruence table
-        for (enode * parent : enode::parents(r1)) {
+        enode_vector & r1_parents = r1->m_parents;
+        unsigned num_r1_parents = r1_parents.size();
+        for (unsigned i = 0; i < num_r1_parents; ++i) {
+            enode * parent = r1_parents[i];
+            if (i + 1 < num_r1_parents)
+                __builtin_prefetch(r1_parents[i + 1], 0, 1);
             CTRACE(add_eq, !parent->is_marked() && parent->is_cgc_enabled() && parent->is_true_eq() && m_cg_table.contains_ptr(parent), tout << parent->get_owner_id() << "\n";);
             CTRACE(add_eq, !parent->is_marked() && parent->is_cgc_enabled() && !parent->is_true_eq() &&  parent->is_cgr() && !m_cg_table.contains_ptr(parent), 
                    tout << "cgr !contains " << parent->get_owner_id() << " " << mk_pp(parent->get_decl(), m) << "\n";
@@ -628,6 +634,8 @@ namespace smt {
         unsigned num_r1_parents = r1_parents.size();
         for (unsigned i = 0; i < num_r1_parents; ++i) {
             enode* parent = r1_parents[i];
+            if (i + 1 < num_r1_parents)
+                __builtin_prefetch(r1_parents[i + 1], 0, 1);
             if (!parent->is_marked())
                 continue;
             parent->unset_mark();
@@ -955,6 +963,7 @@ namespace smt {
         unsigned r1_hash = r1->hash();
         enode * curr = r1;
         do {
+            __builtin_prefetch(curr->m_next, 1, 1);
             curr->m_root = r1;
             curr->m_root_hash = r1_hash;
             curr = curr->m_next;
