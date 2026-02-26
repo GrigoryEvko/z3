@@ -335,8 +335,10 @@ private:
 //
 template<typename T, typename HashProc, typename EqProc>
 class swiss_table : private HashProc, private EqProc {
-    static_assert(std::is_trivially_copyable<T>::value,
-                  "swiss_table requires trivially copyable element type");
+    // Slot array uses memcpy semantics. Types must be trivially destructible
+    // (no destructor calls on erase/rehash) and safe to bitwise-copy.
+    // std::pair<ptr, int> is safe to memcpy but not formally trivially_copyable
+    // until C++23 (P2465R3), so we only assert on trivially_destructible.
     static_assert(std::is_trivially_destructible<T>::value,
                   "swiss_table requires trivially destructible element type");
 
@@ -766,4 +768,83 @@ private:
     size_t  m_size         = 0;
     size_t  m_tombstones   = 0;
     size_t  m_init_capacity = G;
+};
+
+// ─── Swiss cmap ──────────────────────────────────────────────────
+//
+// Key-value map built on swiss_table. Drop-in replacement for cmap
+// (chashtable.h). Hashing/equality operate on keys only; values ride
+// along in the same slot.
+//
+template<typename Key, typename Value, typename HashProc, typename EqProc>
+class swiss_cmap {
+public:
+    struct key_value {
+        Key    m_key;
+        Value  m_value;
+        key_value() = default;
+        key_value(Key const & k) : m_key(k) {}
+        key_value(Key const & k, Value const & v) : m_key(k), m_value(v) {}
+    };
+
+protected:
+    struct key_value_hash_proc : private HashProc {
+        key_value_hash_proc(HashProc const & p = HashProc()) : HashProc(p) {}
+        unsigned operator()(key_value const & d) const { return HashProc::operator()(d.m_key); }
+    };
+
+    struct key_value_eq_proc : private EqProc {
+        key_value_eq_proc(EqProc const & p = EqProc()) : EqProc(p) {}
+        bool operator()(key_value const & d1, key_value const & d2) const { return EqProc::operator()(d1.m_key, d2.m_key); }
+    };
+
+    typedef swiss_table<key_value, key_value_hash_proc, key_value_eq_proc> table;
+
+    table m_table;
+
+public:
+    swiss_cmap(HashProc const & h = HashProc(),
+               EqProc const & e = EqProc(),
+               unsigned init_slots = table::default_init_slots,
+               unsigned init_cellar = table::default_init_cellar)
+        : m_table(key_value_hash_proc(h), key_value_eq_proc(e), init_slots, init_cellar) {}
+
+    typedef typename table::iterator iterator;
+
+    void reset() { m_table.reset(); }
+    void finalize() { m_table.finalize(); }
+    bool empty() const { return m_table.empty(); }
+    unsigned size() const { return m_table.size(); }
+    unsigned capacity() const { return m_table.capacity(); }
+    unsigned used_slots() const { return m_table.used_slots(); }
+    unsigned collisions() const { return m_table.collisions(); }
+    iterator begin() const { return m_table.begin(); }
+    iterator end() const { return m_table.end(); }
+
+    void insert(Key const & k, Value const & v) {
+        m_table.insert(key_value(k, v));
+    }
+
+    key_value & insert_if_not_there(Key const & k, Value const & v) {
+        return m_table.insert_if_not_there(key_value(k, v));
+    }
+
+    bool contains(Key const & k) const {
+        return m_table.contains(key_value(k));
+    }
+
+    key_value * find_core(Key const & k) const {
+        return m_table.find_core(key_value(k));
+    }
+
+    bool find(Key const & k, Value & v) const {
+        key_value * e = m_table.find_core(key_value(k));
+        if (e == nullptr) return false;
+        v = e->m_value;
+        return true;
+    }
+
+    void erase(Key const & k) {
+        m_table.erase(key_value(k));
+    }
 };

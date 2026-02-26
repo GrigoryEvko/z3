@@ -23,7 +23,7 @@ Revision History:
 #include <utility>
 #include <string>
 #include "util/z3_exception.h"
-#include "util/chashtable.h"
+#include "util/swiss_table.h"
 #include "util/id_gen.h"
 #include "util/map.h"
 #include "util/dependency.h"
@@ -54,8 +54,8 @@ Revision History:
 
 namespace nlsat {
 
-    typedef chashtable<ineq_atom*, ineq_atom::hash_proc, ineq_atom::eq_proc> ineq_atom_table;
-    typedef chashtable<root_atom*, root_atom::hash_proc, root_atom::eq_proc> root_atom_table;
+    typedef swiss_table<ineq_atom*, ineq_atom::hash_proc, ineq_atom::eq_proc> ineq_atom_table;
+    typedef swiss_table<root_atom*, root_atom::hash_proc, root_atom::eq_proc> root_atom_table;
 
     // for apply_permutation procedure
     void swap(clause * & c1, clause * & c2) noexcept {

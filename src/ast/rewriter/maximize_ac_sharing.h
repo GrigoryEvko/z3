@@ -51,11 +51,11 @@ class maximize_ac_sharing : public default_rewriter_cfg {
         }
 
         unsigned hash() const {
-            unsigned a = m_decl->get_id();
-            unsigned b = m_arg1->get_id();
-            unsigned c = m_arg2->get_id();
-            mix(a,b,c);
-            return c;
+            uint64_t h = 0x9E3779B97F4A7C15ULL;
+            h = fmix64(h ^ m_decl->get_id());
+            h = fmix64(h ^ m_arg1->get_id());
+            h = fmix64(h ^ m_arg2->get_id());
+            return static_cast<unsigned>(h);
         }
 
         bool operator==(entry const & e) const {

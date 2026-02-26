@@ -218,13 +218,11 @@ public:
     // roots of children and function declaration.
 
     unsigned get_hash() const {
-        unsigned a = 0, b, c;
-        b = c = get_decl_id();
-        for (term *ch : children(this)) {
-            a = ch->get_root().get_id();
-            mix(a, b, c);
-        }
-        return c;
+        uint64_t h = 0x9E3779B97F4A7C15ULL;
+        h = fmix64(h ^ get_decl_id());
+        for (term *ch : children(this))
+            h = fmix64(h ^ ch->get_root().get_id());
+        return static_cast<unsigned>(h);
     }
 
     static bool cg_eq(term const *t1, term const *t2) {
@@ -1715,7 +1713,7 @@ expr_ref_vector term_graph::dcert(model &mdl, expr_ref_vector const &lits) {
         }
         struct hash {
             unsigned operator()(pair_t const &p) const {
-                return mk_mix(p.a ? p.a->hash() : 0, p.b ? p.b->hash() : 0, 1);
+                return static_cast<unsigned>(fmix64(fmix64(0x9E3779B97F4A7C15ULL ^ (p.a ? p.a->hash() : 0u)) ^ (p.b ? p.b->hash() : 0u)));
             }
         };
         struct eq {

@@ -180,11 +180,12 @@ struct decl_info_child_hash_proc {
 };
 
 unsigned decl_info::hash() const {
-    unsigned a = m_family_id;
-    unsigned b = m_kind;
-    unsigned c = get_num_parameters() == 0 ? 0 : get_composite_hash<decl_info const *, default_kind_hash_proc<decl_info const *>, decl_info_child_hash_proc>(this, get_num_parameters());
-    mix(a, b, c);
-    return c;
+    uint64_t h = 0x9E3779B97F4A7C15ULL;
+    h = fmix64(h ^ m_family_id);
+    h = fmix64(h ^ m_kind);
+    if (get_num_parameters() > 0)
+        h = fmix64(h ^ get_composite_hash<decl_info const *, default_kind_hash_proc<decl_info const *>, decl_info_child_hash_proc>(this, get_num_parameters()));
+    return static_cast<unsigned>(h);
 }
 
 bool decl_info::operator==(decl_info const & info) const {
@@ -460,45 +461,14 @@ bool compare_nodes(ast const * n1, ast const * n2) {
 
 template<typename T>
 inline unsigned ast_array_hash(T * const * array, unsigned size, unsigned init_value) {
-    switch (size) {
-    case 0:
-        return init_value;
-    case 1:
-        return combine_hash(array[0]->hash(), init_value);
-    case 2:
-        return combine_hash(combine_hash(array[0]->hash(), array[1]->hash()),
-                            init_value);
-    case 3:
-        return combine_hash(combine_hash(array[0]->hash(), array[1]->hash()),
-                            combine_hash(array[2]->hash(), init_value));
-    default: {
-        unsigned a, b, c;
-        a = b = 0x9e3779b9;
-        c = init_value;
-        while (size >= 3) {
-            size--;
-            a += array[size]->hash();
-            size--;
-            b += array[size]->hash();
-            size--;
-            c += array[size]->hash();
-            mix(a, b, c);
-        }
-        switch (size) {
-        case 2:
-            b += array[1]->hash();
-            Z3_fallthrough;
-        case 1:
-            c += array[0]->hash();
-        }
-        mix(a, b, c);
-        return c;
-    } }
+    uint64_t h = 0x9E3779B97F4A7C15ULL;
+    h = fmix64(h ^ init_value);
+    for (unsigned i = 0; i < size; ++i)
+        h = fmix64(h ^ array[i]->hash());
+    return static_cast<unsigned>(h);
 }
 
 unsigned get_node_hash(ast const * n) {
-    unsigned a, b, c;
-
     switch (n->get_kind()) {
     case AST_SORT:
         if (to_sort(n)->get_info() == nullptr)
@@ -516,14 +486,15 @@ unsigned get_node_hash(ast const * n) {
                               to_app(n)->get_decl()->hash());
     case AST_VAR:
         return combine_hash(to_var(n)->get_idx(), to_var(n)->get_sort()->hash());
-    case AST_QUANTIFIER:
-        a = ast_array_hash(to_quantifier(n)->get_decl_sorts(),
-                           to_quantifier(n)->get_num_decls(),
-                           to_quantifier(n)->get_kind() == forall_k ? 31 : 19);
-        b = to_quantifier(n)->get_num_patterns();
-        c = to_quantifier(n)->get_expr()->hash();
-        mix(a,b,c);
-        return c;
+    case AST_QUANTIFIER: {
+        uint64_t h = 0x9E3779B97F4A7C15ULL;
+        h = fmix64(h ^ ast_array_hash(to_quantifier(n)->get_decl_sorts(),
+                                       to_quantifier(n)->get_num_decls(),
+                                       to_quantifier(n)->get_kind() == forall_k ? 31 : 19));
+        h = fmix64(h ^ to_quantifier(n)->get_num_patterns());
+        h = fmix64(h ^ to_quantifier(n)->get_expr()->hash());
+        return static_cast<unsigned>(h);
+    }
     default:
         UNREACHABLE();
     }
@@ -531,62 +502,16 @@ unsigned get_node_hash(ast const * n) {
 }
 
 void ast_table::push_erase(ast * n) {
-    // It uses two important properties:
-    // 1. n is known to be in the table.
-    // 2. operator== can be used instead of compare_nodes (big savings)
-    unsigned mask = m_slots - 1;
-    unsigned h    = n->hash();
-    unsigned idx  = h & mask;
-    cell * c      = m_table + idx;
-    cell * prev = nullptr;
-    while (true) {
-        SASSERT(!c->is_free());
-        cell * next = c->m_next;
-        if (c->m_data == n) {
-            m_size--;
-            if (prev == nullptr) {
-                if (next == nullptr) {
-                    m_used_slots--;
-                    push_recycle_cell(c);
-                    c->mark_free();
-                    SASSERT(c->is_free());
-                }
-                else {
-                    *c = *next;
-                    next->m_data = n;
-                    push_recycle_cell(next);
-                }
-            }
-            else {
-                prev->m_next = next;
-                push_recycle_cell(c);
-            }
-            return;
-        }
-        CHS_CODE(m_collisions++;);
-        prev = c;
-        c = next;
-        SASSERT(c);
-    }
+    m_table.erase(n);
+    m_tofree.push_back(n);
 }
 
 ast* ast_table::pop_erase() {
-    cell* c = m_tofree_cell;
-    if (c == nullptr) {
+    if (m_tofree.empty())
         return nullptr;
-    }
-    if (c->is_free()) {
-        // cell was marked free, should not be recycled.
-        c->unmark_free();
-        m_tofree_cell = c->m_next;
-        c->mark_free();
-    }
-    else {
-        // cell should be recycled with m_free_cell
-        m_tofree_cell = c->m_next;
-        recycle_cell(c);
-    }        
-    return c->m_data;
+    ast * n = m_tofree.back();
+    m_tofree.pop_back();
+    return n;
 }
 
 

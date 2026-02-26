@@ -18,7 +18,7 @@ Revision History:
 --*/
 #pragma once
 
-#include "util/chashtable.h"
+#include "util/swiss_table.h"
 
 template<typename T1, typename T2>
 class obj_pair_set {
@@ -31,7 +31,7 @@ protected:
     struct eq_proc {
         bool operator()(obj_pair const & p1, obj_pair const & p2) const { return p1 == p2; }
     };
-    typedef chashtable<obj_pair, hash_proc, eq_proc> set;
+    typedef swiss_table<obj_pair, hash_proc, eq_proc> set;
     set m_set;
 public:
     void insert(T1 * t1, T2 * t2) { m_set.insert(obj_pair(t1, t2)); }
@@ -46,7 +46,7 @@ public:
     void reset() { m_set.reset(); }
     bool empty() const { return m_set.empty(); }
 
-    typedef typename chashtable<obj_pair, hash_proc, eq_proc>::iterator iterator;
+    typedef typename swiss_table<obj_pair, hash_proc, eq_proc>::iterator iterator;
 
     iterator begin() { return m_set.begin(); }
     iterator end() { return m_set.end(); }

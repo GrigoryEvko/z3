@@ -93,11 +93,7 @@ namespace euf {
         svector<signed char>             m_lbl2hash;        // cache: lbl_id -> hash
 
         void mk_lbl_hash(unsigned lbl_id) {
-            unsigned a = 17;
-            unsigned b = 3;
-            unsigned c = lbl_id;
-            mix(a, b, c);
-            m_lbl2hash[lbl_id] = c & (APPROX_SET_CAPACITY - 1);
+            m_lbl2hash[lbl_id] = static_cast<unsigned>(fmix64(0x9E3779B97F4A7C15ULL ^ lbl_id)) & (APPROX_SET_CAPACITY - 1);
         }
 
     public:

@@ -21,7 +21,6 @@ Revision History:
 #include<ostream>
 #include "util/tptr.h"
 #include "util/small_object_allocator.h"
-#include "util/chashtable.h"
 #include "util/parray.h"
 #include "math/interval/interval.h"
 #include "util/scoped_numeral_vector.h"

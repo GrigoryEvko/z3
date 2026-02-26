@@ -17,6 +17,7 @@ Notes:
 
 --*/
 #include "tactic/aig/aig.h"
+#include "util/swiss_table.h"
 #include "tactic/goal.h"
 #include "ast/ast_ll_pp.h"
 #include "ast/ast_util.h"
@@ -91,7 +92,7 @@ struct aig_eq {
     }
 };
 
-class aig_table : public chashtable<aig*, aig_hash, aig_eq> {
+class aig_table : public swiss_table<aig*, aig_hash, aig_eq> {
 public:
 };
 

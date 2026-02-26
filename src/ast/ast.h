@@ -43,7 +43,7 @@ Revision History:
 #include "util/map.h"
 #include "util/parray.h"
 #include "util/dictionary.h"
-#include "util/chashtable.h"
+#include "util/swiss_table.h"
 #include "util/z3_exception.h"
 #include "util/dependency.h"
 #include "util/rlimit.h"
@@ -1009,11 +1009,30 @@ struct ast_eq_proc {
 
 class ast_translation;
 
-class ast_table : public chashtable<ast*, obj_ptr_hash<ast>, ast_eq_proc> {
+class ast_table {
+    typedef swiss_table<ast*, obj_ptr_hash<ast>, ast_eq_proc> table_t;
+    table_t          m_table;
+    ptr_vector<ast>  m_tofree;
 public:
-    ast_table() : chashtable({}, {}, 8 * 1024, 1024) {}
+    ast_table() : m_table({}, {}, 8 * 1024) {}
+
+    void insert(ast * n)                  { m_table.insert(n); }
+    ast * insert_if_not_there(ast * n)    { return m_table.insert_if_not_there(n); }
+    bool contains(ast * n) const          { return m_table.contains(n); }
+    void erase(ast * n)                   { m_table.erase(n); }
+    void reset()                          { m_table.reset(); }
+    void finalize()                       { m_table.finalize(); }
+    bool empty() const                    { return m_table.empty(); }
+    unsigned size() const                 { return m_table.size(); }
+    unsigned capacity() const             { return m_table.capacity(); }
+    void swap(ast_table & other)          { m_table.swap(other.m_table); }
+
+    typedef table_t::iterator iterator;
+    iterator begin() const                { return m_table.begin(); }
+    iterator end() const                  { return m_table.end(); }
+
     void push_erase(ast * n);
-    ast* pop_erase();
+    ast * pop_erase();
 };
 
 // -----------------------------------

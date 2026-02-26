@@ -21,7 +21,7 @@ Notes:
 
 #include "ast/ast.h"
 #include "util/obj_hashtable.h"
-#include "util/chashtable.h"
+#include "util/swiss_table.h"
 
 class act_cache {
     ast_manager &        m_manager;
@@ -31,7 +31,7 @@ class act_cache {
             return e.first->hash() + e.second;
         }
     };
-    typedef cmap<entry_t, expr*, entry_hash, default_eq<entry_t> > map;
+    typedef swiss_cmap<entry_t, expr*, entry_hash, default_eq<entry_t> > map;
     map                  m_table;
     svector<entry_t>     m_queue; // recently created queue
     unsigned             m_qhead;

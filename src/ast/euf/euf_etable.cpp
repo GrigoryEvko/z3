@@ -23,30 +23,11 @@ namespace euf {
     // one table per func_decl implementation
     unsigned etable::cg_hash::operator()(enode * n) const {
         SASSERT(n->get_decl()->is_flat_associative() || n->num_args() >= 3);
-        unsigned a, b, c;
-        a = b = 0x9e3779b9;
-        c = 11;    
-        
-        unsigned i = n->num_args();
-        while (i >= 3) {
-            i--;
-            a += get_root(n, i)->hash();
-            i--;
-            b += get_root(n, i)->hash();
-            i--;
-            c += get_root(n, i)->hash();
-            mix(a, b, c);
-        }
-        
-        switch (i) {
-        case 2:
-            b += get_root(n, 1)->hash();
-            Z3_fallthrough;
-        case 1:
-            c += get_root(n, 0)->hash();
-        }
-        mix(a, b, c);
-        return c;
+        unsigned num = n->num_args();
+        uint64_t h = 0x9E3779B97F4A7C15ULL;
+        for (unsigned i = 0; i < num; i++)
+            h = fmix64(h ^ get_root(n, i)->hash());
+        return static_cast<unsigned>(h);
     }
 
     bool etable::cg_eq::operator()(enode * n1, enode * n2) const {

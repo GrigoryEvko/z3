@@ -17,7 +17,7 @@ Notes:
 
 --*/
 #include "math/polynomial/polynomial_cache.h"
-#include "util/chashtable.h"
+#include "util/swiss_table.h"
 
 namespace polynomial {
 
@@ -81,9 +81,9 @@ namespace polynomial {
         };
     };
 
-    typedef chashtable<polynomial*, poly_hash_proc, poly_eq_proc> polynomial_table;
-    typedef chashtable<psc_chain_entry*, psc_chain_entry::hash_proc, psc_chain_entry::eq_proc> psc_chain_cache;
-    typedef chashtable<factor_entry*, factor_entry::hash_proc, factor_entry::eq_proc> factor_cache;
+    typedef swiss_table<polynomial*, poly_hash_proc, poly_eq_proc> polynomial_table;
+    typedef swiss_table<psc_chain_entry*, psc_chain_entry::hash_proc, psc_chain_entry::eq_proc> psc_chain_cache;
+    typedef swiss_table<factor_entry*, factor_entry::hash_proc, factor_entry::eq_proc> factor_cache;
     
     struct cache::imp { 
         manager &                m;

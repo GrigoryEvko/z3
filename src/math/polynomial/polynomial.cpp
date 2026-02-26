@@ -18,7 +18,7 @@ Notes:
 --*/
 #include "math/polynomial/polynomial.h"
 #include "util/vector.h"
-#include "util/chashtable.h"
+#include "util/swiss_table.h"
 #include "util/small_object_allocator.h"
 #include "util/region.h"
 #include "util/id_gen.h"
@@ -454,7 +454,7 @@ namespace polynomial {
 
     inline void swap(monomial * & m1, monomial * & m2) noexcept { std::swap(m1, m2); }
 
-    typedef chashtable<monomial*, monomial::hash_proc, monomial::eq_proc> monomial_table;
+    typedef swiss_table<monomial*, monomial::hash_proc, monomial::eq_proc> monomial_table;
 
     /**
        \brief Mapping from monomials to positions.

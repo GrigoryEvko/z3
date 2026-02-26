@@ -18,7 +18,7 @@ Revision History:
 
 #include "ast/euf/euf_enode.h"
 #include "util/hashtable.h"
-#include "util/chashtable.h"
+#include "util/swiss_table.h"
 
 namespace euf {
     
@@ -48,7 +48,7 @@ namespace euf {
             }
         };
 
-        typedef chashtable<enode *, cg_unary_hash, cg_unary_eq> unary_table;
+        typedef swiss_table<enode *, cg_unary_hash, cg_unary_eq> unary_table;
         
         struct cg_binary_hash {
             unsigned operator()(enode * n) const {
@@ -68,7 +68,7 @@ namespace euf {
             }
         };
 
-        typedef chashtable<enode*, cg_binary_hash, cg_binary_eq> binary_table;
+        typedef swiss_table<enode*, cg_binary_hash, cg_binary_eq> binary_table;
         
         struct cg_comm_hash {
             unsigned operator()(enode * n) const {
@@ -105,7 +105,7 @@ namespace euf {
             }
         };
 
-        typedef chashtable<enode*, cg_comm_hash, cg_comm_eq> comm_table;
+        typedef swiss_table<enode*, cg_comm_hash, cg_comm_eq> comm_table;
 
         struct cg_hash {
             unsigned operator()(enode * n) const;
@@ -115,7 +115,7 @@ namespace euf {
             bool operator()(enode * n1, enode * n2) const;
         };
 
-        typedef chashtable<enode*, cg_hash, cg_eq> table;
+        typedef swiss_table<enode*, cg_hash, cg_eq> table;
         typedef std::pair<func_decl*, unsigned> decl_info;
         struct decl_hash {
             unsigned operator()(decl_info const& d) const { return d.first->hash(); }

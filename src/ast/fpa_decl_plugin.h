@@ -111,7 +111,7 @@ class fpa_decl_plugin : public decl_plugin {
         bool operator()(unsigned id1, unsigned id2) const { return m_values.m().eq_core(m_values[id1], m_values[id2]); }
     };
 
-    typedef chashtable<unsigned, mpf_hash_proc, mpf_eq_proc> value_table;
+    typedef swiss_table<unsigned, mpf_hash_proc, mpf_eq_proc> value_table;
 
 
     mpf_manager         m_fm;
