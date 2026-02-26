@@ -544,7 +544,7 @@ namespace smt {
 
             remove_parents_from_cg_table(r1);
 
-            unsigned r2_hash = r2->hash();
+            unsigned r2_hash = hash_u(r2->get_owner_id());
             enode * curr = r1;
             do {
                 __builtin_prefetch(curr->m_next, 1, 1);
@@ -960,7 +960,7 @@ namespace smt {
             }
         }
 
-        unsigned r1_hash = r1->hash();
+        unsigned r1_hash = hash_u(r1->get_owner_id());
         enode * curr = r1;
         do {
             __builtin_prefetch(curr->m_next, 1, 1);

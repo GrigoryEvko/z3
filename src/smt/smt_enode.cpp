@@ -37,7 +37,7 @@ namespace smt {
         n->m_class_size       = 1;
         n->m_generation       = generation;
         n->m_func_decl_id     = UINT_MAX;
-        n->m_root_hash        = owner->hash();
+        n->m_root_hash        = hash_u(owner->get_id());
         n->m_mark             = false;
         n->m_mark2            = false;
         n->m_interpreted      = false;
