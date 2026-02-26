@@ -20,7 +20,7 @@ Revision History:
 
 #include "smt/smt_enode.h"
 #include "util/hashtable.h"
-#include "util/chashtable.h"
+#include "util/swiss_table.h"
 
 namespace smt {
 
@@ -48,7 +48,7 @@ namespace smt {
             }
         };
 
-        typedef chashtable<enode *, cg_unary_hash, cg_unary_eq> unary_table;
+        typedef swiss_table<enode *, cg_unary_hash, cg_unary_eq> unary_table;
         
         struct cg_binary_hash {
             unsigned operator()(enode * n) const {
@@ -75,7 +75,7 @@ namespace smt {
             }
         };
 
-        typedef chashtable<enode*, cg_binary_hash, cg_binary_eq> binary_table;
+        typedef swiss_table<enode*, cg_binary_hash, cg_binary_eq> binary_table;
         
         struct cg_comm_hash {
             unsigned operator()(enode * n) const {
@@ -119,7 +119,7 @@ namespace smt {
             }
         };
 
-        typedef chashtable<enode*, cg_comm_hash, cg_comm_eq> comm_table;
+        typedef swiss_table<enode*, cg_comm_hash, cg_comm_eq> comm_table;
 
         struct cg_hash {
             unsigned operator()(enode * n) const {
@@ -143,7 +143,7 @@ namespace smt {
             }
         };
 
-        typedef chashtable<enode*, cg_hash, cg_eq> table;
+        typedef swiss_table<enode*, cg_hash, cg_eq> table;
 
         ast_manager &                 m_manager;
         bool                          m_commutativity; //!< true if the last found congruence used commutativity
