@@ -153,6 +153,11 @@ namespace sat {
         bool collectible() const { return m_garbage && !m_reason; }
     };
 
+    // clause base is tightly packed (flexible array m_lits[]).
+    // Actual allocation: sizeof(clause) + num_lits * sizeof(literal).
+    static_assert(sizeof(clause) <= 24,
+                  "clause base exceeds 24 bytes — check bitfield packing");
+
     std::ostream & operator<<(std::ostream & out, clause_vector const & cs);
 
     class bin_clause {

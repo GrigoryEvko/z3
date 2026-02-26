@@ -498,6 +498,12 @@ namespace smt {
         void reset();
     };
 
+    // Verify enode base size hasn't grown. enode is the hottest struct
+    // in the E-graph — every cache line matters. Actual allocation is
+    // sizeof(enode) + num_args * sizeof(enode*) due to flexible array m_args[].
+    static_assert(sizeof(enode) <= 128,
+                  "enode base exceeds 2 cache lines — profile before adding fields");
+
     inline mk_pp pp(enode* n, ast_manager& m) { return mk_pp(n->get_expr(), m); }
 };
 

@@ -45,6 +45,10 @@ namespace smt {
         enode * const * end() const { return begin() + get_num_args(); }
         friend std::ostream& operator<<(std::ostream& out, fingerprint const& f);
     };
+
+    // fingerprint is allocated frequently in the hot quantifier instantiation path.
+    static_assert(sizeof(fingerprint) <= 40,
+                  "fingerprint exceeds 40 bytes — check field alignment");
     
     class fingerprint_set {
         
