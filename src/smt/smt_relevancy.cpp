@@ -139,8 +139,11 @@ namespace smt {
         expr_ref_vector                m_relevant_exprs; 
         uint_set                       m_is_relevant;
         typedef list<relevancy_eh *>   relevancy_ehs;
-        obj_map<expr, relevancy_ehs *> m_relevant_ehs;
-        obj_map<expr, relevancy_ehs *> m_watches[2];
+        // Direct-indexed vectors keyed by expr->get_id().
+        // Replaces obj_map hash tables — eliminates probe-chain cache misses
+        // in propagate() and assign_eh() hot paths.
+        svector<relevancy_ehs *>       m_handler_vec;
+        svector<relevancy_ehs *>       m_watch_vec[2];
         struct eh_trail {
             enum class kind { POS_WATCH, NEG_WATCH, HANDLER };
             kind   m_kind;
@@ -173,31 +176,29 @@ namespace smt {
         }
 
         relevancy_ehs * get_handlers(expr * n) {
-            relevancy_ehs * r = nullptr;
-            m_relevant_ehs.find(n, r);
-            SASSERT(m_relevant_ehs.contains(n) || r == 0);
-            return r;
+            unsigned id = n->get_id();
+            return id < m_handler_vec.size() ? m_handler_vec[id] : nullptr;
         }
 
         void set_handlers(expr * n, relevancy_ehs * ehs) {
-            if (ehs == nullptr)
-                m_relevant_ehs.erase(n);
-            else
-                m_relevant_ehs.insert(n, ehs);
+            unsigned id = n->get_id();
+            if (id >= m_handler_vec.size())
+                m_handler_vec.resize(id + 1, nullptr);
+            m_handler_vec[id] = ehs;
         }
 
         relevancy_ehs * get_watches(expr * n, bool val) {
-            relevancy_ehs * r = nullptr;
-            m_watches[val ? 1 : 0].find(n, r);
-            SASSERT(m_watches[val ? 1 : 0].contains(n) || r == 0);
-            return r;
+            unsigned idx = val ? 1 : 0;
+            unsigned id = n->get_id();
+            return id < m_watch_vec[idx].size() ? m_watch_vec[idx][id] : nullptr;
         }
 
         void set_watches(expr * n, bool val, relevancy_ehs * ehs) {
-            if (ehs == nullptr)
-                m_watches[val ? 1 : 0].erase(n);
-            else
-                m_watches[val ? 1 : 0].insert(n, ehs);
+            unsigned idx = val ? 1 : 0;
+            unsigned id = n->get_id();
+            if (id >= m_watch_vec[idx].size())
+                m_watch_vec[idx].resize(id + 1, nullptr);
+            m_watch_vec[idx][id] = ehs;
         }
 
         void push_trail(eh_trail const & t) {
