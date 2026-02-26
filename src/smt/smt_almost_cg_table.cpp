@@ -33,47 +33,11 @@ namespace smt {
         unsigned kind_hash = n->get_decl_id();
         if (num_args == 1)
             return kind_hash;
-        unsigned a = 0x9e3779b9;
-        unsigned b = 0x9e3779b9;
-        unsigned c = 11;    
-
-        switch (num_args) {
-        case 2:
-            a += kind_hash;
-            b += arg_hash(n, 0);
-            c += arg_hash(n, 1);
-            mix(a, b, c);
-            return c;
-        case 3:
-            a += kind_hash;
-            b += arg_hash(n, 0);
-            c += arg_hash(n, 1);
-            mix(a, b, c);
-            c += arg_hash(n, 1);
-            mix(a, b, c);
-            return c;
-        default:
-            while (num_args >= 3) {
-                num_args--;
-                a += arg_hash(n, num_args);
-                num_args--;
-                b += arg_hash(n, num_args);
-                num_args--;
-                c += arg_hash(n, num_args);
-                mix(a, b, c);
-            }
-            
-            a += kind_hash;
-            switch (num_args) {
-            case 2:
-                b += arg_hash(n, 1);
-                Z3_fallthrough;
-            case 1:
-                c += arg_hash(n, 0);
-            }
-            mix(a, b, c);
-            return c;
-        }
+        uint64_t h = 0x9E3779B97F4A7C15ULL;
+        h = fmix64(h ^ kind_hash);
+        for (unsigned i = 0; i < num_args; ++i)
+            h = fmix64(h ^ arg_hash(n, i));
+        return static_cast<unsigned>(h);
     }
 
     bool almost_cg_table::cg_eq::operator()(enode * n1, enode * n2) const {

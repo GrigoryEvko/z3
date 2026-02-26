@@ -122,18 +122,6 @@ namespace smt {
         typedef chashtable<enode*, cg_comm_hash, cg_comm_eq> comm_table;
 
         struct cg_hash {
-            // fmix64 (Murmur3 finalizer): 6 ops, zero-safe.
-            // wymix(x, 0) = 0 collapses the chain — fmix64 has no such degeneracy
-            // because shift-xor-multiply is invertible for all inputs.
-            static uint64_t fmix64(uint64_t k) {
-                k ^= k >> 33;
-                k *= 0xff51afd7ed558ccdULL;
-                k ^= k >> 33;
-                k *= 0xc4ceb9fe1a85ec53ULL;
-                k ^= k >> 33;
-                return k;
-            }
-
             unsigned operator()(enode * n) const {
                 unsigned num = n->get_num_args();
                 uint64_t h = 0x9E3779B97F4A7C15ULL;  // golden ratio seed

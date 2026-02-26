@@ -49,9 +49,7 @@ namespace smt {
         n->m_merge_tf         = merge_tf;
         n->m_cgc_enabled      = cgc_enabled;
         {   // Eagerly compute func_lbl_hash to avoid branch misprediction in collect_parents.
-            unsigned a = 17, b = 3, c = owner->get_decl()->get_small_id();
-            mix(a, b, c);
-            n->m_func_lbl_hash = c & (APPROX_SET_CAPACITY - 1);
+            n->m_func_lbl_hash = hash_u(owner->get_decl()->get_small_id()) & (APPROX_SET_CAPACITY - 1);
             n->m_func_lbl_valid = true;
         }
         n->m_has_eq_parent    = false;

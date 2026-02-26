@@ -49,43 +49,11 @@ namespace smt {
     }
 
     unsigned fingerprint_set::compute_hash(unsigned data_hash, unsigned num_args, enode * const * args) {
-        unsigned a, b, c;
-        a = b = 0x9e3779b9;
-        c = 11;
-        switch (num_args) {
-        case 0:
-            return c;
-        case 1:
-            a += data_hash;
-            b  = fp_arg_hash(args[0]);
-            mix(a, b, c);
-            return c;
-        case 2:
-            a += data_hash;
-            b += fp_arg_hash(args[0]);
-            c += fp_arg_hash(args[1]);
-            mix(a, b, c);
-            return c;
-        default: {
-            unsigned i = num_args;
-            while (i >= 3) {
-                i--;
-                a += fp_arg_hash(args[i]);
-                i--;
-                b += fp_arg_hash(args[i]);
-                i--;
-                c += fp_arg_hash(args[i]);
-                mix(a, b, c);
-            }
-            switch (i) {
-            case 2: b += fp_arg_hash(args[1]); Z3_fallthrough;
-            case 1: c += fp_arg_hash(args[0]);
-            }
-            a += data_hash;
-            mix(a, b, c);
-            return c;
-        }
-        }
+        uint64_t h = 0x9E3779B97F4A7C15ULL;
+        h = fmix64(h ^ data_hash);
+        for (unsigned i = 0; i < num_args; ++i)
+            h = fmix64(h ^ fp_arg_hash(args[i]));
+        return static_cast<unsigned>(h);
     }
 
     fingerprint * fingerprint_set::mk_dummy(void * data, unsigned data_hash, unsigned num_args, enode * const * args) {

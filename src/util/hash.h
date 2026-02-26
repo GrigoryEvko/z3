@@ -46,6 +46,17 @@ static inline unsigned hash_u(unsigned a) {
    return a;
 }
 
+// Murmur3 64-bit finalizer — 6 ALU ops, invertible for all inputs (zero-safe).
+// Replaces Jenkins mix(a,b,c) (36 ops, 1996-era) in hash accumulation chains.
+static inline uint64_t fmix64(uint64_t k) {
+    k ^= k >> 33;
+    k *= 0xff51afd7ed558ccdULL;
+    k ^= k >> 33;
+    k *= 0xc4ceb9fe1a85ec53ULL;
+    k ^= k >> 33;
+    return k;
+}
+
 static inline unsigned hash_ull(unsigned long long a) {
   a  = (~a) + (a << 18); 
   a ^= (a >> 31);
