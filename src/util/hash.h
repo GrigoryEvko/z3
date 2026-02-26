@@ -48,6 +48,12 @@ static inline unsigned hash_u(unsigned a) {
 
 // Murmur3 64-bit finalizer — 6 ALU ops, invertible for all inputs (zero-safe).
 // Replaces Jenkins mix(a,b,c) (36 ops, 1996-era) in hash accumulation chains.
+//
+// IMPORTANT: Do NOT replace with wymix (wyhash-style 128-bit multiply).
+// wymix(a, b) = lo(a*b) ^ hi(a*b) annihilates to 0 when either input is 0.
+// In hash chains like h = wymix(h, arg_hash), a single zero arg_hash
+// collapses the entire accumulator to 0, destroying all prior entropy.
+// fmix64 is zero-safe: fmix64(0) != 0, and it's invertible for all inputs.
 static inline uint64_t fmix64(uint64_t k) {
     k ^= k >> 33;
     k *= 0xff51afd7ed558ccdULL;

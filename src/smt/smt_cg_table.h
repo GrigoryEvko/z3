@@ -124,7 +124,7 @@ namespace smt {
         struct cg_hash {
             unsigned operator()(enode * n) const {
                 unsigned num = n->get_num_args();
-                uint64_t h = 0x9E3779B97F4A7C15ULL;  // golden ratio seed
+                uint64_t h = 0x9E3779B97F4A7C15ULL;
                 for (unsigned i = 0; i < num; i++)
                     h = fmix64(h ^ n->get_arg(i)->get_root_hash());
                 return static_cast<unsigned>(h);
