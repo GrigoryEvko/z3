@@ -84,9 +84,10 @@ namespace smt {
         unsigned            m_has_eq_parent:1;   //!< True if an equality enode was ever added as a parent (monotonic).
         unsigned            m_cached_num_args:10; //!< Cached arity (0 if m_suppress_args). Avoids m_owner pointer chase.
         unsigned            m_iscope_lvl;       //!< When the enode was internalized
+        func_decl *         m_decl;             //!< Cached func_decl (= m_owner->get_decl()). Offset 56 = CL1.
+        // --- cache line 2 boundary (offset 64) ---
         bool                m_proof_is_logged;  //!< Indicates that the proof for the enode being equal to its root is in the log.
         signed char         m_lbl_hash;         //!< It is different from -1, if enode is used in a pattern
-        func_decl *         m_decl;             //!< Cached func_decl (= m_owner->get_decl()). Avoids pointer chase to app object.
         /*
           The following property is valid for m_parents
           
