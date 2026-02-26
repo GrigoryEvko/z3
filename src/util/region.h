@@ -72,7 +72,7 @@ class region {
     mark *   m_mark;
     void allocate_page();
     void recycle_curr_page();
-    void * allocate_slow(size_t size); // out-of-line slow path
+    __attribute__((noinline)) void * allocate_slow(size_t size);
 public:
     region();
     ~region();
@@ -98,6 +98,9 @@ public:
     }
     void display_mem_stats(std::ostream & out) const;
 };
+
+static_assert(sizeof(region) <= 64,
+              "region allocator exceeds 1 cache line — check field layout");
 
 #endif
 
