@@ -646,6 +646,11 @@ public:
 
 template<typename T, typename SZ = unsigned>
 class svector : public vector<T, false, SZ> {
+    // NOTE: svector skips destructors (CallDestructors=false). Element types
+    // SHOULD be trivially destructible, but existing violations exist:
+    //   - sat::model_converter::entry (has literal_vector, sref_vector members)
+    //   - parameter (has std::variant with symbol, zstring, rational)
+    // These are latent resource leaks. Fix before adding the static_assert.
 public:
     svector() = default;
     svector(SZ s):vector<T, false, SZ>(s) {}
