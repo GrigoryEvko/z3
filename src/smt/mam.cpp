@@ -3620,11 +3620,14 @@ namespace {
                     TRACE(mam_path_tree, tout << "processing: #" << curr_child->get_owner_id() << "\n";);
                     enode_vector::const_iterator it2  = curr_child->begin_parents();
                     enode_vector::const_iterator end2 = curr_child->end_parents();
+                    // Pre-fill prefetch pipeline: 3-ahead hides L3 latency (~40 cycles)
+                    // with ~15-cycle loop body on the fast path (is_eq/is_marked filter).
+                    for (auto pf = it2; pf < it2 + 3 && pf < end2; ++pf)
+                        __builtin_prefetch(*pf, 0, 1);
                     for (; it2 != end2; ++it2) {
                         enode * curr_parent        = *it2;
-                        // Prefetch next parent enode's bitfield cache line.
-                        if (it2 + 1 < end2)
-                            __builtin_prefetch(*(it2 + 1), 0, 1);
+                        if (it2 + 3 < end2)
+                            __builtin_prefetch(*(it2 + 3), 0, 1);
 #ifdef _PROFILE_PATH_TREE
                         if (curr_parent->is_eq())
                             t->m_num_eq_visited++;
