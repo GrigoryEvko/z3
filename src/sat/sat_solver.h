@@ -175,6 +175,18 @@ namespace sat {
         int                     m_action;
         double                  m_step_size;
 
+        // Adam optimizer state for BH_ADAM branching heuristic.
+        // Per-variable first/second moment EMAs with lazy timestamped decay.
+        svector<double>         m_adam_m1;           // first moment (EMA of bumps)
+        svector<double>         m_adam_m2;           // second moment (EMA of squared bumps)
+        svector<uint64_t>       m_adam_last_update;  // per-variable last-update timestep
+        uint64_t                m_adam_step = 0;     // global timestep (incremented per conflict)
+
+        // Muon (spectrally-normalized) branching state.
+        // Defers bumps during conflict analysis, then applies 1/sqrt(k)-normalized
+        // increments so total activity injection per conflict is constant.
+        svector<bool_var>       m_muon_bump_queue;   // variables to bump this conflict
+
         // VMTF (Variable Move To Front) queue for focused mode.
         // Doubly-linked list ordered by bump timestamp; most recently
         // bumped variable is at the tail (m_vmtf_queue_tail).
@@ -197,6 +209,15 @@ namespace sat {
         uint64_t                m_stabilize_last_decisions = 0;
         uint64_t                m_stabilize_last_conflicts = 0;
         unsigned                m_stab_phases = 0;
+
+        // Adaptive mode switching: per-phase learning quality tracking.
+        // Measures average LBD (glue) in each mode to adjust interval growth.
+        uint64_t                m_phase_glue_sum = 0;
+        uint64_t                m_phase_conflict_count = 0;
+        double                  m_stable_avg_glue = 0;
+        double                  m_focused_avg_glue = 0;
+        bool                    m_adaptive_has_stable = false;
+        bool                    m_adaptive_has_focused = false;
 
         // Reluctant doubling (Knuth/Luby) for stable-mode restarts.
         uint64_t                m_reluctant_u = 1;
@@ -1053,6 +1074,10 @@ namespace sat {
         void decay_activity() {
             m_activity_inc *= (m_config.m_variable_decay * 0.01);
         }
+
+        // Adam optimizer bump: lazy-decays moments, adds bump signal,
+        // recomputes effective activity = m1/(sqrt(m2)+ε).
+        void adam_bump(bool_var v);
 
     private:
         void rescale_activity();

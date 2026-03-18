@@ -215,12 +215,16 @@ namespace sat {
 
         // Parameters used in Liang, Ganesh, Poupart, Czarnecki AAAI 2016.
         m_branching_heuristic = BH_VSIDS;
-        if (p.branching_heuristic() == symbol("vsids")) 
+        if (p.branching_heuristic() == symbol("vsids"))
             m_branching_heuristic = BH_VSIDS;
-        else if (p.branching_heuristic() == symbol("chb")) 
+        else if (p.branching_heuristic() == symbol("chb"))
             m_branching_heuristic = BH_CHB;
-        else 
-            throw sat_param_exception("invalid branching heuristic: accepted heuristics are 'vsids' or 'chb'");
+        else if (p.branching_heuristic() == symbol("adam"))
+            m_branching_heuristic = BH_ADAM;
+        else if (p.branching_heuristic() == symbol("muon"))
+            m_branching_heuristic = BH_MUON;
+        else
+            throw sat_param_exception("invalid branching heuristic: accepted heuristics are 'vsids', 'chb', 'adam', or 'muon'");
 
         m_anti_exploration = p.branching_anti_exploration();
         m_dual_mode = p.dual_mode();

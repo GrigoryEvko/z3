@@ -974,6 +974,11 @@ namespace sat {
         remap_var_array(m_var_scope);
         remap_var_array(m_touched);
         remap_var_array(m_activity);
+        if (m_config.m_branching_heuristic == BH_ADAM) {
+            remap_var_array(m_adam_m1);
+            remap_var_array(m_adam_m2);
+            remap_var_array(m_adam_last_update);
+        }
         remap_var_array(m_mark);
         remap_lit_array(m_lit_mark);
         remap_var_array(m_phase);

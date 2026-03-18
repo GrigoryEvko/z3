@@ -145,7 +145,17 @@ namespace sat {
 
     // Checks whether it's time to switch modes. If so, performs the switch
     // and returns the new value of m_stable_mode.
-    // Modeled on CaDiCaL's Internal::stabilizing().
+    //
+    // Adaptive variant of CaDiCaL's Internal::stabilizing(): instead of
+    // unconditional geometric doubling, the interval growth is governed by
+    // per-mode learning quality (average LBD/glue).
+    //
+    // If stable mode consistently produces higher-glue (worse) clauses than
+    // focused mode, the interval shrinks — the solver spends less time in
+    // stable mode.  If stable mode is competitive, normal doubling proceeds.
+    // This self-tunes: pure-SAT/BV problems (where VSIDS+reluctant hurts)
+    // automatically converge to mostly-focused search, while SMT problems
+    // (where stable mode helps) get the standard CaDiCaL behavior.
     bool solver::stabilizing() {
         if (!m_config.m_dual_mode)
             return false;
@@ -155,16 +165,12 @@ namespace sat {
 
         // Fallback trigger: if the solver has done many decisions without
         // generating any new conflicts (stuck in VMTF deterministic loop),
-        // force a mode switch based on decision count.  Without this, focused
-        // mode can loop forever on problems where VMTF ordering never produces
-        // conflicts (common in QF_BV after heavy simplification).
+        // force a mode switch based on decision count.
         bool decision_trigger = false;
         if (!m_stable_mode && !conflict_trigger) {
             uint64_t decisions_in_mode = m_stats.m_decision - m_stabilize_last_decisions;
             uint64_t conflicts_in_mode = m_conflicts_since_init -
                 (m_stabilize_last_conflicts > m_conflicts_since_init ? 0 : m_stabilize_last_conflicts);
-            // If we've done 10x more decisions than the stabilize interval
-            // with zero new conflicts, the VMTF queue is not productive.
             if (conflicts_in_mode == 0 &&
                 decisions_in_mode > 2 * static_cast<uint64_t>(m_config.m_stabilize_initial))
                 decision_trigger = true;
@@ -173,17 +179,27 @@ namespace sat {
         if (!conflict_trigger && !decision_trigger)
             return m_stable_mode;
 
-        // Time to switch modes.
-        // CaDiCaL-style doubling: each full cycle (focused + stable) the
-        // interval doubles.  Quadratic growth (sp*sp) starves stable mode
-        // on problems where focused mode is unproductive.
+        // Record learning quality for the just-completed phase.
+        // Require a minimum sample size to avoid noisy adaptation.
+        if (m_phase_conflict_count >= 100) {
+            double avg = static_cast<double>(m_phase_glue_sum) / m_phase_conflict_count;
+            if (m_stable_mode) {
+                m_stable_avg_glue = avg;
+                m_adaptive_has_stable = true;
+            } else {
+                m_focused_avg_glue = avg;
+                m_adaptive_has_focused = true;
+            }
+        }
+        m_phase_glue_sum = 0;
+        m_phase_conflict_count = 0;
+
         if (m_stabilize_inc == 0)
             m_stabilize_inc = m_config.m_stabilize_initial;
         if (m_stabilize_inc == 0)
             m_stabilize_inc = 1000;
 
         uint64_t next_delta = m_stabilize_inc;
-
         bool next_stable = !m_stable_mode;
         m_stabilize_limit = m_conflicts_since_init + next_delta;
         m_stabilize_last_ticks = m_conflicts_since_init;
@@ -193,8 +209,24 @@ namespace sat {
 
         if (m_stable_mode) {
             m_stab_phases++;
-            // Double the interval for the next cycle (geometric growth).
-            m_stabilize_inc = std::min(m_stabilize_inc * 2, static_cast<uint64_t>(1u << 20));
+            // Adaptive interval growth based on relative learning quality.
+            // ratio = stable_avg_glue / focused_avg_glue:
+            //   > 1.3  → stable much worse: shrink interval (min = initial)
+            //   > 1.1  → stable slightly worse: stagnate (no growth)
+            //   <= 1.1 → stable competitive: normal doubling
+            uint64_t min_inc = std::max(static_cast<uint64_t>(m_config.m_stabilize_initial),
+                                        uint64_t(500));
+            if (m_adaptive_has_stable && m_adaptive_has_focused && m_focused_avg_glue > 0) {
+                double ratio = m_stable_avg_glue / m_focused_avg_glue;
+                if (ratio > 1.3)
+                    m_stabilize_inc = std::max(m_stabilize_inc / 2, min_inc);
+                else if (ratio <= 1.1)
+                    m_stabilize_inc = std::min(m_stabilize_inc * 2, static_cast<uint64_t>(1u << 20));
+                // else: stagnate (no growth, no shrink)
+            } else {
+                // No comparison data yet → normal doubling.
+                m_stabilize_inc = std::min(m_stabilize_inc * 2, static_cast<uint64_t>(1u << 20));
+            }
             reluctant_enable();
         }
 
@@ -208,7 +240,12 @@ namespace sat {
                    << (m_stable_mode ? "stable" : "focused")
                    << " :phase " << m_stab_phases
                    << " :conflicts " << m_conflicts_since_init
-                   << " :next-limit " << m_stabilize_limit << ")\n");
+                   << " :next-limit " << m_stabilize_limit
+                   << " :inc " << m_stabilize_inc;
+                   if (m_adaptive_has_stable && m_adaptive_has_focused)
+                       verbose_stream() << " :ratio "
+                           << (m_focused_avg_glue > 0 ? m_stable_avg_glue / m_focused_avg_glue : 0.0);
+                   verbose_stream() << ")\n");
 
         return m_stable_mode;
     }

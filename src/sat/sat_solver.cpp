@@ -315,6 +315,11 @@ namespace sat {
         m_participated[v] = 0;
         m_canceled[v] = 0;
         m_reasoned[v] = 0;
+        if (m_config.m_branching_heuristic == BH_ADAM && v < m_adam_m1.size()) {
+            m_adam_m1[v] = 0.0;
+            m_adam_m2[v] = 0.0;
+            m_adam_last_update[v] = m_adam_step;
+        }
         m_case_split_queue.mk_var_eh(v);
         if (m_config.m_dual_mode)
             vmtf_init_var(v);
@@ -364,6 +369,11 @@ namespace sat {
         m_participated.push_back(0);
         m_canceled.push_back(0);
         m_reasoned.push_back(0);
+        if (m_config.m_branching_heuristic == BH_ADAM) {
+            m_adam_m1.push_back(0.0);
+            m_adam_m2.push_back(0.0);
+            m_adam_last_update.push_back(m_adam_step);
+        }
         m_case_split_queue.mk_var_eh(v);
         if (m_config.m_dual_mode)
             vmtf_init_var(v);
@@ -2683,6 +2693,12 @@ namespace sat {
             m_stabilize_last_decisions = m_stats.m_decision;
             m_stabilize_last_conflicts = 0;
             m_stabilize_limit = m_config.m_stabilize_initial;
+            m_phase_glue_sum = 0;
+            m_phase_conflict_count = 0;
+            m_stable_avg_glue = 0;
+            m_focused_avg_glue = 0;
+            m_adaptive_has_stable = false;
+            m_adaptive_has_focused = false;
             reluctant_enable();
         }
 
@@ -3747,6 +3763,8 @@ namespace sat {
         unsigned glue = num_diff_levels(m_lemma.size(), m_lemma.data());        
         m_fast_glue_avg.update(glue);
         m_slow_glue_avg.update(glue);
+        m_phase_glue_sum += glue;
+        ++m_phase_conflict_count;
     
         // CaDiCaL-style backtrack level determination with trail reuse.
         unsigned actual_bt_lvl = determine_backtrack_level(backjump_lvl);
@@ -3779,6 +3797,8 @@ namespace sat {
         m_lemma.reset();
         TRACE(sat_conflict_detail, tout << "consistent " << (!m_inconsistent) << " scopes: " << scope_lvl() << " backtrack: " << backtrack_lvl << " backjump: " << backjump_lvl << "\n";);
         decay_activity();
+        if (m_config.m_branching_heuristic == BH_ADAM)
+            ++m_adam_step;
         updt_phase_counters();
     }
 
@@ -4052,7 +4072,8 @@ namespace sat {
                 case BH_CHB:
                     m_last_conflict[var] = m_stats.m_conflict;
                     break;
-                default:
+                case BH_ADAM:
+                    adam_bump(var);
                     break;
                 }
             }
@@ -5152,7 +5173,9 @@ namespace sat {
 
     // CaDiCaL-style reason-side literal bumping for VSIDS (analyze.cpp:342-424).
     void solver::bump_reason_literals() {
-        if (!m_config.m_bump_reason || m_config.m_branching_heuristic != BH_VSIDS || m_lemma.empty())
+        if (!m_config.m_bump_reason ||
+            (m_config.m_branching_heuristic != BH_VSIDS && m_config.m_branching_heuristic != BH_ADAM) ||
+            m_lemma.empty())
             return;
         // CaDiCaL-style: reason-side bumping is a VSIDS-only technique.
         // In focused mode, VMTF recency is the sole signal -- skip reason
@@ -5183,8 +5206,13 @@ namespace sat {
             m_lemma.shrink(saved_sz);
             m_bump_reason_delay_interval++;
         } else {
-            for (unsigned i = m_lemma.size(); i-- > saved_sz; )
-                inc_activity(m_lemma[i].var());
+            for (unsigned i = m_lemma.size(); i-- > saved_sz; ) {
+                bool_var bv = m_lemma[i].var();
+                if (m_config.m_branching_heuristic == BH_ADAM)
+                    adam_bump(bv);
+                else
+                    inc_activity(bv);
+            }
             for (unsigned i = m_lemma.size(); i-- > saved_sz; ) {
                 SASSERT(is_marked(m_lemma[i].var()));
                 reset_mark(m_lemma[i].var());
@@ -5462,6 +5490,11 @@ namespace sat {
         m_var_scope.shrink(v);
         m_touched.shrink(v);
         m_activity.shrink(v);
+        if (m_config.m_branching_heuristic == BH_ADAM) {
+            m_adam_m1.shrink(v);
+            m_adam_m2.shrink(v);
+            m_adam_last_update.shrink(v);
+        }
         m_mark.shrink(v);
         m_poison.shrink(v);
         m_removable.shrink(v);
@@ -5689,6 +5722,52 @@ namespace sat {
             act *= inv;
         }
         m_activity_inc *= inv;
+    }
+
+    // -------------------------------------------------------
+    // Adam optimizer branching heuristic
+    // -------------------------------------------------------
+    namespace {
+        // Precomputed power tables for lazy timestamped decay.
+        // β1 = 0.95: matches VSIDS effective decay (~0.952).
+        // β2 = 0.999: slow second-moment memory for variance estimation.
+        struct adam_pow_table {
+            static constexpr unsigned SIZE = 400;
+            double beta1[SIZE + 1];  // 0.95^i
+            double beta2[SIZE + 1];  // 0.999^i
+            constexpr adam_pow_table() : beta1{}, beta2{} {
+                beta1[0] = beta2[0] = 1.0;
+                for (unsigned i = 1; i <= SIZE; ++i) {
+                    beta1[i] = beta1[i - 1] * 0.95;
+                    beta2[i] = beta2[i - 1] * 0.999;
+                }
+            }
+        };
+        static constexpr adam_pow_table s_adam_pow{};
+    }
+
+    void solver::adam_bump(bool_var v) {
+        static constexpr double BETA1       = 0.95;
+        static constexpr double BETA2       = 0.999;
+        static constexpr double ONE_M_BETA1 = 1.0 - BETA1;   // 0.05
+        static constexpr double ONE_M_BETA2 = 1.0 - BETA2;   // 0.001
+        static constexpr double EPS         = 0.01;
+
+        // Lazy decay: apply accumulated β^Δt since last update.
+        uint64_t dt = m_adam_step - m_adam_last_update[v];
+        if (dt > 0) {
+            double b1 = (dt <= adam_pow_table::SIZE) ? s_adam_pow.beta1[dt] : 0.0;
+            double b2 = (dt <= adam_pow_table::SIZE) ? s_adam_pow.beta2[dt] : 0.0;
+            m_adam_m1[v] *= b1;
+            m_adam_m2[v] *= b2;
+            m_adam_last_update[v] = m_adam_step;
+        }
+        // Update moments with bump signal g=1.
+        m_adam_m1[v] = BETA1 * m_adam_m1[v] + ONE_M_BETA1;
+        m_adam_m2[v] = BETA2 * m_adam_m2[v] + ONE_M_BETA2;
+        // Effective activity: m1 / (sqrt(m2) + ε).
+        double act = m_adam_m1[v] / (std::sqrt(m_adam_m2[v]) + EPS);
+        set_activity(v, act);
     }
 
     void solver::update_chb_activity(bool is_sat, unsigned qhead) {
