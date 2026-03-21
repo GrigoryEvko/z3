@@ -865,6 +865,9 @@ namespace sat {
         // -----------------------
     protected:
         unsigned       m_conflict_lvl;
+        unsigned       m_conflict_glue;           // LBD of current conflict's learned clause
+        unsigned       m_conflict_clause_size;    // size of current conflict's learned clause
+        unsigned       m_conflict_decision_level; // decision level where current conflict occurred
         unsigned       m_max_marked_trail; // max trail pos of any conflict-level mark (for forward-mark fix)
         literal_vector m_lemma;
         literal_vector m_ext_antecedents;

@@ -97,6 +97,9 @@ namespace sat {
         m_par_syncing_clauses(false) {
         init_reason_unknown();
         updt_params(p);
+        m_conflict_glue           = 0;
+        m_conflict_clause_size    = 0;
+        m_conflict_decision_level = 0;
         m_best_phase_size         = 0;
         m_target_assigned         = 0;
         m_conflicts_since_gc      = 0;
@@ -3760,7 +3763,12 @@ namespace sat {
             }
         }
         
-        unsigned glue = num_diff_levels(m_lemma.size(), m_lemma.data());        
+        unsigned glue = num_diff_levels(m_lemma.size(), m_lemma.data());
+        // Populate per-conflict statistics for downstream consumers
+        // (e.g. bump_reason_literals, activity scaling).
+        m_conflict_glue           = glue;
+        m_conflict_clause_size    = m_lemma.size();
+        m_conflict_decision_level = m_conflict_lvl;
         m_fast_glue_avg.update(glue);
         m_slow_glue_avg.update(glue);
         m_phase_glue_sum += glue;
