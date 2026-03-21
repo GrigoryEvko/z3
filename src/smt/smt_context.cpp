@@ -3689,6 +3689,7 @@ namespace smt {
         m_num_conflicts                = 0;
         m_num_conflicts_since_restart  = 0;
         m_num_conflicts_since_lemma_gc = 0;
+        m_th_imp_decay_counter         = 0;
         m_num_restarts                 = 0;
         m_restart_threshold            = m_fparams.m_restart_initial;
         m_restart_outer_threshold      = m_fparams.m_restart_initial;
@@ -4182,6 +4183,17 @@ namespace smt {
             // Must be done before pop_scope_core since justifications are invalidated.
             attribute_qi_conflict(num_lits, lits);
 
+            // Bump theory importance for theory atoms in theory-originated conflicts.
+            // Must be done before pop_scope_core since m_bdata is needed.
+            if (m_conflict.get_kind() == b_justification::JUSTIFICATION)
+                bump_theory_importance(num_lits, lits);
+
+            // Periodic decay of all theory importance scores.
+            if (++m_th_imp_decay_counter >= 1000) {
+                m_th_imp_decay_counter = 0;
+                decay_theory_importance();
+            }
+
             // When num_lits == 1, then the default behavior is to go
             // to base-level. If the problem has quantifiers, it may be
             // too expensive to do that, since all instances will need to
@@ -4397,6 +4409,8 @@ namespace smt {
         ptr_vector<quantifier> const & qi_list = m_conflict_resolution->get_qi_contributing();
         if (qi_list.empty())
             return;
+        // Bump global QI conflict counter (once per conflict, not per quantifier).
+        m_qmanager->inc_global_qi_conflicts();
         // Deduplicate: a quantifier may appear multiple times if several
         // of its instances participated in the same conflict.
         ptr_vector<quantifier> seen;
@@ -4411,6 +4425,22 @@ namespace smt {
                 seen.push_back(q);
             }
         }
+    }
+
+    void context::bump_theory_importance(unsigned num_lits, literal const * lits) {
+        for (unsigned i = 0; i < num_lits; ++i) {
+            bool_var v = lits[i].var();
+            if (v < m_bdata.size() && get_bdata(v).is_theory_atom()) {
+                double & imp = m_theory_importance[v];
+                imp = 0.95 * imp + 0.05;
+            }
+        }
+    }
+
+    void context::decay_theory_importance() {
+        unsigned sz = m_theory_importance.size();
+        for (unsigned i = 0; i < sz; ++i)
+            m_theory_importance[i] *= 0.99;
     }
 
     /*

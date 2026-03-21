@@ -195,6 +195,8 @@ namespace smt {
         unsigned_vector             m_lit_occs;    //!< occurrence count of literals
         svector<bool_var_data>      m_bdata;       //!< mapping bool_var -> data
         svector<double>             m_activity;
+        svector<double>             m_theory_importance; //!< per-bool_var theory conflict importance score
+        unsigned                    m_th_imp_decay_counter { 0 }; //!< counts conflicts for periodic importance decay
         clause_vector               m_aux_clauses;
         clause_vector               m_lemmas;
         vector<clause_vector>       m_clauses_to_reinit;
@@ -499,6 +501,10 @@ namespace smt {
             else {
                 m_case_split_queue->activity_decreased_eh(v);
             }
+        }
+
+        double get_theory_importance(bool_var v) const {
+            return v < m_theory_importance.size() ? m_theory_importance[v] : 0.0;
         }
 
         bool is_assumption(bool_var v) const {
@@ -1342,6 +1348,10 @@ namespace smt {
         virtual bool resolve_conflict();
 
         void attribute_qi_conflict(unsigned num_lits, literal const * lits);
+
+        void bump_theory_importance(unsigned num_lits, literal const * lits);
+
+        void decay_theory_importance();
 
         void add_scores(unsigned n, literal const *lits);
 

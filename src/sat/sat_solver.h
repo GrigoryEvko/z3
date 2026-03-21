@@ -167,6 +167,7 @@ namespace sat {
         // branch variable selection:
         svector<double>         m_activity;
         double                  m_activity_inc;
+        svector<double>         m_polarity_belief;  // per-variable polarity belief in [-1,1], 0=neutral
         svector<uint64_t>       m_last_conflict;
         svector<uint64_t>       m_last_propagation;
         svector<uint64_t>       m_participated;
@@ -869,6 +870,8 @@ namespace sat {
         unsigned       m_conflict_clause_size;    // size of current conflict's learned clause
         unsigned       m_conflict_decision_level; // decision level where current conflict occurred
         double         m_conflict_bump_scale;     // combined LBD + Muon per-conflict bump scale
+        double         m_grad_norm_fast;          // fast EMA of conflict bump scale (alpha=0.03)
+        double         m_grad_norm_slow;          // slow EMA of conflict bump scale (alpha=1e-5)
         unsigned       m_max_marked_trail; // max trail pos of any conflict-level mark (for forward-mark fix)
         literal_vector m_lemma;
         literal_vector m_ext_antecedents;

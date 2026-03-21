@@ -99,6 +99,8 @@ namespace smt {
 
         void register_on_binding(std::function<bool(quantifier*, expr*)> & f);
 
+        void inc_global_qi_conflicts();
+
         ptr_vector<quantifier>::const_iterator begin_quantifiers() const;
         ptr_vector<quantifier>::const_iterator end_quantifiers() const;
         ptr_vector<quantifier>::const_iterator begin() const { return begin_quantifiers(); }

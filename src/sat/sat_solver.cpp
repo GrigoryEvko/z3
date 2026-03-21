@@ -39,26 +39,35 @@ Revision History:
 # include <xmmintrin.h>
 #endif
 
-// Precomputed table for pow(0.95, age) to avoid expensive transcendental calls
-// in the hot anti-exploration decay path. Ages beyond MAX_DECAY_AGE are clamped.
-// Uses C++11 thread-safe local static initialization to avoid data races
-// when multiple solver instances run in parallel.
-static const unsigned MAX_DECAY_AGE = 512;
+// Precomputed exponential decay tables for branching heuristics.
+// beta1 (0.95^i): anti-exploration decay, Adam first-moment bias correction.
+// beta2 (0.999^i): Adam second-moment bias correction.
+// constexpr => zero runtime init cost, ~6.4KB total, fits in L1 cache.
+// For i > SIZE the values are negligibly small (0.95^400 ~ 1.2e-9), return 0.0.
+namespace {
+    struct decay_pow_table {
+        static constexpr unsigned SIZE = 400;
+        double beta1[SIZE + 1];  // 0.95^i
+        double beta2[SIZE + 1];  // 0.999^i
+        constexpr decay_pow_table() : beta1{}, beta2{} {
+            beta1[0] = beta2[0] = 1.0;
+            for (unsigned i = 1; i <= SIZE; ++i) {
+                beta1[i] = beta1[i - 1] * 0.95;
+                beta2[i] = beta2[i - 1] * 0.999;
+            }
+        }
+    };
+    static constexpr decay_pow_table s_decay_pow{};
+}
 
-struct decay_table {
-    double values[MAX_DECAY_AGE + 1];
-    decay_table() {
-        values[0] = 1.0;
-        for (unsigned i = 1; i <= MAX_DECAY_AGE; i++)
-            values[i] = values[i - 1] * 0.95;
-    }
-};
+static inline double decay_pow095(uint64_t age) {
+    if (age > decay_pow_table::SIZE) return 0.0;
+    return s_decay_pow.beta1[static_cast<unsigned>(age)];
+}
 
-static double decay_pow095(uint64_t age) {
-    static const decay_table table;
-    if (age >= MAX_DECAY_AGE)
-        return table.values[MAX_DECAY_AGE];
-    return table.values[static_cast<unsigned>(age)];
+static inline double decay_pow0999(uint64_t age) {
+    if (age > decay_pow_table::SIZE) return 0.0;
+    return s_decay_pow.beta2[static_cast<unsigned>(age)];
 }
 
 namespace sat {
@@ -101,6 +110,8 @@ namespace sat {
         m_conflict_clause_size    = 0;
         m_conflict_decision_level = 0;
         m_conflict_bump_scale     = 1.0;
+        m_grad_norm_fast          = 0.0;
+        m_grad_norm_slow          = 0.0;
         m_best_phase_size         = 0;
         m_target_assigned         = 0;
         m_conflicts_since_gc      = 0;
@@ -157,6 +168,7 @@ namespace sat {
         m_external.reset();
         m_var_scope.reset();
         m_activity.reset();
+        m_polarity_belief.reset();
         m_mark.reset();
         m_poison.reset();
         m_removable.reset();
@@ -198,6 +210,7 @@ namespace sat {
 
             // inherit activity:
             m_activity[v] = src.m_activity[v];
+            m_polarity_belief[v] = src.m_polarity_belief[v];
             m_case_split_queue.activity_changed_eh(v, false);
         }
 
@@ -304,6 +317,7 @@ namespace sat {
         m_var_scope[v] = scope_lvl();
         m_touched[v] = 0;
         m_activity[v] = 0.0;
+        m_polarity_belief[v] = 0.0;
         m_mark[v] = false;
         m_poison[v] = false;
         m_removable[v] = false;
@@ -358,6 +372,7 @@ namespace sat {
         m_var_scope.push_back(scope_lvl());
         m_touched.push_back(0);
         m_activity.push_back(0.0);
+        m_polarity_belief.push_back(0.0);
         m_mark.push_back(false);
         m_poison.push_back(false);
         m_removable.push_back(false);
@@ -3778,6 +3793,12 @@ namespace sat {
             double muon_scale = 1.0 / std::sqrt(std::max(static_cast<double>(m_conflict_clause_size), 1.0));
             m_conflict_bump_scale = glue_scale * muon_scale;
         }
+        // Gradient-norm tracking: EMA of conflict bump scale as a proxy
+        // for learning rate magnitude. Fast EMA responds quickly to regime
+        // changes; slow EMA provides a long-term baseline. A sustained
+        // drop (fast << slow) may indicate the solver is stuck.
+        m_grad_norm_fast = 0.03 * m_conflict_bump_scale + 0.97 * m_grad_norm_fast;
+        m_grad_norm_slow = 1e-5 * m_conflict_bump_scale + (1.0 - 1e-5) * m_grad_norm_slow;
         m_fast_glue_avg.update(glue);
         m_slow_glue_avg.update(glue);
         m_phase_glue_sum += glue;
@@ -5507,6 +5528,7 @@ namespace sat {
         m_var_scope.shrink(v);
         m_touched.shrink(v);
         m_activity.shrink(v);
+        m_polarity_belief.shrink(v);
         if (m_config.m_branching_heuristic == BH_ADAM) {
             m_adam_m1.shrink(v);
             m_adam_m2.shrink(v);

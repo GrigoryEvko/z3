@@ -540,6 +540,10 @@ namespace smt {
         m_imp->register_on_binding(on_binding);
     }
 
+    void quantifier_manager::inc_global_qi_conflicts() {
+        m_imp->m_qi_queue.inc_global_qi_conflicts();
+    }
+
     void quantifier_manager::relevant_eh(enode * n) {
         m_imp->relevant_eh(n);
     }

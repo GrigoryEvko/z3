@@ -35,6 +35,7 @@ namespace smt {
 
     struct qi_queue_stats {
         unsigned m_num_instances, m_num_lazy_instances;
+        unsigned m_num_qi_conflicts;  // global count of conflicts with QI participation
         void reset() { memset(this, 0, sizeof(qi_queue_stats)); }
         qi_queue_stats() { reset(); }
     };
@@ -101,6 +102,7 @@ namespace smt {
         void register_on_binding(std::function<bool(quantifier* q, expr* e)> & on_binding) {
             m_on_binding = on_binding;
         }
+        void inc_global_qi_conflicts() { m_stats.m_num_qi_conflicts++; }
     };
 };
 

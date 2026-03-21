@@ -158,7 +158,9 @@ namespace smt {
         // making them more likely to be eagerly instantiated.
         // This is a boost-only mechanism: no quantifier is penalized.
         // The discount is capped at 25% to avoid over-promotion.
-        if (r > 0.0f && stat->get_num_conflicts() > 0 &&
+        // Gated by smt.qi.feedback parameter.
+        if (m_params.m_qi_feedback &&
+            r > 0.0f && stat->get_num_conflicts() > 0 &&
             stat->get_instances_total() >= 20) {
             double rate = static_cast<double>(stat->get_num_conflicts())
                         / stat->get_instances_total();
@@ -195,6 +197,42 @@ namespace smt {
     }
 
     void qi_queue::instantiate() {
+        // Adaptive QI budget: dynamically adjust the eager cost threshold
+        // based on global success rate (qi_conflicts / total_instances).
+        //
+        // The success rate is typically 0.01-0.1% for F*/Pulse workloads:
+        // most QI contributes via propagation, not direct conflict
+        // participation. The budget adapts conservatively:
+        //
+        //   After warmup (50K instances):
+        //     success < 1e-5 (< 0.001%): tighten threshold to 90%
+        //     success > 1e-2 (> 1%):     loosen threshold to 300%
+        //     otherwise:                  use default threshold
+        //
+        // The threshold adjustment is deliberately gentle to avoid
+        // perturbing proof search on marginal queries. Tightening by 10%
+        // only delays instances near the cost boundary, preserving all
+        // low-cost (high-quality) instances.
+        double effective_threshold = m_eager_cost_threshold;
+        unsigned total_inst = m_stats.m_num_instances;
+        if (m_params.m_qi_feedback && total_inst >= 50000) {
+            unsigned total_conf = m_stats.m_num_qi_conflicts;
+            double success_rate = static_cast<double>(total_conf) / total_inst;
+            if (success_rate < 1e-5) {
+                // Near-zero conflict participation: gentle 10% tightening
+                effective_threshold = m_eager_cost_threshold * 0.9;
+            }
+            else if (success_rate > 1e-2) {
+                // Very high conflict participation: expand 3x
+                effective_threshold = m_eager_cost_threshold * 3.0;
+            }
+            TRACE(qi_queue, tout << "adaptive QI budget: total_inst=" << total_inst
+                  << " qi_conflicts=" << total_conf
+                  << " success_rate=" << success_rate
+                  << " base_threshold=" << m_eager_cost_threshold
+                  << " effective_threshold=" << effective_threshold << "\n";);
+        }
+
         unsigned since_last_check = 0;
         for (entry & curr : m_new_entries) {
             if (m_context.get_cancel_flag()) {
@@ -208,7 +246,7 @@ namespace smt {
             fingerprint * f    = curr.m_qb;
             quantifier * qa    = static_cast<quantifier*>(f->get_data());
 
-            if (curr.m_cost <= m_eager_cost_threshold) {
+            if (curr.m_cost <= effective_threshold) {
                 instantiate(curr);
             }
             else if (m_params.m_qi_promote_unsat && m_checker.is_unsat(qa->get_expr(), f->get_num_args(), f->get_args())) {
@@ -563,6 +601,7 @@ namespace smt {
     void qi_queue::collect_statistics(::statistics & st) const {
         st.update("quant instantiations", m_stats.m_num_instances);
         st.update("lazy quant instantiations", m_stats.m_num_lazy_instances);
+        st.update("qi conflicts", m_stats.m_num_qi_conflicts);
         st.update("missed quant instantiations", m_delayed_entries.size());
         float min, max;
         get_min_max_costs(min, max);
