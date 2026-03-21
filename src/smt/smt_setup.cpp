@@ -40,6 +40,7 @@ Revision History:
 #include "smt/theory_pb.h"
 #include "smt/theory_fpa.h"
 #include "smt/theory_polymorphism.h"
+#include "smt/smt_query_profile.h"
 
 namespace smt {
 
@@ -140,6 +141,7 @@ namespace smt {
 
     void setup::setup_auto_config() {
         static_features    st(m_manager);
+        bool               features_collected = false;
         IF_VERBOSE(100, verbose_stream() << "(smt.configuring)\n";);
         TRACE(setup, tout << "setup, logic: " << m_logic << "\n";);
         // HACK: do not collect features for QF_BV and QF_AUFBV... since they do not use them...
@@ -154,9 +156,10 @@ namespace smt {
             ptr_vector<expr> fmls;
             m_context.get_asserted_formulas(fmls);
             st.collect(fmls.size(), fmls.data());
+            features_collected = true;
             TRACE(setup, st.display_primitive(tout););
             IF_VERBOSE(1000, st.display_primitive(verbose_stream()););
-            if (m_logic == "QF_UF") 
+            if (m_logic == "QF_UF")
                 setup_QF_UF(st);
             else if (m_logic == "QF_RDL")
                 setup_QF_RDL(st);
@@ -204,8 +207,20 @@ namespace smt {
                 setup_QF_DT();
             else if (m_logic == "LRA")
                 setup_LRA();
-            else 
+            else
                 setup_unknown(st);
+        }
+
+        // Apply query profile tuning when features were collected.
+        // Only applies to paths where the logic was not explicitly recognized
+        // (setup_unknown) or where the logic declaration is very generic.
+        // Well-recognized logics (QF_BV, QF_LIA, QF_UF, etc.) already have
+        // carefully tuned parameters, so the profile skips them.
+        if (features_collected && (m_logic == symbol::null || m_logic == symbol("")
+            || m_logic == "ALL" || m_logic == "HORN"
+            || m_logic == "AUFLIA" || m_logic == "AUFLIRA" || m_logic == "AUFNIRA"
+            || m_logic == "UFNIA" || m_logic == "UFLRA")) {
+            apply_query_profile(st);
         }
     }
 
@@ -810,6 +825,7 @@ namespace smt {
         setup_special_relations();
         setup_polymorphism();
         setup_relevancy(st);
+        apply_query_profile(st);
     }
 
     //
@@ -825,7 +841,21 @@ namespace smt {
             return;
 
         if (st.m_has_bv && !st.m_has_fpa && st.m_num_quantifiers == 0)
-             m_params.m_relevancy_lvl = 0;           
+             m_params.m_relevancy_lvl = 0;
+    }
+
+    void setup::apply_query_profile(static_features const & st) {
+        query_profile qp;
+        qp.classify(st);
+        qp.apply_tuning(m_params);
+        IF_VERBOSE(10, verbose_stream() << "(smt.query-profile " << qp.category_name()
+                   << " :quants " << qp.num_quantifiers
+                   << " :asserts " << qp.num_assertions
+                   << " :trigger-density " << qp.trigger_density
+                   << " :uf " << qp.frac_uf
+                   << " :arith " << qp.frac_arith
+                   << " :bv " << qp.frac_bv
+                   << ")\n";);
     }
 
     void setup::setup_unknown(static_features & st) {
@@ -833,7 +863,7 @@ namespace smt {
         if (st.m_num_quantifiers > 0) {
             if (st.m_has_real)
                 setup_AUFLIRA(false);
-            else 
+            else
                 setup_AUFLIA(false);
             setup_datatypes();
             setup_bv();
