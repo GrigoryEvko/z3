@@ -333,7 +333,7 @@ namespace sat {
         m_participated[v] = 0;
         m_canceled[v] = 0;
         m_reasoned[v] = 0;
-        if (m_config.m_branching_heuristic == BH_ADAM && v < m_adam_m1.size()) {
+        if ((m_config.m_branching_heuristic == BH_ADAM || m_config.m_branching_heuristic == BH_COMBINED) && v < m_adam_m1.size()) {
             m_adam_m1[v] = 0.0;
             m_adam_m2[v] = 0.0;
             m_adam_last_update[v] = m_adam_step;
@@ -388,7 +388,7 @@ namespace sat {
         m_participated.push_back(0);
         m_canceled.push_back(0);
         m_reasoned.push_back(0);
-        if (m_config.m_branching_heuristic == BH_ADAM) {
+        if (m_config.m_branching_heuristic == BH_ADAM || m_config.m_branching_heuristic == BH_COMBINED) {
             m_adam_m1.push_back(0.0);
             m_adam_m2.push_back(0.0);
             m_adam_last_update.push_back(m_adam_step);
@@ -3848,7 +3848,7 @@ namespace sat {
         m_lemma.reset();
         TRACE(sat_conflict_detail, tout << "consistent " << (!m_inconsistent) << " scopes: " << scope_lvl() << " backtrack: " << backtrack_lvl << " backjump: " << backjump_lvl << "\n";);
         decay_activity();
-        if (m_config.m_branching_heuristic == BH_ADAM)
+        if (m_config.m_branching_heuristic == BH_ADAM || m_config.m_branching_heuristic == BH_COMBINED)
             ++m_adam_step;
         updt_phase_counters();
     }
@@ -4145,6 +4145,20 @@ namespace sat {
                         else if (belief < -1.0) belief = -1.0;
                     }
                     break;
+                case BH_COMBINED:
+                    adam_bump(var);
+                    {
+                        double ps = (value(var) == l_true) ? -1.0 : 1.0;
+                        double& belief = m_polarity_belief[var];
+                        belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
+                        if (belief > 1.0) belief = 1.0;
+                        else if (belief < -1.0) belief = -1.0;
+                        // Combined score: importance * (0.5 + confidence)
+                        double importance = std::abs(m_adam_m1[var]) / (std::sqrt(m_adam_m2[var]) + 0.01);
+                        double confidence = std::abs(belief);
+                        set_activity(var, importance * (0.5 + confidence));
+                    }
+                    break;
                 }
             }
 
@@ -4412,6 +4426,14 @@ namespace sat {
     }
 
     bool solver::should_rephase() {
+        // Belief mode accumulates polarity signal from conflict gradients
+        // and does not use the phase cache cascade (target/best/saved) for
+        // decisions.  Rephasing mutates m_phase[] which is only a neutral
+        // fallback for belief==0.0 variables -- overwriting it with random,
+        // inverted, or best-phase values would fight the belief signal.
+        // The expensive ProbSAT walk is also unnecessary.
+        if (m_config.m_phase_strategy == PHS_BELIEF)
+            return false;
         return m_conflicts_since_init > m_rephase_lim;
     }
 
@@ -5244,7 +5266,7 @@ namespace sat {
     // CaDiCaL-style reason-side literal bumping for VSIDS (analyze.cpp:342-424).
     void solver::bump_reason_literals() {
         if (!m_config.m_bump_reason ||
-            (m_config.m_branching_heuristic != BH_VSIDS && m_config.m_branching_heuristic != BH_ADAM) ||
+            (m_config.m_branching_heuristic != BH_VSIDS && m_config.m_branching_heuristic != BH_ADAM && m_config.m_branching_heuristic != BH_COMBINED) ||
             m_lemma.empty())
             return;
         // CaDiCaL-style: reason-side bumping is a VSIDS-only technique.
@@ -5278,7 +5300,7 @@ namespace sat {
         } else {
             for (unsigned i = m_lemma.size(); i-- > saved_sz; ) {
                 bool_var bv = m_lemma[i].var();
-                if (m_config.m_branching_heuristic == BH_ADAM)
+                if (m_config.m_branching_heuristic == BH_ADAM || m_config.m_branching_heuristic == BH_COMBINED)
                     adam_bump(bv);
                 else
                     inc_activity_scaled(bv);
@@ -5291,6 +5313,12 @@ namespace sat {
                     belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
                     if (belief > 1.0) belief = 1.0;
                     else if (belief < -1.0) belief = -1.0;
+                }
+                // Combined: overwrite activity with importance * (0.5 + confidence)
+                if (m_config.m_branching_heuristic == BH_COMBINED) {
+                    double importance = std::abs(m_adam_m1[bv]) / (std::sqrt(m_adam_m2[bv]) + 0.01);
+                    double confidence = std::abs(m_polarity_belief[bv]);
+                    set_activity(bv, importance * (0.5 + confidence));
                 }
             }
             for (unsigned i = m_lemma.size(); i-- > saved_sz; ) {
@@ -5571,7 +5599,7 @@ namespace sat {
         m_touched.shrink(v);
         m_activity.shrink(v);
         m_polarity_belief.shrink(v);
-        if (m_config.m_branching_heuristic == BH_ADAM) {
+        if (m_config.m_branching_heuristic == BH_ADAM || m_config.m_branching_heuristic == BH_COMBINED) {
             m_adam_m1.shrink(v);
             m_adam_m2.shrink(v);
             m_adam_last_update.shrink(v);

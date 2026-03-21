@@ -42,15 +42,25 @@ namespace bv {
     }
 
     bool solver::should_bit_blast(app* e) {
-        if (bv.get_bv_size(e) <= 12)
-            return true;
+        unsigned const threshold = get_config().m_bv_delay_threshold;
+        unsigned const sz = bv.get_bv_size(e);
         unsigned num_vars = e->get_num_args();
-        for (expr* arg : *e) 
+        for (expr* arg : *e)
             if (m.is_value(arg))
                 --num_vars;
-        if (num_vars <= 1) 
+        // Constant folding: single variable arg means the op is nearly free
+        if (num_vars <= 1)
             return true;
-        if (bv.is_bv_add(e) && num_vars * bv.get_bv_size(e) <= 64)
+        // Multiplies are O(n^2) in SAT vars -- delay more aggressively.
+        // A 32-bit multiply with 2 variable args creates ~5000 SAT vars.
+        // Use a higher bar: only blast tiny multiplies (sz <= 12 always).
+        if (bv.is_bv_mul(e) && num_vars >= 2)
+            return sz <= 12;
+        // General threshold for non-multiply ops
+        if (sz <= threshold)
+            return true;
+        // Adds are cheap (linear in SAT vars) -- blast eagerly up to 128 cost
+        if (bv.is_bv_add(e) && num_vars * sz <= 128)
             return true;
         return false;
     }

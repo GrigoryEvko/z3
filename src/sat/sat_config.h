@@ -57,6 +57,7 @@ namespace sat {
         BH_VSIDS,
         BH_CHB,
         BH_ADAM,
+        BH_COMBINED,
         BH_MUON
     };
 

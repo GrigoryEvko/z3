@@ -35,6 +35,7 @@ struct theory_bv_params {
     bool         m_bv_enable_int2bv2int = true;
     bool         m_bv_watch_diseq = false;
     bool         m_bv_delay = true;
+    unsigned     m_bv_delay_threshold = 12;
     bool         m_bv_size_reduce = false;
     unsigned     m_bv_solver = 0;
     theory_bv_params(params_ref const & p = params_ref()) {

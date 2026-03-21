@@ -3638,6 +3638,7 @@ namespace smt {
             expr_ref_vector asms(m, num_assumptions, assumptions);
             try {
                 internalize_assertions();
+                compute_assertion_hash();
                 add_theory_assumptions(asms);
                 TRACE(unsat_core_bug, tout << asms << '\n';);
                 init_assumptions(asms);
@@ -3664,6 +3665,7 @@ namespace smt {
             expr_ref_vector asms(cube);
             try {
                 internalize_assertions();
+                compute_assertion_hash();
                 add_theory_assumptions(asms);
                 // introducing proxies: if (!validate_assumptions(asms)) return l_undef;
                 for (auto const& clause : clauses) if (!validate_assumptions(clause)) return l_undef;
@@ -4905,9 +4907,118 @@ namespace smt {
     void context::add_rec_funs_to_model() {
         model_params p;
         auto smtlib2_compliant = gparams::get_value("smtlib2_compliant");
-        
+
         if (m_model && p.user_functions() && smtlib2_compliant != "true")
             m_model->add_rec_funs();
+    }
+
+    /**
+     * Compute a structural content hash of the assertion set.
+     * Hash components (all domain-invariant, no pointers/names):
+     *   1. Number of assertions
+     *   2. Number of quantified assertions
+     *   3. Total unique func_decls (uninterpreted)
+     *   4. Theory family counts (arith, BV, array, datatype, UF)
+     *   5. Sum of quantifier body depths (proxy for average)
+     *   6. Total trigger count across all quantifiers
+     */
+    uint64_t context::compute_assertion_hash() {
+        unsigned const num_asserts = get_num_asserted_formulas();
+        unsigned num_quantifiers     = 0;
+        unsigned num_triggers        = 0;
+        unsigned sum_body_depth      = 0;
+        unsigned num_uf_decls        = 0;
+
+        // Theory family counts indexed by family_id.
+        // family_ids are small non-negative ints; 32 slots covers all built-in theories.
+        constexpr unsigned MAX_FID = 32;
+        unsigned theory_counts[MAX_FID] = {};
+
+        // Track visited exprs and unique func_decls via on-node marks.
+        expr_mark visited;
+        obj_hashtable<func_decl> seen_decls;
+
+        ptr_buffer<expr> todo;
+        for (unsigned i = 0; i < num_asserts; ++i)
+            todo.push_back(get_asserted_formula(i));
+
+        while (!todo.empty()) {
+            expr * e = todo.back();
+            todo.pop_back();
+            if (visited.is_marked(e))
+                continue;
+            visited.mark(e);
+
+            if (is_app(e)) {
+                app * a = to_app(e);
+                func_decl * d = a->get_decl();
+                if (!seen_decls.contains(d)) {
+                    seen_decls.insert(d);
+                    family_id fid = d->get_family_id();
+                    if (fid == null_family_id)
+                        ++num_uf_decls;
+                    else if (fid >= 0 && static_cast<unsigned>(fid) < MAX_FID)
+                        ++theory_counts[fid];
+                }
+                for (unsigned j = 0; j < a->get_num_args(); ++j)
+                    todo.push_back(a->get_arg(j));
+            }
+            else if (is_quantifier(e)) {
+                quantifier * q = to_quantifier(e);
+                ++num_quantifiers;
+                num_triggers += q->get_num_patterns();
+                // Body depth: structural depth of the quantifier body expression.
+                expr * body = q->get_expr();
+                sum_body_depth += (is_app(body) ? to_app(body)->get_depth() : 1);
+                todo.push_back(body);
+                // Also walk patterns so their func_decls are counted.
+                for (unsigned j = 0; j < q->get_num_patterns(); ++j)
+                    todo.push_back(q->get_pattern(j));
+            }
+            // AST_VAR: nothing to collect
+        }
+
+        // Mix the 6 feature components with fmix64.
+        uint64_t h = fmix64(static_cast<uint64_t>(num_asserts));
+        h ^= fmix64(static_cast<uint64_t>(num_quantifiers) + 0x100);
+        h ^= fmix64(static_cast<uint64_t>(num_uf_decls) + 0x200);
+
+        // Theory mix: combine counts for well-known families.
+        // Use specific family_ids from the ast_manager.
+        family_id afid  = m.mk_family_id(symbol("arith"));
+        family_id bvfid = m.mk_family_id(symbol("bv"));
+        family_id arfid = m.mk_family_id(symbol("array"));
+        family_id dtfid = m.mk_family_id(symbol("datatype"));
+
+        auto safe_count = [&](family_id fid) -> unsigned {
+            return (fid >= 0 && static_cast<unsigned>(fid) < MAX_FID) ? theory_counts[fid] : 0;
+        };
+        uint64_t theory_mix = fmix64(safe_count(afid) + 1);
+        theory_mix ^= fmix64(safe_count(bvfid) + 2);
+        theory_mix ^= fmix64(safe_count(arfid) + 3);
+        theory_mix ^= fmix64(safe_count(dtfid) + 4);
+        h ^= fmix64(theory_mix);
+
+        h ^= fmix64(static_cast<uint64_t>(sum_body_depth) + 0x300);
+        h ^= fmix64(static_cast<uint64_t>(num_triggers) + 0x400);
+
+        m_assertion_hash = h;
+
+        TRACE(assertion_hash,
+            tout << "assertion_hash: 0x" << std::hex << h << std::dec
+                 << " asserts=" << num_asserts
+                 << " quants=" << num_quantifiers
+                 << " uf_decls=" << num_uf_decls
+                 << " arith=" << safe_count(afid)
+                 << " bv=" << safe_count(bvfid)
+                 << " array=" << safe_count(arfid)
+                 << " dt=" << safe_count(dtfid)
+                 << " body_depth_sum=" << sum_body_depth
+                 << " triggers=" << num_triggers
+                 << "\n";
+        );
+
+        return h;
     }
 
 };

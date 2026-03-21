@@ -975,7 +975,7 @@ namespace sat {
         remap_var_array(m_touched);
         remap_var_array(m_activity);
         remap_var_array(m_polarity_belief);
-        if (m_config.m_branching_heuristic == BH_ADAM) {
+        if (m_config.m_branching_heuristic == BH_ADAM || m_config.m_branching_heuristic == BH_COMBINED) {
             remap_var_array(m_adam_m1);
             remap_var_array(m_adam_m2);
             remap_var_array(m_adam_last_update);

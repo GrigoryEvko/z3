@@ -138,6 +138,7 @@ namespace smt {
 
         svector<double> m_lit_scores[2];
 
+        uint64_t                    m_assertion_hash = 0;
 
         // -----------------------------------
         //
@@ -1848,6 +1849,9 @@ namespace smt {
         //proof * const * get_asserted_formula_proofs() const { return m_asserted_formulas.get_formula_proofs(); }
 
         void get_assertions(ptr_vector<expr> & result) { m_asserted_formulas.get_assertions(result); }
+
+        uint64_t compute_assertion_hash();
+        uint64_t get_assertion_hash() const { return m_assertion_hash; }
 
         void get_units(expr_ref_vector& result);
 
