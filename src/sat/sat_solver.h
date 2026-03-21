@@ -1074,6 +1074,19 @@ namespace sat {
                 rescale_activity();
         }
 
+        // LBD-scaled activity bump: scale by 1/max(glue_avg, 1) so that
+        // variables involved in tight (low-glue) conflicts get larger bumps
+        // than those in noisy (high-glue) conflicts.
+        void inc_activity_lbd(bool_var v) {
+            double glue = m_slow_glue_avg;
+            if (glue < 1.0) glue = 1.0;
+            double& act = m_activity[v];
+            act += m_activity_inc / glue;
+            m_case_split_queue.activity_increased_eh(v);
+            if (act > 1e100)
+                rescale_activity();
+        }
+
         void decay_activity() {
             m_activity_inc *= (m_config.m_variable_decay * 0.01);
         }

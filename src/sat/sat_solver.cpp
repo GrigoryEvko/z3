@@ -4075,7 +4075,7 @@ namespace sat {
             else {
                 switch (m_config.m_branching_heuristic) {
                 case BH_VSIDS:
-                    inc_activity(var);
+                    inc_activity_lbd(var);
                     break;
                 case BH_CHB:
                     m_last_conflict[var] = m_stats.m_conflict;
@@ -5219,7 +5219,7 @@ namespace sat {
                 if (m_config.m_branching_heuristic == BH_ADAM)
                     adam_bump(bv);
                 else
-                    inc_activity(bv);
+                    inc_activity_lbd(bv);
             }
             for (unsigned i = m_lemma.size(); i-- > saved_sz; ) {
                 SASSERT(is_marked(m_lemma[i].var()));
