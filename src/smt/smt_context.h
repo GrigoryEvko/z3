@@ -197,6 +197,8 @@ namespace smt {
         svector<double>             m_activity;
         svector<double>             m_theory_importance; //!< per-bool_var theory conflict importance score
         unsigned                    m_th_imp_decay_counter { 0 }; //!< counts conflicts for periodic importance decay
+        svector<double>             m_soft_relevancy;   //!< per-bool_var conflict participation EMA (soft relevancy)
+        unsigned                    m_soft_rel_decay_counter { 0 }; //!< counts conflicts for periodic soft relevancy decay
         clause_vector               m_aux_clauses;
         clause_vector               m_lemmas;
         vector<clause_vector>       m_clauses_to_reinit;
@@ -506,6 +508,12 @@ namespace smt {
         double get_theory_importance(bool_var v) const {
             return v < m_theory_importance.size() ? m_theory_importance[v] : 0.0;
         }
+
+        double get_soft_relevancy(bool_var v) const {
+            return v < m_soft_relevancy.size() ? m_soft_relevancy[v] : 0.0;
+        }
+
+        double get_soft_relevancy(expr * e) const;
 
         bool is_assumption(bool_var v) const {
             return get_bdata(v).m_assumption;
@@ -1352,6 +1360,10 @@ namespace smt {
         void bump_theory_importance(unsigned num_lits, literal const * lits);
 
         void decay_theory_importance();
+
+        void bump_soft_relevancy(unsigned num_lits, literal const * lits);
+
+        void decay_soft_relevancy();
 
         void add_scores(unsigned n, literal const *lits);
 

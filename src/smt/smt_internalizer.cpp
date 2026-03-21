@@ -931,6 +931,7 @@ namespace smt {
         m_bdata.reserve(v+1);
         m_activity.reserve(v+1);
         m_theory_importance.reserve(v+1);
+        m_soft_relevancy.reserve(v+1);
         m_bool_var2expr.reserve(v+1);
         m_bool_var2expr[v] = n;
         m_lit_scores[0].reserve(v + 1);

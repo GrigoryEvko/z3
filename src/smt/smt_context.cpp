@@ -3690,6 +3690,7 @@ namespace smt {
         m_num_conflicts_since_restart  = 0;
         m_num_conflicts_since_lemma_gc = 0;
         m_th_imp_decay_counter         = 0;
+        m_soft_rel_decay_counter       = 0;
         m_num_restarts                 = 0;
         m_restart_threshold            = m_fparams.m_restart_initial;
         m_restart_outer_threshold      = m_fparams.m_restart_initial;
@@ -4194,6 +4195,15 @@ namespace smt {
                 decay_theory_importance();
             }
 
+            // Bump soft relevancy for all literals in the conflict lemma.
+            bump_soft_relevancy(num_lits, lits);
+
+            // Periodic decay of all soft relevancy scores.
+            if (++m_soft_rel_decay_counter >= 1000) {
+                m_soft_rel_decay_counter = 0;
+                decay_soft_relevancy();
+            }
+
             // When num_lits == 1, then the default behavior is to go
             // to base-level. If the problem has quantifiers, it may be
             // too expensive to do that, since all instances will need to
@@ -4441,6 +4451,30 @@ namespace smt {
         unsigned sz = m_theory_importance.size();
         for (unsigned i = 0; i < sz; ++i)
             m_theory_importance[i] *= 0.99;
+    }
+
+    void context::bump_soft_relevancy(unsigned num_lits, literal const * lits) {
+        for (unsigned i = 0; i < num_lits; ++i) {
+            bool_var v = lits[i].var();
+            if (v < m_soft_relevancy.size()) {
+                double & rel = m_soft_relevancy[v];
+                rel = 0.95 * rel + 0.05;
+            }
+        }
+    }
+
+    void context::decay_soft_relevancy() {
+        unsigned sz = m_soft_relevancy.size();
+        for (unsigned i = 0; i < sz; ++i)
+            m_soft_relevancy[i] *= 0.99;
+    }
+
+    double context::get_soft_relevancy(expr * e) const {
+        if (!e) return 0.0;
+        bool_var v = get_bool_var_of_id_option(e->get_id());
+        if (v != null_bool_var)
+            return get_soft_relevancy(v);
+        return 0.0;
     }
 
     /*

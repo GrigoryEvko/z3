@@ -250,6 +250,7 @@ namespace smt {
         SASSERT(m_watches.size()       == 2 * m_bdata.size());
         SASSERT(m_bdata.size()         == m_activity.size());
         SASSERT(m_bdata.size()         == m_theory_importance.size());
+        SASSERT(m_bdata.size()         == m_soft_relevancy.size());
         SASSERT(m_bool_var2expr.size() == m_bdata.size());
         return true;
     }

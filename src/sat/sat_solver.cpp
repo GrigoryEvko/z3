@@ -4106,12 +4106,31 @@ namespace sat {
                 switch (m_config.m_branching_heuristic) {
                 case BH_VSIDS:
                     inc_activity_scaled(var);
+                    {
+                        // Polarity gradient: conflict involvement pushes belief
+                        // away from the assignment that led to conflict.
+                        // ~20-conflict half-life via 0.95/0.05 EMA split.
+                        double ps = (value(var) == l_true) ? -1.0 : 1.0;
+                        double& belief = m_polarity_belief[var];
+                        belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
+                        if (belief > 1.0) belief = 1.0;
+                        else if (belief < -1.0) belief = -1.0;
+                    }
                     break;
                 case BH_CHB:
                     m_last_conflict[var] = m_stats.m_conflict;
                     break;
                 case BH_ADAM:
                     adam_bump(var);
+                    {
+                        // Polarity gradient: same as VSIDS -- push belief
+                        // away from the assignment that led to conflict.
+                        double ps = (value(var) == l_true) ? -1.0 : 1.0;
+                        double& belief = m_polarity_belief[var];
+                        belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
+                        if (belief > 1.0) belief = 1.0;
+                        else if (belief < -1.0) belief = -1.0;
+                    }
                     break;
                 }
             }
@@ -5250,6 +5269,16 @@ namespace sat {
                     adam_bump(bv);
                 else
                     inc_activity_scaled(bv);
+                // Polarity gradient for reason-side literals (same formula
+                // as process_antecedent: push belief away from current
+                // assignment that participated in the conflict chain).
+                {
+                    double ps = (value(bv) == l_true) ? -1.0 : 1.0;
+                    double& belief = m_polarity_belief[bv];
+                    belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
+                    if (belief > 1.0) belief = 1.0;
+                    else if (belief < -1.0) belief = -1.0;
+                }
             }
             for (unsigned i = m_lemma.size(); i-- > saved_sz; ) {
                 SASSERT(is_marked(m_lemma[i].var()));
@@ -5766,24 +5795,9 @@ namespace sat {
     // -------------------------------------------------------
     // Adam optimizer branching heuristic
     // -------------------------------------------------------
-    namespace {
-        // Precomputed power tables for lazy timestamped decay.
-        // β1 = 0.95: matches VSIDS effective decay (~0.952).
-        // β2 = 0.999: slow second-moment memory for variance estimation.
-        struct adam_pow_table {
-            static constexpr unsigned SIZE = 400;
-            double beta1[SIZE + 1];  // 0.95^i
-            double beta2[SIZE + 1];  // 0.999^i
-            constexpr adam_pow_table() : beta1{}, beta2{} {
-                beta1[0] = beta2[0] = 1.0;
-                for (unsigned i = 1; i <= SIZE; ++i) {
-                    beta1[i] = beta1[i - 1] * 0.95;
-                    beta2[i] = beta2[i - 1] * 0.999;
-                }
-            }
-        };
-        static constexpr adam_pow_table s_adam_pow{};
-    }
+    // Uses the P4.1 lazy decay power tables (decay_pow095, decay_pow0999)
+    // for timestamped moment decay, and the enriched gradient signal
+    // m_conflict_bump_scale (LBD-weighted + Muon-normalized) from P1.2.
 
     void solver::adam_bump(bool_var v) {
         static constexpr double BETA1       = 0.95;
@@ -5792,19 +5806,18 @@ namespace sat {
         static constexpr double ONE_M_BETA2 = 1.0 - BETA2;   // 0.001
         static constexpr double EPS         = 0.01;
 
-        // Lazy decay: apply accumulated β^Δt since last update.
+        // Lazy decay: apply accumulated beta^dt since last update.
         uint64_t dt = m_adam_step - m_adam_last_update[v];
         if (dt > 0) {
-            double b1 = (dt <= adam_pow_table::SIZE) ? s_adam_pow.beta1[dt] : 0.0;
-            double b2 = (dt <= adam_pow_table::SIZE) ? s_adam_pow.beta2[dt] : 0.0;
-            m_adam_m1[v] *= b1;
-            m_adam_m2[v] *= b2;
+            m_adam_m1[v] *= decay_pow095(dt);
+            m_adam_m2[v] *= decay_pow0999(dt);
             m_adam_last_update[v] = m_adam_step;
         }
-        // Update moments with bump signal g=1.
-        m_adam_m1[v] = BETA1 * m_adam_m1[v] + ONE_M_BETA1;
-        m_adam_m2[v] = BETA2 * m_adam_m2[v] + ONE_M_BETA2;
-        // Effective activity: m1 / (sqrt(m2) + ε).
+        // Enriched gradient: LBD-weighted + Muon-normalized per-conflict signal.
+        double g = m_conflict_bump_scale;
+        m_adam_m1[v] = BETA1 * m_adam_m1[v] + ONE_M_BETA1 * g;
+        m_adam_m2[v] = BETA2 * m_adam_m2[v] + ONE_M_BETA2 * g * g;
+        // Effective activity: m1 / (sqrt(m2) + eps).
         double act = m_adam_m1[v] / (std::sqrt(m_adam_m2[v]) + EPS);
         set_activity(v, act);
     }
