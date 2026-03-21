@@ -100,6 +100,7 @@ namespace sat {
         m_conflict_glue           = 0;
         m_conflict_clause_size    = 0;
         m_conflict_decision_level = 0;
+        m_conflict_bump_scale     = 1.0;
         m_best_phase_size         = 0;
         m_target_assigned         = 0;
         m_conflicts_since_gc      = 0;
@@ -3769,6 +3770,14 @@ namespace sat {
         m_conflict_glue           = glue;
         m_conflict_clause_size    = m_lemma.size();
         m_conflict_decision_level = m_conflict_lvl;
+        // Muon-style per-conflict normalization: LBD weight * clause-size normalization.
+        // Dividing by sqrt(clause_size) makes total activity injection per conflict
+        // constant regardless of how many variables are bumped.
+        {
+            double glue_scale = 1.0 / std::max(static_cast<double>(m_slow_glue_avg), 1.0);
+            double muon_scale = 1.0 / std::sqrt(std::max(static_cast<double>(m_conflict_clause_size), 1.0));
+            m_conflict_bump_scale = glue_scale * muon_scale;
+        }
         m_fast_glue_avg.update(glue);
         m_slow_glue_avg.update(glue);
         m_phase_glue_sum += glue;
@@ -4075,7 +4084,7 @@ namespace sat {
             else {
                 switch (m_config.m_branching_heuristic) {
                 case BH_VSIDS:
-                    inc_activity_lbd(var);
+                    inc_activity_scaled(var);
                     break;
                 case BH_CHB:
                     m_last_conflict[var] = m_stats.m_conflict;
@@ -5219,7 +5228,7 @@ namespace sat {
                 if (m_config.m_branching_heuristic == BH_ADAM)
                     adam_bump(bv);
                 else
-                    inc_activity_lbd(bv);
+                    inc_activity_scaled(bv);
             }
             for (unsigned i = m_lemma.size(); i-- > saved_sz; ) {
                 SASSERT(is_marked(m_lemma[i].var()));

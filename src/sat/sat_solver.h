@@ -868,6 +868,7 @@ namespace sat {
         unsigned       m_conflict_glue;           // LBD of current conflict's learned clause
         unsigned       m_conflict_clause_size;    // size of current conflict's learned clause
         unsigned       m_conflict_decision_level; // decision level where current conflict occurred
+        double         m_conflict_bump_scale;     // combined LBD + Muon per-conflict bump scale
         unsigned       m_max_marked_trail; // max trail pos of any conflict-level mark (for forward-mark fix)
         literal_vector m_lemma;
         literal_vector m_ext_antecedents;
@@ -1074,14 +1075,14 @@ namespace sat {
                 rescale_activity();
         }
 
-        // LBD-scaled activity bump: scale by 1/max(glue_avg, 1) so that
-        // variables involved in tight (low-glue) conflicts get larger bumps
-        // than those in noisy (high-glue) conflicts.
-        void inc_activity_lbd(bool_var v) {
-            double glue = m_slow_glue_avg;
-            if (glue < 1.0) glue = 1.0;
+        // Muon-style per-conflict normalized activity bump.
+        // m_conflict_bump_scale = (1/glue_avg) * (1/sqrt(clause_size))
+        // so that total activity injection per conflict is constant
+        // regardless of clause size, and LBD-weighted so that tight
+        // conflicts get larger bumps than noisy ones.
+        void inc_activity_scaled(bool_var v) {
             double& act = m_activity[v];
-            act += m_activity_inc / glue;
+            act += m_activity_inc * m_conflict_bump_scale;
             m_case_split_queue.activity_increased_eh(v);
             if (act > 1e100)
                 rescale_activity();
