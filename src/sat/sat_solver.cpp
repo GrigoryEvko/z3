@@ -43,7 +43,8 @@ Revision History:
 // beta1 (0.95^i): anti-exploration decay, Adam first-moment bias correction.
 // beta2 (0.999^i): Adam second-moment bias correction.
 // constexpr => zero runtime init cost, ~6.4KB total, fits in L1 cache.
-// For i > SIZE the values are negligibly small (0.95^400 ~ 1.2e-9), return 0.0.
+// For i > SIZE: beta1 returns 0.0 (0.95^400 ~ 1.2e-9, negligible).
+//               beta2 falls back to std::pow (0.999^400 ~ 0.67, NOT negligible).
 namespace {
     struct decay_pow_table {
         static constexpr unsigned SIZE = 400;
@@ -66,8 +67,12 @@ static inline double decay_pow095(uint64_t age) {
 }
 
 static inline double decay_pow0999(uint64_t age) {
-    if (age > decay_pow_table::SIZE) return 0.0;
-    return s_decay_pow.beta2[static_cast<unsigned>(age)];
+    if (age <= decay_pow_table::SIZE)
+        return s_decay_pow.beta2[static_cast<unsigned>(age)];
+    // 0.999 decays slowly: 0.999^400 = 0.67, 0.999^10000 = 4.5e-5.
+    // Returning 0.0 would create a cliff edge at age=401 that distorts
+    // Adam's second moment (m2).  Fall back to std::pow for rare large dt.
+    return std::pow(0.999, static_cast<double>(age));
 }
 
 namespace sat {
@@ -3850,8 +3855,9 @@ namespace sat {
         // for each variable in the learned clause.  The reward is inversely
         // proportional to glue -- low-glue conflicts are more informative.
         // This is tracking infrastructure only; the scorer is not yet used
-        // for branching decisions.
-        {
+        // for branching decisions.  Train every 8th conflict to reduce
+        // overhead (~8x) while retaining convergence quality.
+        if ((m_stats.m_conflict & 7u) == 0) {
             double reward = 1.0 / std::max(glue, 1u);
             var_features vf;
             for (literal lit : m_lemma) {
@@ -4133,6 +4139,18 @@ namespace sat {
             if (value(antecedent) == l_undef)
                 return;
             mark(var);
+            // Polarity gradient: conflict involvement pushes belief away
+            // from the assignment that led to conflict.  This is a phase
+            // guidance signal, independent of the variable-ordering
+            // heuristic (VSIDS/CHB/ADAM/VMTF), so it runs unconditionally.
+            // ~20-conflict half-life via 0.95/0.05 EMA split.
+            {
+                double ps = (value(var) == l_true) ? -1.0 : 1.0;
+                double& belief = m_polarity_belief[var];
+                belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
+                if (belief > 1.0) belief = 1.0;
+                else if (belief < -1.0) belief = -1.0;
+            }
             // CaDiCaL-style: focused mode bumps ONLY the VMTF queue (recency);
             // stable mode bumps ONLY VSIDS/CHB scores.  Bumping both corrupts
             // VSIDS scores with focused-mode exploration noise, destroying the
@@ -4144,43 +4162,19 @@ namespace sat {
                 switch (m_config.m_branching_heuristic) {
                 case BH_VSIDS:
                     inc_activity_scaled(var);
-                    {
-                        // Polarity gradient: conflict involvement pushes belief
-                        // away from the assignment that led to conflict.
-                        // ~20-conflict half-life via 0.95/0.05 EMA split.
-                        double ps = (value(var) == l_true) ? -1.0 : 1.0;
-                        double& belief = m_polarity_belief[var];
-                        belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
-                        if (belief > 1.0) belief = 1.0;
-                        else if (belief < -1.0) belief = -1.0;
-                    }
                     break;
                 case BH_CHB:
                     m_last_conflict[var] = m_stats.m_conflict;
                     break;
                 case BH_ADAM:
                     adam_bump(var);
-                    {
-                        // Polarity gradient: same as VSIDS -- push belief
-                        // away from the assignment that led to conflict.
-                        double ps = (value(var) == l_true) ? -1.0 : 1.0;
-                        double& belief = m_polarity_belief[var];
-                        belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
-                        if (belief > 1.0) belief = 1.0;
-                        else if (belief < -1.0) belief = -1.0;
-                    }
                     break;
                 case BH_COMBINED:
                     adam_bump(var);
                     {
-                        double ps = (value(var) == l_true) ? -1.0 : 1.0;
-                        double& belief = m_polarity_belief[var];
-                        belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
-                        if (belief > 1.0) belief = 1.0;
-                        else if (belief < -1.0) belief = -1.0;
                         // Combined score: importance * (0.5 + confidence)
                         double importance = std::abs(m_adam_m1[var]) / (std::sqrt(m_adam_m2[var]) + 0.01);
-                        double confidence = std::abs(belief);
+                        double confidence = std::abs(m_polarity_belief[var]);
                         set_activity(var, importance * (0.5 + confidence));
                     }
                     break;
@@ -5227,9 +5221,9 @@ namespace sat {
        \brief Reset the mark of the variables in the current lemma.
     */
     void solver::reset_lemma_var_marks() {
-        if (m_config.m_branching_heuristic == BH_VSIDS) {
-            bump_reason_literals();
-        }        
+        // Reason-side bumping applies to VSIDS, ADAM, and COMBINED.
+        // bump_reason_literals() has its own heuristic guard internally.
+        bump_reason_literals();        
         literal_vector::iterator it  = m_lemma.begin();
         literal_vector::iterator end = m_lemma.end();
         SASSERT(!is_marked((*it).var()));
@@ -5919,7 +5913,12 @@ namespace sat {
         out.m1     = has_adam ? m_adam_m1[v] : 0.0;
         out.m2     = has_adam ? m_adam_m2[v] : 0.0;
         out.belief = v < m_polarity_belief.size() ? m_polarity_belief[v] : 0.0;
-        out.age    = has_adam ? static_cast<double>(m_adam_step - m_adam_last_update[v]) : 0.0;
+        // Defensive: clamp age to avoid huge doubles from uint64_t wrap.
+        // Invariant: m_adam_step >= m_adam_last_update[v], but guard anyway.
+        if (has_adam && m_adam_step >= m_adam_last_update[v])
+            out.age = static_cast<double>(m_adam_step - m_adam_last_update[v]);
+        else
+            out.age = 0.0;
         out.f5     = 0.0;
         out.f6     = 0.0;
         out.f7     = 0.0;
