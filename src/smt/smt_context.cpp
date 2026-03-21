@@ -5030,6 +5030,8 @@ namespace smt {
      * Capture the proof strategy after an UNSAT result.
      * Collects the top-K quantifiers by reward EMA and stores them
      * in the proof cache keyed by the current assertion hash.
+     * Each entry uses a structural signature (quantifier_signature) rather
+     * than a raw pointer hash, enabling cross-query fuzzy matching.
      */
     void context::capture_proof_strategy() {
         if (m_assertion_hash == 0)
@@ -5037,9 +5039,8 @@ namespace smt {
         if (!m_qmanager || m_qmanager->num_quantifiers() == 0)
             return;
 
-        // Collect all (fingerprint, reward) pairs
         struct qr_pair {
-            unsigned fingerprint;
+            uint64_t signature;
             double   reward;
         };
         svector<qr_pair> candidates;
@@ -5050,10 +5051,9 @@ namespace smt {
             if (!stat)
                 continue;
             double reward = stat->get_reward();
-            // Only cache quantifiers that participated meaningfully
-            if (reward <= 0.1) // 0.1 is the default initial value
+            if (reward <= 0.1)
                 continue;
-            candidates.push_back({ q->get_expr()->hash(), reward });
+            candidates.push_back({ quantifier_signature(q), reward });
         }
 
         if (candidates.empty())
@@ -5071,7 +5071,7 @@ namespace smt {
         proof_strategy strategy;
         strategy.m_entries.reserve(k);
         for (unsigned i = 0; i < k; ++i) {
-            strategy.m_entries.push_back({ candidates[i].fingerprint,
+            strategy.m_entries.push_back({ candidates[i].signature,
                                            candidates[i].reward });
         }
 
@@ -5082,57 +5082,110 @@ namespace smt {
                  << std::hex << m_assertion_hash << std::dec
                  << " with " << k << " quantifiers\n";
             for (unsigned i = 0; i < k; ++i) {
-                tout << "  [" << i << "] fp=0x" << std::hex
-                     << candidates[i].fingerprint << std::dec
+                tout << "  [" << i << "] sig=0x" << std::hex
+                     << candidates[i].signature << std::dec
                      << " reward=" << candidates[i].reward << "\n";
             }
         );
     }
 
     /**
-     * Apply a cached proof strategy to warm-start quantifier rewards.
-     * Looks up the current assertion hash in the proof cache and, on hit,
-     * sets the reward EMA of matching quantifiers to their cached values.
+     * Apply cached proof strategy rewards to current quantifiers.
+     *
+     * Two-tier lookup:
+     *   1. Exact match: assertion_hash matches a cached entry exactly.
+     *      Apply cached rewards directly (scale = 1.0).
+     *   2. Fuzzy match: if no exact hit, scan all cached strategies and
+     *      compute signature overlap. If >= FUZZY_THRESHOLD (80%) of the
+     *      cached signatures appear in the current quantifier set, apply
+     *      rewards scaled by the match ratio.
+     *
+     * Fuzzy matching is O(cache_size * K * num_quantifiers), but K is
+     * small (TOP_K = 20) and the cache rarely exceeds a handful of entries,
+     * so the total cost is negligible compared to a single SAT conflict.
      */
     void context::apply_proof_strategy() {
         if (m_assertion_hash == 0)
             return;
-
-        auto it = m_proof_cache.find(m_assertion_hash);
-        if (it == m_proof_cache.end())
-            return;
-
-        proof_strategy const& strategy = it->second;
-        if (strategy.m_entries.empty())
-            return;
-
         if (!m_qmanager || m_qmanager->num_quantifiers() == 0)
             return;
 
-        // Build a fingerprint -> reward lookup from the cached strategy
-        // (small K, linear scan is fine)
-        unsigned applied = 0;
+        // Build current quantifier signature set for both exact and fuzzy paths.
+        // Map: signature -> list of (quantifier*, stat*) pairs.
+        // Multiple quantifiers can share a signature (rare but possible).
+        struct q_info {
+            quantifier*         q;
+            q::quantifier_stat* stat;
+        };
+        std::unordered_map<uint64_t, svector<q_info>> sig_map;
+        sig_map.reserve(m_qmanager->num_quantifiers());
         for (quantifier * q : *m_qmanager) {
-            unsigned fp = q->get_expr()->hash();
             q::quantifier_stat * stat = m_qmanager->get_stat(q);
             if (!stat)
                 continue;
+            uint64_t sig = quantifier_signature(q);
+            sig_map[sig].push_back({ q, stat });
+        }
 
+        // Helper: apply a strategy's rewards to matching quantifiers, return count.
+        auto apply_strategy = [&](proof_strategy const& strategy, double scale) -> unsigned {
+            unsigned applied = 0;
             for (auto const& entry : strategy.m_entries) {
-                if (entry.m_fingerprint == fp) {
-                    stat->set_reward(entry.m_reward);
-                    ++applied;
-                    break;
+                auto it2 = sig_map.find(entry.m_signature);
+                if (it2 != sig_map.end()) {
+                    for (auto& qi : it2->second) {
+                        qi.stat->set_reward(entry.m_reward * scale);
+                        ++applied;
+                    }
                 }
+            }
+            return applied;
+        };
+
+        // Tier 1: exact assertion hash match
+        auto it = m_proof_cache.find(m_assertion_hash);
+        if (it != m_proof_cache.end() && !it->second.m_entries.empty()) {
+            unsigned applied = apply_strategy(it->second, 1.0); (void)applied;
+            TRACE(proof_strategy,
+                tout << "applied proof strategy (exact) for hash 0x"
+                     << std::hex << m_assertion_hash << std::dec
+                     << ": " << applied << "/" << it->second.m_entries.size()
+                     << " quantifiers matched\n";
+            );
+            return;
+        }
+
+        // Tier 2: fuzzy signature matching across all cached strategies
+        proof_strategy const* best_strategy = nullptr;
+        double best_ratio = 0.0;
+
+        for (auto const& [cached_hash, strategy] : m_proof_cache) {
+            if (strategy.m_entries.empty())
+                continue;
+            // Count how many cached signatures exist in current quantifier set
+            unsigned matched = 0;
+            for (auto const& entry : strategy.m_entries) {
+                if (sig_map.count(entry.m_signature))
+                    ++matched;
+            }
+            double ratio = static_cast<double>(matched) / strategy.m_entries.size();
+            if (ratio > best_ratio) {
+                best_ratio = ratio;
+                best_strategy = &strategy;
             }
         }
 
-        TRACE(proof_strategy,
-            tout << "applied proof strategy for hash 0x"
-                 << std::hex << m_assertion_hash << std::dec
-                 << ": " << applied << "/" << strategy.m_entries.size()
-                 << " quantifiers matched\n";
-        );
+        if (best_strategy && best_ratio >= proof_strategy::FUZZY_THRESHOLD) {
+            // Scale rewards by match ratio: partial match gets proportional credit
+            unsigned applied = apply_strategy(*best_strategy, best_ratio); (void)applied;
+            TRACE(proof_strategy,
+                tout << "applied proof strategy (fuzzy, ratio="
+                     << best_ratio << ") for hash 0x"
+                     << std::hex << m_assertion_hash << std::dec
+                     << ": " << applied << "/" << best_strategy->m_entries.size()
+                     << " quantifiers matched\n";
+            );
+        }
     }
 
 };

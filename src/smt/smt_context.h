@@ -82,14 +82,32 @@ namespace smt {
     };
 
     /**
+     * Compute a 64-bit structural hash for a quantifier.
+     * Captures: num_decls, body expr hash, num_patterns, body depth, weight.
+     * Two quantifiers with the same signature have equivalent structure
+     * regardless of pointer identity or assertion context.
+     */
+    inline uint64_t quantifier_signature(quantifier const* q) {
+        uint64_t h = fmix64(static_cast<uint64_t>(q->get_num_decls()) + 1);
+        h ^= fmix64(static_cast<uint64_t>(q->get_expr()->hash()) + 0x100);
+        h ^= fmix64(static_cast<uint64_t>(q->get_num_patterns()) + 0x200);
+        h ^= fmix64(static_cast<uint64_t>(q->get_depth()) + 0x300);
+        h ^= fmix64(static_cast<uint64_t>(static_cast<unsigned>(q->get_weight())) + 0x400);
+        return h;
+    }
+
+    /**
      * Cached proof strategy: top-K quantifiers by reward from a successful UNSAT proof.
-     * Used to warm-start QI reward scores on queries with matching assertion hashes.
+     * Uses structural signatures for cross-query fuzzy matching: if >80% of cached
+     * quantifier signatures appear in a new query, the cached rewards are applied
+     * (scaled by match ratio) even when the assertion hash differs.
      */
     struct proof_strategy {
         static constexpr unsigned TOP_K = 20;
+        static constexpr double   FUZZY_THRESHOLD = 0.8; // min signature overlap ratio
         struct entry {
-            unsigned m_fingerprint;  // quantifier body structural hash
-            double   m_reward;       // reward EMA at proof completion
+            uint64_t m_signature;  // quantifier structural hash (quantifier_signature)
+            double   m_reward;     // reward EMA at proof completion
         };
         svector<entry> m_entries;
     };
