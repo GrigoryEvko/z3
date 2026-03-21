@@ -4447,7 +4447,7 @@ namespace smt {
     void context::bump_theory_importance(unsigned num_lits, literal const * lits) {
         for (unsigned i = 0; i < num_lits; ++i) {
             bool_var v = lits[i].var();
-            if (v < m_bdata.size() && get_bdata(v).is_theory_atom()) {
+            if (v < m_theory_importance.size() && v < m_bdata.size() && get_bdata(v).is_theory_atom()) {
                 double & imp = m_theory_importance[v];
                 imp = 0.95 * imp + 0.05;
             }
@@ -5073,6 +5073,13 @@ namespace smt {
         for (unsigned i = 0; i < k; ++i) {
             strategy.m_entries.push_back({ candidates[i].signature,
                                            candidates[i].reward });
+        }
+
+        // Evict oldest entries if cache exceeds limit to prevent unbounded growth.
+        // 64 entries * ~20 quantifiers * 16 bytes/entry = ~20KB max.
+        constexpr unsigned MAX_CACHE_SIZE = 64;
+        if (m_proof_cache.size() >= MAX_CACHE_SIZE && m_proof_cache.find(m_assertion_hash) == m_proof_cache.end()) {
+            m_proof_cache.erase(m_proof_cache.begin());
         }
 
         m_proof_cache[m_assertion_hash] = std::move(strategy);
