@@ -217,7 +217,7 @@ namespace sat {
             }
         }
         TRACE(sat, tout << "partition_tier2: protected=" << j
-              << " candidates=" << (sz - j) << " demoted=" << demoted << "\n";);
+              << " candidates=" << (sz - j) << "\n";);
         return j;
     }
 

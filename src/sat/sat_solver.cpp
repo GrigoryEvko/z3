@@ -1032,10 +1032,12 @@ namespace sat {
         }
 
         switch (m_config.m_branching_heuristic) {
-        case BH_VSIDS: 
+        case BH_VSIDS:
             break;
         case BH_CHB:
             m_last_propagation[v] = m_stats.m_conflict;
+            break;
+        default:
             break;
         }
 
@@ -4177,6 +4179,11 @@ namespace sat {
                         double confidence = std::abs(m_polarity_belief[var]);
                         set_activity(var, importance * (0.5 + confidence));
                     }
+                    break;
+                case BH_MUON:
+                    // Muon uses scaled VSIDS bumps (same as BH_VSIDS with
+                    // m_conflict_bump_scale normalization applied via inc_activity_scaled).
+                    inc_activity_scaled(var);
                     break;
                 }
             }
