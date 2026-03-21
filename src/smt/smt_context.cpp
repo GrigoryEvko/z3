@@ -17,6 +17,7 @@ Revision History:
 
 --*/
 #include<math.h>
+#include<algorithm>
 #include "util/luby.h"
 #include "util/warning.h"
 #include "util/timeit.h"
@@ -3461,6 +3462,8 @@ namespace smt {
             r = l_true;
         }
         m_internal_completed = l_false;
+        if (r == l_false)
+            capture_proof_strategy();
         if (r == l_true && gparams::get_value("model_validate") == "true") {
             recfun::util u(m);
             if (u.get_rec_funs().empty() && m_proto_model) {
@@ -3568,6 +3571,7 @@ namespace smt {
 
         try {
             internalize_assertions();
+            compute_assertion_hash();
         } catch (oom_exception&) {
             return l_undef;
         }
@@ -3687,6 +3691,7 @@ namespace smt {
             th->init_search_eh();
         }
         m_qmanager->init_search_eh();
+        apply_proof_strategy();
         m_incomplete_theories.reset();
         m_num_conflicts                = 0;
         m_num_conflicts_since_restart  = 0;
@@ -5019,6 +5024,115 @@ namespace smt {
         );
 
         return h;
+    }
+
+    /**
+     * Capture the proof strategy after an UNSAT result.
+     * Collects the top-K quantifiers by reward EMA and stores them
+     * in the proof cache keyed by the current assertion hash.
+     */
+    void context::capture_proof_strategy() {
+        if (m_assertion_hash == 0)
+            return;
+        if (!m_qmanager || m_qmanager->num_quantifiers() == 0)
+            return;
+
+        // Collect all (fingerprint, reward) pairs
+        struct qr_pair {
+            unsigned fingerprint;
+            double   reward;
+        };
+        svector<qr_pair> candidates;
+        candidates.reserve(m_qmanager->num_quantifiers());
+
+        for (quantifier * q : *m_qmanager) {
+            q::quantifier_stat * stat = m_qmanager->get_stat(q);
+            if (!stat)
+                continue;
+            double reward = stat->get_reward();
+            // Only cache quantifiers that participated meaningfully
+            if (reward <= 0.1) // 0.1 is the default initial value
+                continue;
+            candidates.push_back({ q->get_expr()->hash(), reward });
+        }
+
+        if (candidates.empty())
+            return;
+
+        // Sort by reward descending, take top-K
+        unsigned k = std::min(static_cast<unsigned>(candidates.size()),
+                              proof_strategy::TOP_K);
+        std::partial_sort(candidates.begin(), candidates.begin() + k,
+                          candidates.end(),
+                          [](qr_pair const& a, qr_pair const& b) {
+                              return a.reward > b.reward;
+                          });
+
+        proof_strategy strategy;
+        strategy.m_entries.reserve(k);
+        for (unsigned i = 0; i < k; ++i) {
+            strategy.m_entries.push_back({ candidates[i].fingerprint,
+                                           candidates[i].reward });
+        }
+
+        m_proof_cache[m_assertion_hash] = std::move(strategy);
+
+        TRACE(proof_strategy,
+            tout << "captured proof strategy for hash 0x"
+                 << std::hex << m_assertion_hash << std::dec
+                 << " with " << k << " quantifiers\n";
+            for (unsigned i = 0; i < k; ++i) {
+                tout << "  [" << i << "] fp=0x" << std::hex
+                     << candidates[i].fingerprint << std::dec
+                     << " reward=" << candidates[i].reward << "\n";
+            }
+        );
+    }
+
+    /**
+     * Apply a cached proof strategy to warm-start quantifier rewards.
+     * Looks up the current assertion hash in the proof cache and, on hit,
+     * sets the reward EMA of matching quantifiers to their cached values.
+     */
+    void context::apply_proof_strategy() {
+        if (m_assertion_hash == 0)
+            return;
+
+        auto it = m_proof_cache.find(m_assertion_hash);
+        if (it == m_proof_cache.end())
+            return;
+
+        proof_strategy const& strategy = it->second;
+        if (strategy.m_entries.empty())
+            return;
+
+        if (!m_qmanager || m_qmanager->num_quantifiers() == 0)
+            return;
+
+        // Build a fingerprint -> reward lookup from the cached strategy
+        // (small K, linear scan is fine)
+        unsigned applied = 0;
+        for (quantifier * q : *m_qmanager) {
+            unsigned fp = q->get_expr()->hash();
+            q::quantifier_stat * stat = m_qmanager->get_stat(q);
+            if (!stat)
+                continue;
+
+            for (auto const& entry : strategy.m_entries) {
+                if (entry.m_fingerprint == fp) {
+                    stat->set_reward(entry.m_reward);
+                    ++applied;
+                    break;
+                }
+            }
+        }
+
+        TRACE(proof_strategy,
+            tout << "applied proof strategy for hash 0x"
+                 << std::hex << m_assertion_hash << std::dec
+                 << ": " << applied << "/" << strategy.m_entries.size()
+                 << " quantifiers matched\n";
+        );
     }
 
 };

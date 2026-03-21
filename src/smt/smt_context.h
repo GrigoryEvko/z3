@@ -52,6 +52,7 @@ Revision History:
 #include "solver/progress_callback.h"
 #include "solver/assertions/asserted_formulas.h"
 #include <tuple>
+#include <unordered_map>
 
 // there is a significant space overhead with allocating 1000+ contexts in
 // the case that each context only references a few expressions.
@@ -78,6 +79,19 @@ namespace smt {
         expr_ref m_unit;
         bool     m_sign;
         bool     m_relevant;
+    };
+
+    /**
+     * Cached proof strategy: top-K quantifiers by reward from a successful UNSAT proof.
+     * Used to warm-start QI reward scores on queries with matching assertion hashes.
+     */
+    struct proof_strategy {
+        static constexpr unsigned TOP_K = 20;
+        struct entry {
+            unsigned m_fingerprint;  // quantifier body structural hash
+            double   m_reward;       // reward EMA at proof completion
+        };
+        svector<entry> m_entries;
     };
 
     class context {
@@ -139,6 +153,9 @@ namespace smt {
         svector<double> m_lit_scores[2];
 
         uint64_t                    m_assertion_hash = 0;
+
+        // Proof strategy cache: assertion_hash -> proof strategy (top-K quantifiers by reward)
+        std::unordered_map<uint64_t, proof_strategy> m_proof_cache;
 
         // -----------------------------------
         //
@@ -1852,6 +1869,9 @@ namespace smt {
 
         uint64_t compute_assertion_hash();
         uint64_t get_assertion_hash() const { return m_assertion_hash; }
+
+        void capture_proof_strategy();
+        void apply_proof_strategy();
 
         void get_units(expr_ref_vector& result);
 

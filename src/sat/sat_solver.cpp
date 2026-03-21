@@ -3845,6 +3845,31 @@ namespace sat {
         if (lemma && m_config.m_eager_subsume) {
             eager_subsume(*lemma);
         }
+
+        // Learned scorer training: feed conflict reward to the linear model
+        // for each variable in the learned clause.  The reward is inversely
+        // proportional to glue -- low-glue conflicts are more informative.
+        // This is tracking infrastructure only; the scorer is not yet used
+        // for branching decisions.
+        {
+            double reward = 1.0 / std::max(glue, 1u);
+            var_features vf;
+            for (literal lit : m_lemma) {
+                bool_var v = lit.var();
+                if (v < num_vars()) {
+                    extract_features(v, vf);
+                    m_learned_scorer.train(reinterpret_cast<const double*>(&vf), reward);
+                }
+            }
+            TRACE(sat_learned_scorer,
+                if (m_learned_scorer.train_steps() % 10000 == 0) {
+                    tout << "learned_scorer weights @" << m_learned_scorer.train_steps() << ":";
+                    for (unsigned i = 0; i < 8; ++i)
+                        tout << " w" << i << "=" << m_learned_scorer.weight(i);
+                    tout << "\n";
+                });
+        }
+
         m_lemma.reset();
         TRACE(sat_conflict_detail, tout << "consistent " << (!m_inconsistent) << " scopes: " << scope_lvl() << " backtrack: " << backtrack_lvl << " backjump: " << backjump_lvl << "\n";);
         decay_activity();
@@ -5884,6 +5909,21 @@ namespace sat {
         bool_var next = m_case_split_queue.min_var();
         double next_act = m_activity[next];
         set_activity(b, next_act + m_activity_inc);
+    }
+
+    void solver::extract_features(bool_var v, var_features& out) const {
+        SASSERT(v < num_vars());
+        bool has_adam = (m_config.m_branching_heuristic == BH_ADAM ||
+                         m_config.m_branching_heuristic == BH_COMBINED) &&
+                        v < m_adam_m1.size();
+        out.m1     = has_adam ? m_adam_m1[v] : 0.0;
+        out.m2     = has_adam ? m_adam_m2[v] : 0.0;
+        out.belief = v < m_polarity_belief.size() ? m_polarity_belief[v] : 0.0;
+        out.age    = has_adam ? static_cast<double>(m_adam_step - m_adam_last_update[v]) : 0.0;
+        out.f5     = 0.0;
+        out.f6     = 0.0;
+        out.f7     = 0.0;
+        out.f8     = 0.0;
     }
 
     // -----------------------

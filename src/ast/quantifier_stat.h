@@ -131,6 +131,7 @@ namespace q {
         void inc_instances_total() { m_instances_total++; }
         unsigned get_instances_total() const { return m_instances_total; }
         double get_reward() const { return m_reward; }
+        void set_reward(double r) { m_reward = r; }
 
         void update_max_generation(unsigned g) {
             if (m_max_generation < g)

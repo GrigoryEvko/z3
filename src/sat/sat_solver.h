@@ -47,6 +47,7 @@ Revision History:
 #include "sat/sat_probsat.h"
 #include "sat/sat_solver_core.h"
 #include "sat/sat_arena.h"
+#include "sat/sat_learned_scorer.h"
 
 namespace pb {
     class solver;
@@ -112,6 +113,22 @@ namespace sat {
         void bump()   { if (interval < 1000000) ++interval; limit = interval; }
         void reduce() { interval /= 2; limit = interval; }
     };
+
+    // Per-variable feature vector for learned scoring model (P7.1).
+    // Features 1-4 are populated from existing solver state.
+    // Features 5-8 are reserved for future instrumentation.
+    struct var_features {
+        double m1;      // Adam first moment (momentum)
+        double m2;      // Adam second moment (curvature)
+        double belief;  // polarity belief in [-1,1]
+        double age;     // conflicts since last Adam bump
+        double f5;      // reserved
+        double f6;      // reserved
+        double f7;      // reserved
+        double f8;      // reserved
+    };
+    static_assert(sizeof(var_features) == 8 * sizeof(double),
+                  "var_features must be 8 contiguous doubles for learned_scorer");
 
     class solver : public solver_core {
     public:
@@ -187,6 +204,10 @@ namespace sat {
         // Defers bumps during conflict analysis, then applies 1/sqrt(k)-normalized
         // increments so total activity injection per conflict is constant.
         svector<bool_var>       m_muon_bump_queue;   // variables to bump this conflict
+
+        // Learned scorer: tiny linear model that trains online from conflict
+        // signals.  Tracking infrastructure only -- not used for branching yet.
+        learned_scorer          m_learned_scorer;
 
         // VMTF (Variable Move To Front) queue for focused mode.
         // Doubly-linked list ordered by bump timestamp; most recently
@@ -506,6 +527,7 @@ namespace sat {
         void set_has_new_best_phase(bool b) { m_new_best_phase = b; }
         bool has_new_best_phase() const { return m_new_best_phase; }
         void move_to_front(bool_var b);
+        void extract_features(bool_var v, var_features& out) const;
         unsigned scope_lvl() const { return m_scope_lvl; }
         unsigned search_lvl() const { return m_search_lvl; }
         bool  at_search_lvl() const { return m_scope_lvl == m_search_lvl; }
