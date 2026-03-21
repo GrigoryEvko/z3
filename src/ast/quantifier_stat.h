@@ -119,16 +119,22 @@ namespace q {
         void inc_num_conflicts() {
             m_num_conflicts++;
             m_num_conflicts_curr_search++;
-            // Update reward EMA: sample = conflict_rate so far
-            double sample = static_cast<double>(m_num_conflicts) / (m_instances_total > 0 ? m_instances_total : 1u);
-            m_reward = 0.95 * m_reward + 0.05 * sample;
-            if (m_reward < 0.01) m_reward = 0.01;
+            // Update reward EMA: binary sample = 1.0 (conflict just happened).
+            // Combined with decay in inc_instances_total(), this tracks the
+            // conflict participation rate with proper temporal weighting.
+            m_reward = 0.95 * m_reward + 0.05;
         }
         unsigned get_num_conflicts() const { return m_num_conflicts; }
         unsigned get_num_conflicts_curr_search() const { return m_num_conflicts_curr_search; }
         void reset_num_conflicts_curr_search() { m_num_conflicts_curr_search = 0; }
 
-        void inc_instances_total() { m_instances_total++; }
+        void inc_instances_total() {
+            m_instances_total++;
+            // Decay reward EMA: sample = 0.0 (instance created without conflict).
+            // This ensures the reward decays when instances are created without
+            // contributing to conflicts, preventing stale high rewards.
+            m_reward *= 0.999;
+        }
         unsigned get_instances_total() const { return m_instances_total; }
         double get_reward() const { return m_reward; }
         void set_reward(double r) { m_reward = r; }

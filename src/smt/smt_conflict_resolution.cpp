@@ -564,9 +564,12 @@ namespace smt {
             case b_justification::BIN_CLAUSE: {
                 TRACE(conflict_smt2, m_ctx.display_literals_smt2(tout, consequent, ~js.get_literal()) << "\n";);
                 SASSERT(consequent.var() != js.get_literal().var());
-                // Check if the other literal in the binary clause is a quantifier
+                // Check both literals in the binary clause for QI source.
+                // The CLAUSE case checks all literals via qi_source_quantifier;
+                // for BIN_CLAUSE we must check both the antecedent and consequent.
                 {
                     quantifier * q = m_ctx.literal_qi_source(js.get_literal());
+                    if (!q) q = m_ctx.literal_qi_source(consequent);
                     if (q) m_qi_contributing.push_back(q);
                 }
                 process_antecedent(js.get_literal(), num_marks);

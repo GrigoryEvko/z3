@@ -24,7 +24,6 @@ Author:
 #pragma once
 
 #include <cmath>
-#include <cstring>
 
 namespace sat {
 
@@ -40,11 +39,9 @@ class learned_scorer {
     uint64_t m_train_step;
 
 public:
-    learned_scorer() : m_train_step(0) {
-        std::memset(m_weights, 0, sizeof(m_weights));
-        m_weights[0] = 1.0;  // bootstrap: pure Adam momentum
-        std::memset(m_w_m1, 0, sizeof(m_w_m1));
-        std::memset(m_w_m2, 0, sizeof(m_w_m2));
+    learned_scorer() : m_weights{1.0}, m_w_m1{}, m_w_m2{}, m_train_step(0) {
+        // m_weights[0] = 1.0 (bootstrap: pure Adam momentum), rest zero.
+        // m_w_m1, m_w_m2 zero-initialized by aggregate init.
     }
 
     // Inference: dot product of feature vector and weights.
@@ -60,13 +57,26 @@ public:
     //   reward = 1.0/max(glue, 1) for variables bumped in a conflict
     //   gradient = -reward * features  (we want to increase score for
     //   variables that participate in low-glue conflicts)
+    //
+    // Safety: gradients are clamped to [-GRAD_CLIP, GRAD_CLIP] to prevent
+    // inf/NaN from entering m_w_m2 via extreme feature values.  Weights
+    // are clamped to [-WEIGHT_CLIP, WEIGHT_CLIP] to prevent unbounded drift
+    // over millions of training steps.
     void train(const double* features, double reward) {
+        static constexpr double GRAD_CLIP   = 1e6;
+        static constexpr double WEIGHT_CLIP = 100.0;
         ++m_train_step;
         for (unsigned i = 0; i < N_FEATURES; ++i) {
             double g = -reward * features[i];
+            // Clamp gradient to prevent inf entering m_w_m2 via g*g overflow.
+            if (g > GRAD_CLIP)       g = GRAD_CLIP;
+            else if (g < -GRAD_CLIP) g = -GRAD_CLIP;
             m_w_m1[i] = 0.9  * m_w_m1[i] + 0.1   * g;
             m_w_m2[i] = 0.999 * m_w_m2[i] + 0.001 * g * g;
             m_weights[i] -= 0.001 * m_w_m1[i] / (std::sqrt(m_w_m2[i]) + 1e-8);
+            // Clamp weights to prevent unbounded divergence.
+            if (m_weights[i] > WEIGHT_CLIP)       m_weights[i] = WEIGHT_CLIP;
+            else if (m_weights[i] < -WEIGHT_CLIP) m_weights[i] = -WEIGHT_CLIP;
         }
     }
 

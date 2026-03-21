@@ -5803,6 +5803,17 @@ namespace sat {
         m_slow_glue_backup.set_alpha(m_config.m_slow_glue_avg);
         m_trail_avg.set_alpha(m_config.m_slow_glue_avg);
 
+        // Ensure Adam arrays are properly sized when switching to BH_ADAM/BH_COMBINED.
+        // Variables created under a different heuristic won't have Adam entries --
+        // grow the arrays now to prevent out-of-bounds access in adam_bump().
+        if (m_config.m_branching_heuristic == BH_ADAM || m_config.m_branching_heuristic == BH_COMBINED) {
+            unsigned nv = num_vars();
+            while (m_adam_m1.size() < nv) {
+                m_adam_m1.push_back(0.0);
+                m_adam_m2.push_back(0.0);
+                m_adam_last_update.push_back(m_adam_step);
+            }
+        }
     }
 
     void solver::collect_param_descrs(param_descrs & d) {

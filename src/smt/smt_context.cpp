@@ -4436,11 +4436,10 @@ namespace smt {
             for (quantifier * s : seen)
                 if (s == q) { dup = true; break; }
             if (dup) continue;
+            seen.push_back(q);
             q::quantifier_stat * stat = m_qmanager->get_stat(q);
-            if (stat) {
+            if (stat)
                 stat->inc_num_conflicts();
-                seen.push_back(q);
-            }
         }
     }
 
@@ -5007,6 +5006,8 @@ namespace smt {
         h ^= fmix64(static_cast<uint64_t>(sum_body_depth) + 0x300);
         h ^= fmix64(static_cast<uint64_t>(num_triggers) + 0x400);
 
+        // Ensure hash is never 0 — zero is used as the "not computed" sentinel.
+        if (h == 0) h = 1;
         m_assertion_hash = h;
 
         TRACE(assertion_hash,
@@ -5046,14 +5047,14 @@ namespace smt {
         svector<qr_pair> candidates;
         candidates.reserve(m_qmanager->num_quantifiers());
 
-        for (quantifier * q : *m_qmanager) {
-            q::quantifier_stat * stat = m_qmanager->get_stat(q);
+        for (quantifier * qi : *m_qmanager) {
+            q::quantifier_stat * stat = m_qmanager->get_stat(qi);
             if (!stat)
                 continue;
             double reward = stat->get_reward();
             if (reward <= 0.1)
                 continue;
-            candidates.push_back({ quantifier_signature(q), reward });
+            candidates.push_back({ quantifier_signature(qi), reward });
         }
 
         if (candidates.empty())
@@ -5118,20 +5119,16 @@ namespace smt {
             return;
 
         // Build current quantifier signature set for both exact and fuzzy paths.
-        // Map: signature -> list of (quantifier*, stat*) pairs.
+        // Map: signature -> list of stat pointers.
         // Multiple quantifiers can share a signature (rare but possible).
-        struct q_info {
-            quantifier*         q;
-            q::quantifier_stat* stat;
-        };
-        std::unordered_map<uint64_t, svector<q_info>> sig_map;
+        std::unordered_map<uint64_t, svector<q::quantifier_stat*>> sig_map;
         sig_map.reserve(m_qmanager->num_quantifiers());
-        for (quantifier * q : *m_qmanager) {
-            q::quantifier_stat * stat = m_qmanager->get_stat(q);
+        for (quantifier * qi : *m_qmanager) {
+            q::quantifier_stat * stat = m_qmanager->get_stat(qi);
             if (!stat)
                 continue;
-            uint64_t sig = quantifier_signature(q);
-            sig_map[sig].push_back({ q, stat });
+            uint64_t sig = quantifier_signature(qi);
+            sig_map[sig].push_back(stat);
         }
 
         // Helper: apply a strategy's rewards to matching quantifiers, return count.
@@ -5140,8 +5137,8 @@ namespace smt {
             for (auto const& entry : strategy.m_entries) {
                 auto it2 = sig_map.find(entry.m_signature);
                 if (it2 != sig_map.end()) {
-                    for (auto& qi : it2->second) {
-                        qi.stat->set_reward(entry.m_reward * scale);
+                    for (q::quantifier_stat * stat : it2->second) {
+                        stat->set_reward(entry.m_reward * scale);
                         ++applied;
                     }
                 }
