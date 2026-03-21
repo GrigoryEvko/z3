@@ -71,6 +71,14 @@ namespace sat {
         else
             throw sat_param_exception("invalid phase selection strategy: always_false, always_true, basic_caching, caching, random");
 
+        s = p.phase_strategy();
+        if (s == symbol("caching"))
+            m_phase_strategy = PHS_CACHING;
+        else if (s == symbol("belief"))
+            m_phase_strategy = PHS_BELIEF;
+        else
+            throw sat_param_exception("invalid phase strategy: 'caching' or 'belief' expected");
+
         m_rephase_base      = p.rephase_base();
         m_rephase_shuffle   = p.rephase_shuffle();
         m_reorder_base      = p.reorder_base();

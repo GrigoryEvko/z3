@@ -33,6 +33,11 @@ namespace sat {
         PS_RANDOM
     };
 
+    enum phase_strategy {
+        PHS_CACHING,    // default: use phase cache cascade (target/best/saved)
+        PHS_BELIEF      // use polarity_belief signal from conflict gradients
+    };
+
     enum restart_strategy {
         RS_GEOMETRIC,
         RS_LUBY,
@@ -89,6 +94,7 @@ namespace sat {
     struct config {
         unsigned long long m_max_memory;
         phase_selection    m_phase;
+        phase_strategy     m_phase_strategy;
         unsigned           m_search_sat_conflicts;
         unsigned           m_search_unsat_conflicts;
         bool               m_phase_sticky;

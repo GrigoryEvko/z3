@@ -2260,6 +2260,19 @@ namespace sat {
         if (lphase != l_undef)
             return lphase == l_true;
 
+        // Belief-derived phase: use polarity gradient signal from conflicts.
+        // Positive belief → variable should be TRUE, negative → FALSE.
+        // When belief is near zero (no signal), fall back to saved phase.
+        if (m_config.m_phase_strategy == PHS_BELIEF) {
+            double belief = m_polarity_belief[next];
+            if (belief > 0.0)
+                return true;
+            if (belief < 0.0)
+                return false;
+            // belief == 0.0 (no signal yet): use saved phase as fallback
+            return m_phase[next];
+        }
+
         // CaDiCaL-style three-phase decision cascade (decide.cpp:138-154):
         //   Stable mode:  target -> best -> saved
         //   Focused mode: initial phase (negative polarity)

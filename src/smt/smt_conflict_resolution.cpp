@@ -319,7 +319,16 @@ namespace smt {
         
         if (!m_ctx.is_marked(var) && lvl > m_ctx.get_base_level()) {
             m_ctx.set_mark(var);
-            m_ctx.inc_bvar_activity(var);
+            // P5.4: Theory importance bonus — variables that frequently appear
+            // in theory-originated conflicts get an extra activity bump,
+            // creating downward gradient flow from theory to SAT branching.
+            double th_imp = m_ctx.get_theory_importance(var);
+            // P5.6: Relevancy-weighted bumps — variables in highly relevant
+            // parts of the formula get stronger activity bumps.
+            // Maps soft_relevancy [0,1] to weight [0.5, 1.0].
+            double rel = m_ctx.get_soft_relevancy(var);
+            double relevancy_weight = 0.5 + 0.5 * rel;
+            m_ctx.inc_bvar_activity(var, (1.0 + th_imp) * relevancy_weight);
             expr * n = m_ctx.bool_var2expr(var);
             if (is_app(n)) {
                 family_id fid = to_app(n)->get_family_id();
