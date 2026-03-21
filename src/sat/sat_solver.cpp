@@ -115,8 +115,6 @@ namespace sat {
         m_conflict_clause_size    = 0;
         m_conflict_decision_level = 0;
         m_conflict_bump_scale     = 1.0;
-        m_grad_norm_fast          = 0.0;
-        m_grad_norm_slow          = 0.0;
         m_best_phase_size         = 0;
         m_target_assigned         = 0;
         m_conflicts_since_gc      = 0;
@@ -3813,12 +3811,8 @@ namespace sat {
             double muon_scale = 1.0 / std::sqrt(std::max(static_cast<double>(m_conflict_clause_size), 1.0));
             m_conflict_bump_scale = glue_scale * muon_scale;
         }
-        // Gradient-norm tracking: EMA of conflict bump scale as a proxy
-        // for learning rate magnitude. Fast EMA responds quickly to regime
-        // changes; slow EMA provides a long-term baseline. A sustained
-        // drop (fast << slow) may indicate the solver is stuck.
-        m_grad_norm_fast = 0.03 * m_conflict_bump_scale + 0.97 * m_grad_norm_fast;
-        m_grad_norm_slow = 1e-5 * m_conflict_bump_scale + (1.0 - 1e-5) * m_grad_norm_slow;
+        // Gradient-norm tracking removed: was computed but never read for any
+        // decision.  Two EMA updates per conflict with no consumer.
         m_fast_glue_avg.update(glue);
         m_slow_glue_avg.update(glue);
         m_phase_glue_sum += glue;
@@ -3853,30 +3847,9 @@ namespace sat {
             eager_subsume(*lemma);
         }
 
-        // Learned scorer training: feed conflict reward to the linear model
-        // for each variable in the learned clause.  The reward is inversely
-        // proportional to glue -- low-glue conflicts are more informative.
-        // This is tracking infrastructure only; the scorer is not yet used
-        // for branching decisions.  Train every 8th conflict to reduce
-        // overhead (~8x) while retaining convergence quality.
-        if ((m_stats.m_conflict & 7u) == 0) {
-            double reward = 1.0 / std::max(glue, 1u);
-            var_features vf;
-            for (literal lit : m_lemma) {
-                bool_var v = lit.var();
-                if (v < num_vars()) {
-                    extract_features(v, vf);
-                    m_learned_scorer.train(reinterpret_cast<const double*>(&vf), reward);
-                }
-            }
-            TRACE(sat_learned_scorer,
-                if (m_learned_scorer.train_steps() % 10000 == 0) {
-                    tout << "learned_scorer weights @" << m_learned_scorer.train_steps() << ":";
-                    for (unsigned i = 0; i < 8; ++i)
-                        tout << " w" << i << "=" << m_learned_scorer.weight(i);
-                    tout << "\n";
-                });
-        }
+        // Learned scorer removed: was tracking-only infrastructure (never used
+        // for branching decisions).  extract_features + Adam-style train() per
+        // lemma literal added measurable per-conflict overhead for zero benefit.
 
         m_lemma.reset();
         TRACE(sat_conflict_detail, tout << "consistent " << (!m_inconsistent) << " scopes: " << scope_lvl() << " backtrack: " << backtrack_lvl << " backjump: " << backjump_lvl << "\n";);
@@ -4141,12 +4114,11 @@ namespace sat {
             if (value(antecedent) == l_undef)
                 return;
             mark(var);
-            // Polarity gradient: conflict involvement pushes belief away
-            // from the assignment that led to conflict.  This is a phase
-            // guidance signal, independent of the variable-ordering
-            // heuristic (VSIDS/CHB/ADAM/VMTF), so it runs unconditionally.
-            // ~20-conflict half-life via 0.95/0.05 EMA split.
-            {
+            // Polarity gradient: only when belief-based phase or combined
+            // heuristic will actually read the values.  Saves ~5ns/antecedent
+            // of wasted FP math under the default VSIDS+caching config.
+            if (m_config.m_phase_strategy == PHS_BELIEF ||
+                m_config.m_branching_heuristic == BH_COMBINED) {
                 double ps = (value(var) == l_true) ? -1.0 : 1.0;
                 double& belief = m_polarity_belief[var];
                 belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
@@ -5331,10 +5303,10 @@ namespace sat {
                     adam_bump(bv);
                 else
                     inc_activity_scaled(bv);
-                // Polarity gradient for reason-side literals (same formula
-                // as process_antecedent: push belief away from current
-                // assignment that participated in the conflict chain).
-                {
+                // Polarity gradient for reason-side literals: only when
+                // belief-based phase or combined heuristic consumes it.
+                if (m_config.m_phase_strategy == PHS_BELIEF ||
+                    m_config.m_branching_heuristic == BH_COMBINED) {
                     double ps = (value(bv) == l_true) ? -1.0 : 1.0;
                     double& belief = m_polarity_belief[bv];
                     belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
@@ -5922,26 +5894,6 @@ namespace sat {
         bool_var next = m_case_split_queue.min_var();
         double next_act = m_activity[next];
         set_activity(b, next_act + m_activity_inc);
-    }
-
-    void solver::extract_features(bool_var v, var_features& out) const {
-        SASSERT(v < num_vars());
-        bool has_adam = (m_config.m_branching_heuristic == BH_ADAM ||
-                         m_config.m_branching_heuristic == BH_COMBINED) &&
-                        v < m_adam_m1.size();
-        out.m1     = has_adam ? m_adam_m1[v] : 0.0;
-        out.m2     = has_adam ? m_adam_m2[v] : 0.0;
-        out.belief = v < m_polarity_belief.size() ? m_polarity_belief[v] : 0.0;
-        // Defensive: clamp age to avoid huge doubles from uint64_t wrap.
-        // Invariant: m_adam_step >= m_adam_last_update[v], but guard anyway.
-        if (has_adam && m_adam_step >= m_adam_last_update[v])
-            out.age = static_cast<double>(m_adam_step - m_adam_last_update[v]);
-        else
-            out.age = 0.0;
-        out.f5     = 0.0;
-        out.f6     = 0.0;
-        out.f7     = 0.0;
-        out.f8     = 0.0;
     }
 
     // -----------------------
