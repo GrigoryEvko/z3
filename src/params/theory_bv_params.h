@@ -34,7 +34,7 @@ struct theory_bv_params {
     unsigned     m_bv_blast_max_size = INT_MAX;
     bool         m_bv_enable_int2bv2int = true;
     bool         m_bv_watch_diseq = false;
-    bool         m_bv_delay = true;
+    bool         m_bv_delay = false;
     unsigned     m_bv_delay_threshold = 12;
     bool         m_bv_size_reduce = false;
     unsigned     m_bv_solver = 0;

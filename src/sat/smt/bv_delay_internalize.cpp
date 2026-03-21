@@ -53,9 +53,9 @@ namespace bv {
             return true;
         // Multiplies are O(n^2) in SAT vars -- delay more aggressively.
         // A 32-bit multiply with 2 variable args creates ~5000 SAT vars.
-        // Use a higher bar: only blast tiny multiplies (sz <= 12 always).
+        // Only blast multiplies at or below the configurable threshold.
         if (bv.is_bv_mul(e) && num_vars >= 2)
-            return sz <= 12;
+            return sz <= threshold;
         // General threshold for non-multiply ops
         if (sz <= threshold)
             return true;
