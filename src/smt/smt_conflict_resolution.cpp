@@ -492,12 +492,13 @@ namespace smt {
         b_justification js;
         literal consequent;
 
+        // Reset QI contributing quantifiers unconditionally so stale data
+        // from a previous conflict never leaks if resolve() returns false.
+        m_qi_contributing.reset();
+
         if (!initialize_resolve(conflict, not_l, js, consequent)) {
             return false;
         }
-
-        // Reset QI contributing quantifiers for this new conflict
-        m_qi_contributing.reset();
 
         unsigned idx = skip_literals_above_conflict_level();
 
