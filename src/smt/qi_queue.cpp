@@ -301,6 +301,7 @@ namespace smt {
    
         TRACE(qi_queue, tout << "simplified instance:\n" << s_instance << "\n";);
         stat->inc_num_instances();
+        stat->inc_instances_total();
         if (stat->get_num_instances() % m_params.m_qi_profile_freq == 0) {
             m_qm.display_stats(verbose_stream(), q);
         }

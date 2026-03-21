@@ -44,6 +44,8 @@ namespace q {
         bool     m_had_unary_instance; //!< single-trigger produced instance this search
         unsigned m_num_conflicts;       //!< number of conflicts where a clause from this quantifier appeared in the antecedent chain
         unsigned m_num_conflicts_curr_search; //!< conflicts in current search
+        unsigned m_instances_total;     //!< total instances ever created (never reset)
+        double   m_reward;              //!< EMA of conflict participation rate (instances_in_conflict / total_instances)
 
         friend class quantifier_stat_gen;
 
@@ -114,10 +116,21 @@ namespace q {
         void set_had_unary_instance() { m_had_unary_instance = true; }
         bool had_unary_instance() const { return m_had_unary_instance; }
 
-        void inc_num_conflicts() { m_num_conflicts++; m_num_conflicts_curr_search++; }
+        void inc_num_conflicts() {
+            m_num_conflicts++;
+            m_num_conflicts_curr_search++;
+            // Update reward EMA: sample = conflict_rate so far
+            double sample = static_cast<double>(m_num_conflicts) / (m_instances_total > 0 ? m_instances_total : 1u);
+            m_reward = 0.95 * m_reward + 0.05 * sample;
+            if (m_reward < 0.01) m_reward = 0.01;
+        }
         unsigned get_num_conflicts() const { return m_num_conflicts; }
         unsigned get_num_conflicts_curr_search() const { return m_num_conflicts_curr_search; }
         void reset_num_conflicts_curr_search() { m_num_conflicts_curr_search = 0; }
+
+        void inc_instances_total() { m_instances_total++; }
+        unsigned get_instances_total() const { return m_instances_total; }
+        double get_reward() const { return m_reward; }
 
         void update_max_generation(unsigned g) {
             if (m_max_generation < g)

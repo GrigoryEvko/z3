@@ -16,6 +16,7 @@ Author:
 Revision History:
 
 --*/
+#include <iomanip>
 #include "ast/ast_pp.h"
 #include "ast/ast_ll_pp.h"
 #include "ast/quantifier_stat.h"
@@ -188,7 +189,8 @@ namespace smt {
                 out << num_instances_checker_sat << " : ";
                 out.width(3);
                 out << max_generation << " : " << max_cost;
-                out << " : " << num_conflicts << "\n";
+                out << " : " << num_conflicts;
+                out << " : " << std::fixed << std::setprecision(4) << s->get_reward() << "\n";
             }
         }
 

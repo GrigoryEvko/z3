@@ -35,7 +35,9 @@ namespace q {
         m_max_cost(0.0f),
         m_had_unary_instance(false),
         m_num_conflicts(0),
-        m_num_conflicts_curr_search(0) {
+        m_num_conflicts_curr_search(0),
+        m_instances_total(0),
+        m_reward(0.1) {
     }
 
     quantifier_stat_gen::quantifier_stat_gen(ast_manager & m, region & r):
