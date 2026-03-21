@@ -153,6 +153,19 @@ namespace smt {
                 r += static_cast<float>(sel_w * std::log2(ratio));
             }
         }
+        // Reward-adjusted scoring: quantifiers whose instances have
+        // appeared in conflict antecedent chains get a cost discount,
+        // making them more likely to be eagerly instantiated.
+        // This is a boost-only mechanism: no quantifier is penalized.
+        // The discount is capped at 25% to avoid over-promotion.
+        if (r > 0.0f && stat->get_num_conflicts() > 0 &&
+            stat->get_instances_total() >= 20) {
+            double rate = static_cast<double>(stat->get_num_conflicts())
+                        / stat->get_instances_total();
+            // Gentle discount: rate=0.05 → 12.5% discount; rate≥0.1 → 25% cap
+            double discount = 1.0 - 0.25 * std::min(rate * 10.0, 1.0);
+            r = static_cast<float>(r * discount);
+        }
         stat->update_max_cost(r);
         return r;
     }
