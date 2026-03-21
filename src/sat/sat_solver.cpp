@@ -5292,7 +5292,8 @@ namespace sat {
     // CaDiCaL-style reason-side literal bumping for VSIDS (analyze.cpp:342-424).
     void solver::bump_reason_literals() {
         if (!m_config.m_bump_reason ||
-            (m_config.m_branching_heuristic != BH_VSIDS && m_config.m_branching_heuristic != BH_ADAM && m_config.m_branching_heuristic != BH_COMBINED) ||
+            (m_config.m_branching_heuristic != BH_VSIDS && m_config.m_branching_heuristic != BH_ADAM &&
+             m_config.m_branching_heuristic != BH_COMBINED && m_config.m_branching_heuristic != BH_MUON) ||
             m_lemma.empty())
             return;
         // CaDiCaL-style: reason-side bumping is a VSIDS-only technique.
