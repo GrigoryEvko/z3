@@ -174,6 +174,7 @@ namespace smt {
             unsigned num_instances_simplify_true = s->get_num_instances_simplify_true();
             unsigned num_instances_checker_sat  = s->get_num_instances_checker_sat();
             unsigned max_generation = s->get_max_generation();
+            unsigned num_conflicts  = s->get_num_conflicts();
             float max_cost          = s->get_max_cost();
             if (num_instances > 0 || num_instances_simplify_true>0 || num_instances_checker_sat>0) {
                 out << "[quantifier_instances] ";
@@ -186,7 +187,8 @@ namespace smt {
                 out.width(3);
                 out << num_instances_checker_sat << " : ";
                 out.width(3);
-                out << max_generation << " : " << max_cost << "\n";
+                out << max_generation << " : " << max_cost;
+                out << " : " << num_conflicts << "\n";
             }
         }
 

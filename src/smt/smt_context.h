@@ -1341,7 +1341,25 @@ namespace smt {
 
         virtual bool resolve_conflict();
 
+        void attribute_qi_conflict(unsigned num_lits, literal const * lits);
+
         void add_scores(unsigned n, literal const *lits);
+
+    public:
+        /**
+           \brief Given a clause, check if any literal corresponds to a quantifier.
+           Returns the source quantifier if found, nullptr otherwise.
+           QI clauses always contain (not q) where q is the instantiated quantifier.
+        */
+        quantifier * qi_source_quantifier(clause const * cls) const;
+
+        /**
+           \brief Given a literal, check if its bool_var corresponds to a quantifier.
+           Returns the quantifier if so, nullptr otherwise.
+        */
+        quantifier * literal_qi_source(literal l) const;
+
+    protected:
 
 
         // -----------------------------------

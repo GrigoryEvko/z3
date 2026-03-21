@@ -42,6 +42,8 @@ namespace q {
         unsigned m_max_generation; //!< max. generation of an instance
         float    m_max_cost;
         bool     m_had_unary_instance; //!< single-trigger produced instance this search
+        unsigned m_num_conflicts;       //!< number of conflicts where a clause from this quantifier appeared in the antecedent chain
+        unsigned m_num_conflicts_curr_search; //!< conflicts in current search
 
         friend class quantifier_stat_gen;
 
@@ -106,10 +108,16 @@ namespace q {
         void reset_num_instances_curr_search() {
             m_num_instances_curr_search = 0;
             m_had_unary_instance = false;
+            m_num_conflicts_curr_search = 0;
         }
 
         void set_had_unary_instance() { m_had_unary_instance = true; }
         bool had_unary_instance() const { return m_had_unary_instance; }
+
+        void inc_num_conflicts() { m_num_conflicts++; m_num_conflicts_curr_search++; }
+        unsigned get_num_conflicts() const { return m_num_conflicts; }
+        unsigned get_num_conflicts_curr_search() const { return m_num_conflicts_curr_search; }
+        void reset_num_conflicts_curr_search() { m_num_conflicts_curr_search = 0; }
 
         void update_max_generation(unsigned g) {
             if (m_max_generation < g)

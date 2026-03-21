@@ -4178,6 +4178,10 @@ namespace smt {
             unsigned conflict_lvl = get_assign_level(lits[0]);
             SASSERT(conflict_lvl <= m_scope_lvl);
 
+            // Attribute this conflict to contributing quantifier instantiations.
+            // Must be done before pop_scope_core since justifications are invalidated.
+            attribute_qi_conflict(num_lits, lits);
+
             // When num_lits == 1, then the default behavior is to go
             // to base-level. If the problem has quantifiers, it may be
             // too expensive to do that, since all instances will need to
@@ -4363,6 +4367,50 @@ namespace smt {
             check_proof(m_unsat_proof);
         }
         return false;
+    }
+
+    quantifier * context::literal_qi_source(literal l) const {
+        bool_var v = l.var();
+        if (v < m_bdata.size() && get_bdata(v).is_quantifier()) {
+            expr * e = bool_var2expr(v);
+            if (is_quantifier(e))
+                return to_quantifier(e);
+        }
+        return nullptr;
+    }
+
+    quantifier * context::qi_source_quantifier(clause const * cls) const {
+        unsigned n = cls->get_num_literals();
+        for (unsigned i = 0; i < n; ++i) {
+            quantifier * q = literal_qi_source(cls->get_literal(i));
+            if (q) return q;
+        }
+        return nullptr;
+    }
+
+    void context::attribute_qi_conflict(unsigned num_lits, literal const * lits) {
+        if (!m_qmanager || !m_qmanager->has_quantifiers())
+            return;
+        // Use the quantifier list collected during conflict resolution.
+        // The conflict_resolution object records every quantifier whose
+        // clause appeared in the antecedent chain.
+        ptr_vector<quantifier> const & qi_list = m_conflict_resolution->get_qi_contributing();
+        if (qi_list.empty())
+            return;
+        // Deduplicate: a quantifier may appear multiple times if several
+        // of its instances participated in the same conflict.
+        ptr_vector<quantifier> seen;
+        for (quantifier * q : qi_list) {
+            bool dup = false;
+            for (quantifier * s : seen)
+                if (s == q) { dup = true; break; }
+            if (dup) continue;
+            q::quantifier_stat * stat = m_qmanager->get_stat(q);
+            if (stat) {
+                stat->inc_num_conflicts();
+                seen.push_back(q);
+            }
+        }
     }
 
     /*

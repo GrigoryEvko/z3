@@ -487,6 +487,9 @@ namespace smt {
             return false;
         }
 
+        // Reset QI contributing quantifiers for this new conflict
+        m_qi_contributing.reset();
+
         unsigned idx = skip_literals_above_conflict_level();
 
         TRACE(conflict, m_ctx.display_literal_verbose(tout, not_l); m_ctx.display(tout << " ", conflict););
@@ -520,6 +523,11 @@ namespace smt {
                 TRACE(conflict_smt2, m_ctx.display_clause_smt2(tout, *cls););
                 if (cls->is_lemma())
                     cls->inc_clause_activity();
+                // Check if this clause has a quantifier literal (QI source)
+                {
+                    quantifier * q = m_ctx.qi_source_quantifier(cls);
+                    if (q) m_qi_contributing.push_back(q);
+                }
                 unsigned num_lits = cls->get_num_literals();
                 unsigned i        = 0;
                 if (consequent != false_literal) {
@@ -544,11 +552,17 @@ namespace smt {
                     process_justification(consequent, js, num_marks);
                 break;
             }
-            case b_justification::BIN_CLAUSE:
+            case b_justification::BIN_CLAUSE: {
                 TRACE(conflict_smt2, m_ctx.display_literals_smt2(tout, consequent, ~js.get_literal()) << "\n";);
                 SASSERT(consequent.var() != js.get_literal().var());
+                // Check if the other literal in the binary clause is a quantifier
+                {
+                    quantifier * q = m_ctx.literal_qi_source(js.get_literal());
+                    if (q) m_qi_contributing.push_back(q);
+                }
                 process_antecedent(js.get_literal(), num_marks);
                 break;
+            }
             case b_justification::AXIOM:
                 break;
             case b_justification::JUSTIFICATION:

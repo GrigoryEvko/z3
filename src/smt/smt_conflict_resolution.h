@@ -108,6 +108,10 @@ namespace smt {
 
         literal_vector                 m_assumptions;
 
+        // QI conflict attribution: quantifiers whose clauses appeared
+        // in the antecedent chain of this conflict. Populated during resolve().
+        ptr_vector<quantifier>         m_qi_contributing;
+
     public:
         void setup() {
         }
@@ -246,6 +250,10 @@ namespace smt {
         
         proof * get_lemma_proof() {
             return m_lemma_proof;
+        }
+
+        ptr_vector<quantifier> const & get_qi_contributing() const {
+            return m_qi_contributing;
         }
 
         literal_vector::const_iterator begin_unsat_core() const {

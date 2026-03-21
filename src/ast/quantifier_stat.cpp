@@ -33,7 +33,9 @@ namespace q {
         m_num_instances_curr_branch(0),
         m_max_generation(0),
         m_max_cost(0.0f),
-        m_had_unary_instance(false) {
+        m_had_unary_instance(false),
+        m_num_conflicts(0),
+        m_num_conflicts_curr_search(0) {
     }
 
     quantifier_stat_gen::quantifier_stat_gen(ast_manager & m, region & r):
