@@ -206,17 +206,18 @@ namespace smt {
         // Only applies to quantifiers with ZERO conflict participation —
         // productive quantifiers (k>0) are never penalized.
         //
-        // Shape: zero for the first N₀ instances, then 2×log₂(n/N₀).
+        // Uses INSERT count (not instantiation count) so the surprisal
+        // reflects the true demand for this quantifier, including delayed
+        // and lazy instances that the matching engine keeps finding.
+        //
+        // Shape: zero for the first N₀ inserts, then 2×log₂(n/N₀).
         //   n < N₀:   0    (no interference with normal solving)
         //   n = 2×N₀: +2   (mild — still below eager threshold)
         //   n = 10×N₀: +6.6 (significant)
         //   n = 100×N₀: +13.3 (past eager threshold — loop throttled)
-        //
-        // N₀ = 5000: generous warmup so legitimate zero-conflict quantifiers
-        // (propagation-useful) are unaffected.  F* max useful quantifier is
-        // ~13K instances; those always have k>0 so are untouched.
+        //   n = 1000×N₀: +20 (past lazy threshold — fully blocked)
         {
-            unsigned n = stat->get_instances_total();
+            unsigned n = stat->get_inserts_total();
             unsigned k = stat->get_num_conflicts();
             constexpr unsigned N0 = 5000;
             if (k == 0 && n > N0) {
@@ -319,16 +320,12 @@ namespace smt {
     void qi_queue::insert(fingerprint * f, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
         quantifier * q         = static_cast<quantifier*>(f->get_data());
 
-        // Matching loop guard: if a quantifier has been instantiated many
-        // times without appearing in any conflict antecedent, it's in a
-        // fan-out loop — its instances create E-graph merges that produce
-        // more trigger matches against input-generation terms, but none
-        // contribute to the proof.  Skip the insert entirely.
-        //
-        // This is not a heuristic: a quantifier with 50K+ instantiations
-        // and exactly 0 conflict participation is provably useless in the
-        // current search.  If the search backtracks and the quantifier
-        // becomes relevant, new conflicts will reset the condition.
+        // Increment per-quantifier insert counter (used by surprisal).
+        {
+            q::quantifier_stat * stat = m_qm.get_stat(q);
+            if (stat) stat->inc_inserts_total();
+        }
+
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
         float const base_cost  = cost;  // snapshot for inflation cap
         // Relevancy-guided QI gating: penalize bindings with low soft-relevancy.
