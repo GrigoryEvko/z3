@@ -3992,7 +3992,7 @@ namespace {
                 });
 
 #endif
-            // Per-quantifier match budget: cut unproductive quantifiers at the source
+            // Per-quantifier match budget: cut unproductive self-loop quantifiers at the source
             q::quantifier_stat * stat = m_context.get_quantifier_stat(qa);
             if (stat) {
                 if (stat->get_match_budget() == 0) return;
