@@ -138,6 +138,18 @@ namespace smt {
         unsigned                               m_qc_skip_count = 0;
         unsigned                               m_qc_skip_threshold = 0;
 
+        // E12: QI dependency graph — 1-ply successor lookup.
+        // trigger_map: func_decl -> quantifiers triggered by it.
+        // successors:  Q -> quantifiers whose triggers use func_decls from Q's body.
+        // chain_scores: Q -> cached 1-ply chain score.
+        obj_map<func_decl, ptr_vector<quantifier>*>  m_trigger_map;
+        obj_map<quantifier, ptr_vector<quantifier>*> m_successors;
+        obj_map<quantifier, float>                   m_chain_scores;
+        unsigned                                      m_chain_score_restart = UINT_MAX;
+        unsigned                                      m_restart_counter = 0;
+        bool                                          m_dep_graph_built = false;
+        ptr_vector<ptr_vector<quantifier>>            m_dep_allocs; // owned allocations for cleanup
+
         imp(quantifier_manager & wrapper, context & ctx, smt_params & p, quantifier_manager_plugin * plugin):
             m_wrapper(wrapper),
             m_context(ctx),
@@ -168,6 +180,163 @@ namespace smt {
         }
 
         bool has_quantifiers() const { return !m_quantifiers.empty(); }
+
+        /**
+         * E12.1: Build the static QI dependency graph.
+         * For each quantifier Q: collect uninterpreted func_decls in body,
+         * build trigger_map (func_decl -> triggered quantifiers), then
+         * build successors (Q -> quantifiers whose triggers overlap Q's body).
+         * Self-loops excluded. Called once per search in init_search_eh().
+         */
+        void build_dep_graph() {
+            // Clean up previous graph allocations.
+            for (auto * v : m_dep_allocs)
+                dealloc(v);
+            m_dep_allocs.reset();
+            m_trigger_map.reset();
+            m_successors.reset();
+            m_chain_scores.reset();
+            m_dep_graph_built = false;
+
+            if (m_quantifiers.size() < 2)
+                return;
+
+            // Step 1: Build trigger_map — func_decl* -> quantifiers triggered by it.
+            for (quantifier * q : m_quantifiers) {
+                unsigned npats = q->get_num_patterns();
+                for (unsigned p = 0; p < npats; ++p) {
+                    expr * pat = q->get_pattern(p);
+                    // Walk the pattern tree to collect trigger func_decls.
+                    ptr_buffer<expr, 32> todo;
+                    todo.push_back(pat);
+                    while (!todo.empty()) {
+                        expr * e = todo.back();
+                        todo.pop_back();
+                        if (!is_app(e)) continue;
+                        app * a = to_app(e);
+                        func_decl * fd = a->get_decl();
+                        if (fd->get_family_id() == null_family_id) {
+                            // Uninterpreted func_decl — register as trigger.
+                            ptr_vector<quantifier> * vec = nullptr;
+                            if (!m_trigger_map.find(fd, vec)) {
+                                vec = alloc(ptr_vector<quantifier>);
+                                m_dep_allocs.push_back(vec);
+                                m_trigger_map.insert(fd, vec);
+                            }
+                            // Avoid duplicates within same quantifier.
+                            if (vec->empty() || vec->back() != q)
+                                vec->push_back(q);
+                        }
+                        unsigned na = a->get_num_args();
+                        for (unsigned i = 0; i < na; ++i)
+                            todo.push_back(a->get_arg(i));
+                    }
+                }
+            }
+
+            // Step 2: Build successors — Q -> quantifiers whose triggers overlap Q's body.
+            for (quantifier * q : m_quantifiers) {
+                expr * body = q->get_expr();
+                // Collect uninterpreted func_decls in body.
+                ptr_buffer<expr, 64> todo;
+                todo.push_back(body);
+                unsigned visited = 0;
+                ptr_vector<quantifier> * succ = nullptr;
+
+                while (!todo.empty() && visited < 256) {
+                    expr * e = todo.back();
+                    todo.pop_back();
+                    visited++;
+                    if (!is_app(e)) continue;
+                    app * a = to_app(e);
+                    func_decl * fd = a->get_decl();
+                    if (fd->get_family_id() == null_family_id) {
+                        ptr_vector<quantifier> * triggered = nullptr;
+                        if (m_trigger_map.find(fd, triggered)) {
+                            for (quantifier * q2 : *triggered) {
+                                if (q2 == q) continue; // no self-loops
+                                if (!succ) {
+                                    succ = alloc(ptr_vector<quantifier>);
+                                    m_dep_allocs.push_back(succ);
+                                }
+                                // Avoid duplicates.
+                                bool found = false;
+                                for (quantifier * s : *succ) {
+                                    if (s == q2) { found = true; break; }
+                                }
+                                if (!found)
+                                    succ->push_back(q2);
+                            }
+                        }
+                    }
+                    unsigned na = a->get_num_args();
+                    for (unsigned i = 0; i < na; ++i)
+                        todo.push_back(a->get_arg(i));
+                }
+
+                if (succ)
+                    m_successors.insert(q, succ);
+            }
+
+            m_dep_graph_built = true;
+            m_chain_score_restart = UINT_MAX; // force first recompute
+
+            TRACE(qi_queue,
+                  tout << "E12: dep graph built, " << m_quantifiers.size() << " quantifiers, "
+                       << m_successors.size() << " with successors\n";
+                  for (auto const & kv : m_successors) {
+                      tout << "  " << kv.m_key->get_qid() << " -> " << kv.m_value->size() << " successors\n";
+                  });
+        }
+
+        /**
+         * E12.2: Recompute chain scores from successor rewards.
+         * 1-ply: score = 0.7 * max(successor rewards) + 0.3 * avg(successor rewards).
+         * Called every 5 restarts.
+         */
+        void recompute_chain_scores() {
+            m_chain_scores.reset();
+            if (!m_dep_graph_built) return;
+
+            for (auto const & kv : m_successors) {
+                quantifier * q = kv.m_key;
+                ptr_vector<quantifier> const * succs = kv.m_value;
+                if (!succs || succs->empty()) continue;
+
+                double max_reward = 0.0;
+                double sum_reward = 0.0;
+                unsigned count = 0;
+
+                for (quantifier * q2 : *succs) {
+                    q::quantifier_stat * st = nullptr;
+                    if (m_quantifier_stat.find(q2, st) && st) {
+                        double r = st->get_reward();
+                        if (r > max_reward) max_reward = r;
+                        sum_reward += r;
+                        count++;
+                    }
+                }
+
+                if (count > 0) {
+                    double avg_reward = sum_reward / count;
+                    float score = static_cast<float>(0.7 * max_reward + 0.3 * avg_reward);
+                    if (score > 0.001f)
+                        m_chain_scores.insert(q, score);
+                }
+            }
+
+            TRACE(qi_queue,
+                  tout << "E12: recomputed chain scores for " << m_chain_scores.size() << " quantifiers\n";
+                  for (auto const & kv : m_chain_scores) {
+                      tout << "  " << kv.m_key->get_qid() << " = " << kv.m_value << "\n";
+                  });
+        }
+
+        float get_chain_score(quantifier * q) const {
+            float s = 0.0f;
+            m_chain_scores.find(q, s);
+            return s;
+        }
 
         void display_stats(std::ostream & out, quantifier * q) {
             q::quantifier_stat * s     = get_stat(q);
@@ -346,6 +515,9 @@ namespace smt {
             }
             m_qi_queue.init_search_eh();
             m_plugin->init_search_eh();
+            // E12: Build dependency graph once all quantifiers are registered.
+            if (m_params.m_qi_feedback && !m_dep_graph_built)
+                build_dep_graph();
             TRACE(smt_params, m_params.display(tout); );
         }
 
@@ -367,6 +539,14 @@ namespace smt {
 
         void restart_eh() {
             m_plugin->restart_eh();
+            m_restart_counter++;
+            // E12: Recompute chain scores every 5 restarts.
+            if (m_params.m_qi_feedback && m_dep_graph_built) {
+                if (m_restart_counter >= m_chain_score_restart + 5 || m_chain_score_restart == UINT_MAX) {
+                    recompute_chain_scores();
+                    m_chain_score_restart = m_restart_counter;
+                }
+            }
         }
 
         void push() {
@@ -578,6 +758,10 @@ namespace smt {
                 });
             }
         }
+    }
+
+    float quantifier_manager::get_chain_score(quantifier * q) const {
+        return m_imp->get_chain_score(q);
     }
 
     void quantifier_manager::relevant_eh(enode * n) {

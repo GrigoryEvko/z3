@@ -112,7 +112,14 @@ namespace smt {
         ptr_vector<quantifier>::const_iterator begin() const { return begin_quantifiers(); }
         ptr_vector<quantifier>::const_iterator end() const { return end_quantifiers(); }
         unsigned num_quantifiers() const;
-        
+
+        /**
+         * E12: QI dependency graph — 1-ply chain value score.
+         * Returns the cached chain score for quantifier q, or 0 if
+         * the graph has not been built or q has no successors.
+         */
+        float get_chain_score(quantifier * q) const;
+
     };
 
     class quantifier_manager_plugin {

@@ -219,6 +219,17 @@ namespace smt {
             }
             r = static_cast<float>(r - bonus);
         }
+        // E12: Chain initiator discount — quantifiers whose body func_decls
+        // trigger high-reward successors get up to 20% cost reduction.
+        // This encourages instantiation of "chain starters" that set up
+        // productive subsequent instantiations.
+        if (m_params.m_qi_feedback && r > 0.0f) {
+            float chain_score = m_qm.get_chain_score(q);
+            if (chain_score > 0.01f) {
+                double discount = 1.0 - 0.20 * std::min(static_cast<double>(chain_score) * 5.0, 1.0);
+                r = static_cast<float>(r * discount);
+            }
+        }
         stat->update_max_cost(r);
         return r;
     }
