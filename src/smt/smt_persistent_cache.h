@@ -55,7 +55,7 @@ namespace smt {
     static_assert(sizeof(file_header) == 32, "file_header must be 32 bytes");
 
     /**
-     * Strategy header: 44 bytes, precedes its entry_record[] and seq_entry_record[].
+     * Strategy header: 40 bytes, precedes its entry_record[] and seq_entry_record[].
      */
     struct strategy_header {
         uint64_t assertion_hash;          // key into proof_cache

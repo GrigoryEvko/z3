@@ -292,10 +292,12 @@ namespace smt {
             }
             // A1: belief variance — EMA of squared phase-flip deltas.
             // delta=1 when phase flips, 0 when it doesn't; delta^2 = delta.
-            // Always accumulated (cheap: one multiply + add) to avoid a conditional
-            // branch in this hot path that changes code layout and amplifies
-            // ASLR-induced timing nondeterminism.
-            {
+            // Gated behind auto_tune: all consumers (restart gating, polarity
+            // detection, phase adjustment) are already auto_tune-gated, so
+            // this value is dead weight on default configs.  The branch on
+            // m_auto_tune is perfectly predicted (constant for the entire solve)
+            // and adds no ASLR layout sensitivity.
+            if (m_fparams.m_auto_tune) {
                 double delta = (d.m_phase != !l.sign()) ? 1.0 : 0.0;
                 m_belief_variance = 0.99 * m_belief_variance + 0.01 * delta;
             }
@@ -4265,7 +4267,7 @@ namespace smt {
                 m_qmanager->restart_eh();
             // E5.3: Record failure evidence for quantifiers that produced
             // instances but never contributed to conflicts in this search.
-            if (!inconsistent() && m_qmanager->has_quantifiers())
+            if (!inconsistent() && m_fparams.m_qi_feedback && m_qmanager->has_quantifiers())
                 m_qmanager->attribute_qi_failures_on_restart();
             if (inconsistent()) {
                 VERIFY(!resolve_conflict());

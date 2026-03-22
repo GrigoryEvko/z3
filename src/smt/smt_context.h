@@ -2364,6 +2364,9 @@ namespace smt {
         func_decl * get_macro_interpretation(unsigned i, expr_ref & interp) const { return m_asserted_formulas.get_macro_interpretation(i, interp); }
         quantifier * get_macro_quantifier(func_decl * f) const { return m_asserted_formulas.get_macro_quantifier(f); }
         void insert_macro(func_decl * f, quantifier * m, proof * pr, expr_dependency * dep) { m_asserted_formulas.insert_macro(f, m, pr, dep); }
+
+        // TEMPORARY: layout diagnostic — remove after analysis
+        static void dump_layout();
     };
 
     struct pp_lit {

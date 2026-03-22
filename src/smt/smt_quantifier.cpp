@@ -160,6 +160,13 @@ namespace smt {
             m_qi_queue.setup();
         }
 
+        ~imp() {
+            // Free heap-allocated ptr_vectors stored in m_dep_allocs.
+            // ptr_vector's destructor only frees its own storage, not pointed-to objects.
+            for (auto * v : m_dep_allocs)
+                dealloc(v);
+        }
+
         ast_manager& m() const { return m_context.get_manager(); }
         bool has_trace_stream() const { return m().has_trace_stream(); }
         std::ostream & trace_stream() { return m().trace_stream(); }
