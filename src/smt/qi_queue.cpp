@@ -193,10 +193,9 @@ namespace smt {
         // appeared in conflict antecedent chains get a cost discount,
         // making them more likely to be eagerly instantiated.
         // This is a boost-only mechanism: no quantifier is penalized.
-        // The discount is capped at 25% to avoid over-promotion.
-        // Gated by smt.qi.feedback parameter.
-        if (m_params.m_qi_feedback &&
-            r > 0.0f && stat->get_num_conflicts() > 0 &&
+        // Reward-adjusted scoring: always-on since conflict tracking is
+        // now unconditional.  Capped at 25% discount.
+        if (r > 0.0f && stat->get_num_conflicts() > 0 &&
             stat->get_instances_total() >= 20) {
             double rate = static_cast<double>(stat->get_num_conflicts())
                         / stat->get_instances_total();

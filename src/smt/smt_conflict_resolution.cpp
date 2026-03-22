@@ -544,13 +544,15 @@ namespace smt {
                 TRACE(conflict_smt2, m_ctx.display_clause_smt2(tout, *cls););
                 if (cls->is_lemma())
                     cls->inc_clause_activity();
-                // Check if this clause has a quantifier literal (QI source).
-                // Only needed when qi.feedback is enabled for conflict attribution.
-                if (m_params.m_qi_feedback) {
+                // Track QI source quantifiers in the antecedent chain.
+                // Always-on: enables conflict-count tracking on quantifier_stat
+                // which powers both the matching loop guard and reward scoring.
+                if (m_ctx.has_quantifiers()) {
                     quantifier * q = m_ctx.qi_source_quantifier(cls);
                     if (q) {
                         m_qi_contributing.push_back({q, m_resolve_depth});
-                        m_qi_chain.push_back({q, m_qi_chain.size()});
+                        if (m_params.m_qi_feedback)
+                            m_qi_chain.push_back({q, m_qi_chain.size()});
                     }
                 }
                 unsigned num_lits = cls->get_num_literals();
@@ -580,14 +582,14 @@ namespace smt {
             case b_justification::BIN_CLAUSE: {
                 TRACE(conflict_smt2, m_ctx.display_literals_smt2(tout, consequent, ~js.get_literal()) << "\n";);
                 SASSERT(consequent.var() != js.get_literal().var());
-                // Check both literals in the binary clause for QI source.
-                // Only needed when qi.feedback is enabled for conflict attribution.
-                if (m_params.m_qi_feedback) {
+                // Track QI source in binary clauses (always-on).
+                if (m_ctx.has_quantifiers()) {
                     quantifier * q = m_ctx.literal_qi_source(js.get_literal());
                     if (!q) q = m_ctx.literal_qi_source(consequent);
                     if (q) {
                         m_qi_contributing.push_back({q, m_resolve_depth});
-                        m_qi_chain.push_back({q, m_qi_chain.size()});
+                        if (m_params.m_qi_feedback)
+                            m_qi_chain.push_back({q, m_qi_chain.size()});
                     }
                 }
                 process_antecedent(js.get_literal(), num_marks);

@@ -4627,9 +4627,10 @@ namespace smt {
             // on rlimit-bounded F* queries.
 
             // Attribute this conflict to contributing quantifier instantiations.
+            // Always-on: the conflict counters power the matching loop guard
+            // (50K instances + 0 conflicts → blocked) and reward-adjusted scoring.
             // Must be done before pop_scope_core since justifications are invalidated.
-            if (m_fparams.m_qi_feedback)
-                attribute_qi_conflict(num_lits, lits);
+            attribute_qi_conflict(num_lits, lits);
 
             if (m_fparams.m_auto_tune) {
                 // Bump theory importance for theory atoms in theory-originated conflicts.
