@@ -21,6 +21,7 @@ Revision History:
 #include "ast/ast.h"
 #include "util/approx_nat.h"
 #include "util/region.h"
+#include <cmath>
 
 namespace q {
     
@@ -49,6 +50,10 @@ namespace q {
         double   m_reward;              //!< EMA of conflict participation rate (instances_in_conflict / total_instances)
         double   m_body_heat;          //!< cached sum of func_decl heat over quantifier body (E7)
         unsigned m_body_heat_conflict; //!< conflict count at last body heat refresh
+        bool     m_is_self_loop;      //!< body contains func_decls that appear in own trigger pattern
+
+        unsigned m_match_budget;       //!< remaining matches allowed this restart round
+        unsigned m_match_budget_base;  //!< initial budget (refreshed on restart)
 
         // Ring buffer of recent binding structure hashes (E2.3).
         // Used by attribute_qi_conflict to mark useful patterns in the
@@ -154,6 +159,35 @@ namespace q {
         unsigned get_inserts_total() const { return m_inserts_total; }
         double get_reward() const { return m_reward; }
         void set_reward(double r) { m_reward = r; }
+
+        bool is_self_loop() const { return m_is_self_loop; }
+        void set_self_loop(bool v) { m_is_self_loop = v; }
+
+        unsigned get_match_budget() const { return m_match_budget; }
+        void dec_match_budget() { if (m_match_budget > 0) m_match_budget--; }
+        /**
+         * Recompute match budget based on posterior utility.
+         * Productive quantifiers (conflicts > 0) get generous budget.
+         * Self-loop quantifiers with zero conflicts get aggressive decay.
+         * Other unproductive quantifiers get gentle decay starting at 50K inserts.
+         */
+        void refresh_match_budget() {
+            unsigned ni = m_inserts_total;
+            unsigned nc = m_num_conflicts;
+            if (nc > 0) {
+                m_match_budget = 100000;
+            } else if (m_is_self_loop && ni > 5000) {
+                // Matching loop with zero utility: aggressive decay
+                double decay = 1.0 + std::log2(static_cast<double>(ni) / 5000.0);
+                m_match_budget = static_cast<unsigned>(10000.0 / decay);
+            } else if (ni < 50000) {
+                m_match_budget = 100000;
+            } else {
+                // Non-self-loop, zero conflicts, many inserts: gentle decay
+                double decay = 1.0 + std::log2(static_cast<double>(ni) / 50000.0);
+                m_match_budget = static_cast<unsigned>(50000.0 / decay);
+            }
+        }
 
         double get_body_heat() const { return m_body_heat; }
         void set_body_heat(double h, unsigned conflict_stamp) {

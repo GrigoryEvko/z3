@@ -219,9 +219,14 @@ namespace smt {
         {
             unsigned n = stat->get_inserts_total();
             unsigned k = stat->get_num_conflicts();
+            // Self-loop quantifiers (body func_decls match own trigger) get
+            // a slightly faster-growing surprisal coefficient (2.5x vs 2x)
+            // to suppress true matching loops earlier while preserving
+            // productive recursive quantifiers during the N0 warmup window.
             constexpr unsigned N0 = 5000;
             if (k == 0 && n > N0) {
-                r += static_cast<float>(2.0 * std::log2(static_cast<double>(n) / N0));
+                double coeff = stat->is_self_loop() ? 2.5 : 2.0;
+                r += static_cast<float>(coeff * std::log2(static_cast<double>(n) / N0));
             }
         }
 
@@ -821,6 +826,8 @@ namespace smt {
         m_scopes.reset();
         m_binding_filter.init();
         m_failure_filter.reset();
+        m_final_check_no_conflict_streak = 0;
+        m_last_conflict_count = 0;
     }
 
     void qi_queue::init_search_eh() {
@@ -828,10 +835,40 @@ namespace smt {
         m_new_entries.reset();
         m_egraph_metrics.reset();
         m_failure_filter.reset();
+        m_final_check_no_conflict_streak = 0;
+        m_last_conflict_count = 0;
     }
 
     bool qi_queue::final_check_eh() {
+        // Track consecutive final checks with zero new conflicts.
+        // When the streak is long, progressively tighten the effective
+        // lazy threshold to break matching-loop feedback cycles.
+        unsigned current_conflicts = m_context.get_num_conflicts();
+        if (current_conflicts == m_last_conflict_count) {
+            m_final_check_no_conflict_streak++;
+        } else {
+            m_final_check_no_conflict_streak = 0;
+        }
+        m_last_conflict_count = current_conflicts;
+
+        // Effective lazy threshold tightens with streak length:
+        //   streak 0-5: full lazy threshold (20.0)
+        //   streak 6+:  threshold = lazy / (1 + 0.25 * (streak - 5))
+        //   streak 13:  threshold = lazy / 3.0  ~= 6.7
+        //   streak 25:  threshold = lazy / 6.0  ~= 3.3
+        // Floor: never drop below eager threshold -- entries that would
+        // have been instantiated eagerly must always survive final_check.
+        double effective_lazy = m_params.m_qi_lazy_threshold;
+        if (m_final_check_no_conflict_streak > 5) {
+            effective_lazy = m_params.m_qi_lazy_threshold /
+                (1.0 + 0.25 * (m_final_check_no_conflict_streak - 5));
+            double floor = m_params.m_qi_eager_threshold;
+            if (effective_lazy < floor)
+                effective_lazy = floor;
+        }
+
         TRACE(qi_queue, display_delayed_instances_stats(tout); tout << "lazy threshold: " << m_params.m_qi_lazy_threshold
+              << " (effective: " << effective_lazy << ", streak: " << m_final_check_no_conflict_streak << ")"
               << ", scope_level: " << m_context.get_scope_level() << "\n";);
 
         if (m_params.m_qi_conservative_final_check) {
@@ -841,7 +878,7 @@ namespace smt {
             for (unsigned i = 0; i < sz; ++i) {
                 entry & e       = m_delayed_entries[i];
                 TRACE(qi_queue, tout << e.m_qb << ", cost: " << e.m_cost << ", instantiated: " << e.m_instantiated << "\n";);
-                if (!e.m_instantiated && e.m_cost <= m_params.m_qi_lazy_threshold && (!init || e.m_cost < min_cost)) {
+                if (!e.m_instantiated && e.m_cost <= effective_lazy && (!init || e.m_cost < min_cost)) {
                     init = true;
                     min_cost = e.m_cost;
                 }
@@ -863,7 +900,7 @@ namespace smt {
                             unsigned nc = stat->get_num_conflicts();
                             if (nc == 0 && ni > 5000) {
                                 double surprisal = 2.0 * std::log2(static_cast<double>(ni) / 5000.0);
-                                if (e.m_cost + surprisal > m_params.m_qi_lazy_threshold * 2.0) {
+                                if (e.m_cost + surprisal > effective_lazy * 2.0) {
                                     continue;
                                 }
                             }
@@ -884,7 +921,7 @@ namespace smt {
         for (unsigned i = 0; i < m_delayed_entries.size(); ++i) {
             entry & e       = m_delayed_entries[i];
             TRACE(qi_queue, tout << e.m_qb << ", cost: " << e.m_cost << ", instantiated: " << e.m_instantiated << "\n";);
-            if (!e.m_instantiated && e.m_cost <= m_params.m_qi_lazy_threshold)  {
+            if (!e.m_instantiated && e.m_cost <= effective_lazy)  {
                 // Recheck surprisal: the entry's stored cost is from insert time.
                 // The insert count may have grown since then, making the entry
                 // effectively too expensive to instantiate.
@@ -896,7 +933,7 @@ namespace smt {
                         unsigned nc = stat->get_num_conflicts();
                         if (nc == 0 && ni > 5000) {
                             double surprisal = 2.0 * std::log2(static_cast<double>(ni) / 5000.0);
-                            if (e.m_cost + surprisal > m_params.m_qi_lazy_threshold * 2.0) {
+                            if (e.m_cost + surprisal > effective_lazy * 2.0) {
                                 continue;
                             }
                         }

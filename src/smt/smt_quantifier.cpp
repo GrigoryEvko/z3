@@ -212,7 +212,7 @@ namespace smt {
             m_chain_scores.reset();
             m_dep_graph_built = false;
 
-            if (m_quantifiers.size() < 2)
+            if (m_quantifiers.empty())
                 return;
 
             // Step 1: Build trigger_map — func_decl* -> quantifiers triggered by it.
@@ -268,7 +268,12 @@ namespace smt {
                         ptr_vector<quantifier> * triggered = nullptr;
                         if (m_trigger_map.find(fd, triggered)) {
                             for (quantifier * q2 : *triggered) {
-                                if (q2 == q) continue; // no self-loops
+                                if (q2 == q) {
+                                    // Self-loop: Q's body produces terms matching Q's own trigger.
+                                    q::quantifier_stat * stat = get_stat(q);
+                                    if (stat) stat->set_self_loop(true);
+                                    continue; // skip for dep graph edges
+                                }
                                 if (!succ) {
                                     succ = alloc(ptr_vector<quantifier>);
                                     m_dep_allocs.push_back(succ);
@@ -585,6 +590,11 @@ namespace smt {
         void restart_eh() {
             m_plugin->restart_eh();
             m_restart_counter++;
+            // Refresh per-quantifier MAM match budgets
+            for (quantifier * q : m_quantifiers) {
+                q::quantifier_stat * stat = get_stat(q);
+                if (stat) stat->refresh_match_budget();
+            }
             // E12: Recompute chain scores every 5 restarts.
             if (m_params.m_qi_feedback && m_dep_graph_built) {
                 if (m_restart_counter >= m_chain_score_restart + 5 || m_chain_score_restart == UINT_MAX) {

@@ -157,6 +157,8 @@ namespace smt {
             unsigned   m_instantiated_trail_lim;
         };
         svector<scope>                m_scopes;
+        unsigned                      m_final_check_no_conflict_streak = 0;
+        unsigned                      m_last_conflict_count = 0;
 
         void init_parser_vars();
         q::quantifier_stat * set_values(quantifier * q, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation, float cost);

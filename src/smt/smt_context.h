@@ -929,6 +929,10 @@ namespace smt {
             return m_qmanager->get_generation(q);
         }
 
+        q::quantifier_stat * get_quantifier_stat(quantifier * q) const {
+            return m_qmanager->get_stat(q);
+        }
+
         /**
            \brief Return true if the logical context internalized universal quantifiers.
         */

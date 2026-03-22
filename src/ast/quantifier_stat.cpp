@@ -42,6 +42,9 @@ namespace q {
         m_reward(0.1),
         m_body_heat(0.0),
         m_body_heat_conflict(0),
+        m_is_self_loop(false),
+        m_match_budget(100000),
+        m_match_budget_base(100000),
         m_binding_hash_ring_pos(0) {
         memset(m_binding_hash_ring, 0, sizeof(m_binding_hash_ring));
     }

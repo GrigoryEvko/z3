@@ -3990,8 +3990,15 @@ namespace {
                 for (unsigned i = 0; i < num_bindings; ++i) {
                     SASSERT(bindings[i]->get_generation() <= max_generation);
                 });
-                
+
 #endif
+            // Per-quantifier match budget: cut unproductive quantifiers at the source
+            q::quantifier_stat * stat = m_context.get_quantifier_stat(qa);
+            if (stat) {
+                if (stat->get_match_budget() == 0) return;
+                stat->dec_match_budget();
+            }
+
             unsigned min_gen = 0, max_gen = 0;
             m_interpreter.get_min_max_top_generation(min_gen, max_gen);
             m_context.add_instance(qa, pat, num_bindings, bindings, nullptr, max_generation, min_gen, max_gen, used_enodes);
