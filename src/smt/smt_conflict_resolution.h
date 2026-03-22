@@ -118,6 +118,18 @@ namespace smt {
         unsigned                       m_resolve_depth;
 
     public:
+        // E8.1: Ordered QI chain — records quantifiers in encounter order
+        // during conflict analysis, preserving the causal sequence for
+        // proof replay.
+        struct qi_chain_entry {
+            quantifier * m_q;
+            unsigned     m_chain_position;
+        };
+
+    protected:
+        svector<qi_chain_entry>        m_qi_chain;
+
+    public:
         void setup() {
         }
 
@@ -259,6 +271,11 @@ namespace smt {
 
         svector<qi_credit> const & get_qi_contributing() const {
             return m_qi_contributing;
+        }
+
+        // E8.1: Ordered chain of quantifiers encountered during conflict analysis.
+        svector<qi_chain_entry> const & get_qi_chain() const {
+            return m_qi_chain;
         }
 
         literal_vector::const_iterator begin_unsat_core() const {

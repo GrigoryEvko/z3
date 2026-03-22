@@ -203,6 +203,22 @@ namespace smt {
             double discount = 1.0 - 0.25 * std::min(rate * 10.0, 1.0);
             r = static_cast<float>(r * discount);
         }
+        // UCB exploration bonus: promote rarely-tried quantifiers.
+        // bonus = ucb_c * sqrt(log(N) / ni), capped at 50% of current cost.
+        // Never-tried quantifiers (ni==0) get a moderate 50%-cap bonus.
+        if (m_params.m_qi_feedback && m_params.m_qi_ucb_c > 0.0 &&
+            r > 0.0f && m_stats.m_num_instances > 100) {
+            unsigned ni = stat->get_instances_total();
+            double half_r = 0.5 * r;
+            double bonus;
+            if (ni == 0) {
+                bonus = half_r;
+            } else {
+                bonus = m_params.m_qi_ucb_c * std::sqrt(std::log(static_cast<double>(m_stats.m_num_instances)) / ni);
+                if (bonus > half_r) bonus = half_r;
+            }
+            r = static_cast<float>(r - bonus);
+        }
         stat->update_max_cost(r);
         return r;
     }

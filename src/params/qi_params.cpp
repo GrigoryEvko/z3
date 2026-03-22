@@ -40,6 +40,7 @@ void qi_params::updt_params(params_ref const & _p) {
     m_qi_trigger_selectivity = p.qi_trigger_selectivity();
     m_qi_feedback = p.qi_feedback();
     m_qi_relevancy_weight = p.qi_relevancy_weight();
+    m_qi_ucb_c = p.qi_ucb_c();
     m_auto_tune = p.auto_tune();
     if (p.auto_solve()) {
         m_qi_feedback = true;
