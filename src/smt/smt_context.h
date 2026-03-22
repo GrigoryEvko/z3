@@ -118,6 +118,9 @@ namespace smt {
         bool            m_effective_mbqi         = true;
         unsigned        m_fallback_level         = 0;
         unsigned        m_conflicts_to_solve     = 0;
+        // E4: confidence tracking — boosted on UNSAT hit, decayed on failure
+        double          m_confidence             = 1.0;
+        unsigned        m_last_use               = 0;
     };
 
     /**
@@ -172,16 +175,30 @@ namespace smt {
         unsigned m_level                = 0;
         unsigned m_level_start_conflicts = 0;
 
-        unsigned budget() const {
+        unsigned budget(uint64_t remaining_rlimit = UINT64_MAX,
+                        bool     has_rlimit      = false) const {
             // 10000 * 3^level, capped at 270000
             unsigned b = 10000;
             for (unsigned i = 0; i < m_level && b < 270000; ++i)
                 b *= 3;
-            return std::min(b, 270000u);
+            b = std::min(b, 270000u);
+            if (has_rlimit) {
+                if (remaining_rlimit < 100000)
+                    return 0;                        // too little budget -- skip cascade
+                unsigned quarter = static_cast<unsigned>(
+                    std::min<uint64_t>(remaining_rlimit / 4, UINT32_MAX));
+                if (quarter < b)
+                    b = quarter;                     // clamp to remaining/4
+            }
+            return b;
         }
 
-        bool should_escalate(unsigned conflicts, unsigned consecutive_stuck) const {
-            return (conflicts - m_level_start_conflicts > budget()) && consecutive_stuck >= 3;
+        bool should_escalate(unsigned conflicts, unsigned consecutive_stuck,
+                             uint64_t remaining_rlimit = UINT64_MAX,
+                             bool     has_rlimit      = false) const {
+            unsigned b = budget(remaining_rlimit, has_rlimit);
+            if (b == 0) return false;                // rlimit nearly exhausted, don't escalate
+            return (conflicts - m_level_start_conflicts > b) && consecutive_stuck >= 3;
         }
 
         void reset() {
@@ -261,8 +278,26 @@ namespace smt {
         unsigned                    m_incr_bv_count    = 0;
         unsigned                    m_incr_quant_count = 0;
 
+        // D4: Scope-aware counter management for push/pop
+        struct scope_delta {
+            unsigned delta_bv    = 0;
+            unsigned delta_quant = 0;
+        };
+        svector<scope_delta>        m_counter_scopes;
+
         // Proof strategy cache: assertion_hash -> proof strategy (top-K quantifiers by reward)
         std::unordered_map<uint64_t, proof_strategy> m_proof_cache;
+        unsigned                    m_proof_cache_hits        = 0;
+        unsigned                    m_proof_cache_misses      = 0;
+        unsigned                    m_proof_cache_warm_starts = 0;
+
+        // E4: tracks which cached strategy was applied this solve, for confidence update
+        uint64_t                    m_applied_strategy_hash   = 0;
+        unsigned                    m_proof_cache_generation  = 0;
+
+        // E5: failure recording — hashes that repeatedly fail skip warm-start
+        static constexpr unsigned   MAX_FAILURE_CACHE         = 128;
+        std::unordered_map<uint64_t, unsigned> m_failure_cache;
 
         // -----------------------------------
         //
@@ -1302,6 +1337,9 @@ namespace smt {
         // Stuck detection (B7-B9)
         unsigned           m_consecutive_stuck   { 0 };  //!< consecutive low-velocity restarts
 
+        // G4: relevancy retry for short queries returning unknown
+        bool               m_relevancy_retried   { false };
+
         // Fallback cascade (C1-C5)
         fallback_cascade   m_fallback_cascade;             //!< escalation state for stuck solver
         void               fallback_escalate();            //!< advance cascade level and apply config
@@ -2082,6 +2120,7 @@ namespace smt {
         uint64_t compute_assertion_hash();
         uint64_t get_assertion_hash() const { return m_assertion_hash; }
 
+        bool quick_category_changed() const;
         void check_reprofile();
 
         void capture_proof_strategy();

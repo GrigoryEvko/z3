@@ -1908,11 +1908,13 @@ namespace smt {
 
         m_qmanager->push();
 
+        m_counter_scopes.push_back(scope_delta()); // D4: track per-scope counter deltas
+
         m_fingerprints.push_scope();
         m_case_split_queue->push_scope();
         m_asserted_formulas.push_scope();
 
-        for (theory* t : m_theory_set) 
+        for (theory* t : m_theory_set)
             t->push_scope_eh();
         CASSERT("context", check_invariant());
     }
@@ -2418,6 +2420,18 @@ namespace smt {
             del_justifications(m_justifications, s.m_justifications_lim);
 
             m_asserted_formulas.pop_scope(num_scopes);
+
+            // D4: Subtract per-scope counter deltas (saturating) and shrink stack
+            {
+                unsigned cs_sz = m_counter_scopes.size();
+                unsigned pop_from = (cs_sz > num_scopes) ? cs_sz - num_scopes : 0;
+                for (unsigned i = pop_from; i < cs_sz; ++i) {
+                    scope_delta const & sd = m_counter_scopes[i];
+                    m_incr_bv_count    = (m_incr_bv_count    > sd.delta_bv)    ? m_incr_bv_count    - sd.delta_bv    : 0;
+                    m_incr_quant_count = (m_incr_quant_count > sd.delta_quant) ? m_incr_quant_count - sd.delta_quant : 0;
+                }
+                m_counter_scopes.shrink(pop_from);
+            }
 
             CTRACE(propagate_atoms, !m_atom_propagation_queue.empty(), tout << m_atom_propagation_queue << "\n";);
 
@@ -3476,6 +3490,28 @@ namespace smt {
         m_internal_completed = l_false;
         if (r == l_false)
             capture_proof_strategy();
+
+        // E4: update confidence for the strategy we applied this solve.
+        // E5: record failures for strategies that didn't lead to UNSAT.
+        if (m_applied_strategy_hash != 0) {
+            auto cit = m_proof_cache.find(m_applied_strategy_hash);
+            if (cit != m_proof_cache.end()) {
+                if (r == l_false) {
+                    // UNSAT — boost confidence (strategy was helpful)
+                    cit->second.m_confidence = std::min(cit->second.m_confidence * 1.1, 1.0);
+                } else {
+                    // non-UNSAT — decay confidence, evict if too low
+                    cit->second.m_confidence *= 0.5;
+                    if (cit->second.m_confidence < 0.1)
+                        m_proof_cache.erase(cit);
+                    // E5: record failure for this hash
+                    if (m_failure_cache.size() < MAX_FAILURE_CACHE)
+                        ++m_failure_cache[m_applied_strategy_hash];
+                }
+            }
+            m_applied_strategy_hash = 0;
+        }
+
         if (r == l_true && gparams::get_value("model_validate") == "true") {
             recfun::util u(m);
             if (u.get_rec_funs().empty() && m_proto_model) {
@@ -3727,6 +3763,7 @@ namespace smt {
         m_param_cooldown.reset();
         m_belief_variance              = 0.0;
         m_consecutive_stuck            = 0;
+        m_relevancy_retried            = false;
         m_fallback_cascade.reset();
         m_luby_idx                     = 1;
         m_lemma_gc_threshold           = m_fparams.m_lemma_gc_initial;
@@ -4075,6 +4112,14 @@ namespace smt {
             case quantifier_manager::SAT:
                 return false;
             case quantifier_manager::UNKNOWN:
+                // G4: retry with relevancy=0 for short queries before giving up
+                if (m_fparams.m_auto_tune && m_num_conflicts < 1000 && relevancy_lvl() > 0 && !m_relevancy_retried) {
+                    m_relevancy_retried = true;
+                    m_fparams.m_relevancy_lvl = 0;
+                    m_relevancy_lvl = 0;
+                    IF_VERBOSE(2, verbose_stream() << "(smt.g4 relevancy retry: disabling relevancy, restarting search)\n";);
+                    break;
+                }
                 IF_VERBOSE(2, verbose_stream() << "(smt.giveup quantifiers)\n";);
                 // giving up
                 m_last_search_failure = QUANTIFIERS;
@@ -5272,14 +5317,38 @@ namespace smt {
     }
 
     /**
+     * D5: Quick O(1) check whether incremental counters suggest a category change.
+     * Returns true if BV count crossed 0->positive (current category is not BV-related)
+     * or quantifier count crossed the 100 threshold (current category is not heavy-QI).
+     */
+    bool context::quick_category_changed() const {
+        if (m_incr_bv_count > 0 &&
+            m_current_category != query_category::QF_BV &&
+            m_current_category != query_category::BV_WITH_QI)
+            return true;
+        if (m_incr_quant_count >= 100 &&
+            m_current_category != query_category::UFLIA_HEAVY_QI)
+            return true;
+        return false;
+    }
+
+    /**
      * D2: Incremental re-profiling.
      * When m_profile_dirty is set (assertion hash changed) and auto_config
      * is enabled, re-run the query profiler on fresh static_features.
-     * If the category changed, apply new tuning and reset cascade/stuck state.
+     * D5: Uses quick_category_changed() as pre-filter before expensive scan.
+     * D6: Resets meta-update state on category change.
      */
     void context::check_reprofile() {
         if (!m_profile_dirty || !m_fparams.m_auto_config)
             return;
+
+        // D5: Quick pre-filter -- skip expensive static_features scan
+        // when incremental counters indicate the category is stable.
+        if (!quick_category_changed()) {
+            m_profile_dirty = false;
+            return;
+        }
 
         m_profile_dirty = false;
 
@@ -5310,6 +5379,12 @@ namespace smt {
             IF_VERBOSE(10, verbose_stream() << "(smt.reprofile "
                        << query_profile_category_name(m_current_category)
                        << " -> " << qp.category_name() << ")\n";);
+
+            // D6: Reset meta-update state so tuning restarts fresh for new category
+            m_consecutive_stuck = 0;
+            m_fallback_cascade.reset();
+            m_param_cooldown.reset();
+            m_cv_baseline = 0;
 
             m_current_category = new_cat;
         }
@@ -5372,11 +5447,24 @@ namespace smt {
         strategy.m_fallback_level         = m_fallback_cascade.m_level;
         strategy.m_conflicts_to_solve     = m_num_conflicts;
 
-        // Evict oldest entries if cache exceeds limit to prevent unbounded growth.
+        // E6: evict lowest-confidence entry (ties broken by oldest m_last_use).
         // 64 entries * ~20 quantifiers * 16 bytes/entry = ~20KB max.
         constexpr unsigned MAX_CACHE_SIZE = 64;
         if (m_proof_cache.size() >= MAX_CACHE_SIZE && m_proof_cache.find(m_assertion_hash) == m_proof_cache.end()) {
-            m_proof_cache.erase(m_proof_cache.begin());
+            auto victim = m_proof_cache.end();
+            double worst_conf = 2.0;
+            unsigned oldest_use = UINT_MAX;
+            for (auto cit = m_proof_cache.begin(); cit != m_proof_cache.end(); ++cit) {
+                double c = cit->second.m_confidence;
+                unsigned u = cit->second.m_last_use;
+                if (c < worst_conf || (c == worst_conf && u < oldest_use)) {
+                    worst_conf = c;
+                    oldest_use = u;
+                    victim = cit;
+                }
+            }
+            if (victim != m_proof_cache.end())
+                m_proof_cache.erase(victim);
         }
 
         m_proof_cache[m_assertion_hash] = std::move(strategy);
@@ -5409,6 +5497,8 @@ namespace smt {
      * so the total cost is negligible compared to a single SAT conflict.
      */
     void context::apply_proof_strategy() {
+        m_applied_strategy_hash = 0;  // E4: reset per-solve tracking
+
         if (m_assertion_hash == 0)
             return;
         if (!m_qmanager || m_qmanager->num_quantifiers() == 0)
@@ -5445,9 +5535,20 @@ namespace smt {
         // E3: warm-start solver parameters from cached effective configuration.
         // Only applies when the cached strategy used fallback level >= 2, meaning
         // the solver had to deviate significantly from defaults to find a proof.
-        auto apply_effective_config = [&](proof_strategy const& strategy) {
+        auto apply_effective_config = [&](proof_strategy const& strategy, uint64_t cache_key) {
             if (strategy.m_fallback_level < 2)
                 return;
+            // E5: skip warm-start if this hash has repeatedly failed
+            auto fit = m_failure_cache.find(cache_key);
+            if (fit != m_failure_cache.end() && fit->second > 3) {
+                TRACE(proof_strategy,
+                    tout << "skipping warm-start: failure count "
+                         << fit->second << " for hash 0x"
+                         << std::hex << cache_key << std::dec << "\n";
+                );
+                return;
+            }
+            ++m_proof_cache_warm_starts;
             m_fparams.m_qi_eager_threshold = strategy.m_effective_qi_threshold;
             m_fparams.m_relevancy_lvl      = strategy.m_effective_relevancy;
             m_fparams.m_ematching          = strategy.m_effective_ematching;
@@ -5463,11 +5564,21 @@ namespace smt {
             );
         };
 
+        // E4: helper to record which strategy was applied and update LRU generation.
+        auto record_strategy_use = [&](uint64_t cache_key) {
+            m_applied_strategy_hash = cache_key;
+            auto pit = m_proof_cache.find(cache_key);
+            if (pit != m_proof_cache.end())
+                pit->second.m_last_use = ++m_proof_cache_generation;
+        };
+
         // Tier 1: exact assertion hash match
         auto it = m_proof_cache.find(m_assertion_hash);
         if (it != m_proof_cache.end() && !it->second.m_entries.empty()) {
+            ++m_proof_cache_hits;
             unsigned applied = apply_strategy(it->second, 1.0); (void)applied;
-            apply_effective_config(it->second);
+            apply_effective_config(it->second, m_assertion_hash);
+            record_strategy_use(m_assertion_hash);
             TRACE(proof_strategy,
                 tout << "applied proof strategy (exact) for hash 0x"
                      << std::hex << m_assertion_hash << std::dec
@@ -5479,6 +5590,7 @@ namespace smt {
 
         // Tier 2: fuzzy signature matching across all cached strategies
         proof_strategy const* best_strategy = nullptr;
+        uint64_t best_hash = 0;
         double best_ratio = 0.0;
 
         for (auto const& [cached_hash, strategy] : m_proof_cache) {
@@ -5494,13 +5606,16 @@ namespace smt {
             if (ratio > best_ratio) {
                 best_ratio = ratio;
                 best_strategy = &strategy;
+                best_hash = cached_hash;
             }
         }
 
         if (best_strategy && best_ratio >= proof_strategy::FUZZY_THRESHOLD) {
+            ++m_proof_cache_hits;
             // Scale rewards by match ratio: partial match gets proportional credit
             unsigned applied = apply_strategy(*best_strategy, best_ratio); (void)applied;
-            apply_effective_config(*best_strategy);
+            apply_effective_config(*best_strategy, best_hash);
+            record_strategy_use(best_hash);
             TRACE(proof_strategy,
                 tout << "applied proof strategy (fuzzy, ratio="
                      << best_ratio << ") for hash 0x"
@@ -5508,6 +5623,9 @@ namespace smt {
                      << ": " << applied << "/" << best_strategy->m_entries.size()
                      << " quantifiers matched\n";
             );
+        }
+        else {
+            ++m_proof_cache_misses;
         }
     }
 
@@ -5570,9 +5688,12 @@ namespace smt {
         handle_stuck_relevancy();
         handle_stuck_mbqi();
 
-        // C2: fallback cascade escalation on prolonged stuck
+        // C2/C9: fallback cascade escalation on prolonged stuck, rlimit-aware
+        uint64_t rl_rem = m.limit().remaining();
+        bool     rl_has = m.limit().has_limit();
         if (m_consecutive_stuck >= 3 &&
-            m_fallback_cascade.should_escalate(m_num_conflicts, m_consecutive_stuck)) {
+            m_fallback_cascade.should_escalate(m_num_conflicts, m_consecutive_stuck,
+                                               rl_rem, rl_has)) {
             fallback_escalate();
         }
 
