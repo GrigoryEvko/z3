@@ -835,8 +835,10 @@ namespace smt {
         m_new_entries.reset();
         m_egraph_metrics.reset();
         m_failure_filter.reset();
-        m_final_check_no_conflict_streak = 0;
-        m_last_conflict_count = 0;
+        // NOTE: do NOT reset m_final_check_no_conflict_streak here.
+        // For incremental queries (push/pop with many check-sat calls),
+        // the streak must persist across check-sat calls so the
+        // final-check tightening can accumulate across the session.
     }
 
     bool qi_queue::final_check_eh() {
@@ -851,20 +853,21 @@ namespace smt {
         }
         m_last_conflict_count = current_conflicts;
 
-        // Effective lazy threshold tightens with streak length:
-        //   streak 0-5: full lazy threshold (20.0)
-        //   streak 6+:  threshold = lazy / (1 + 0.25 * (streak - 5))
-        //   streak 13:  threshold = lazy / 3.0  ~= 6.7
-        //   streak 25:  threshold = lazy / 6.0  ~= 3.3
-        // Floor: never drop below eager threshold -- entries that would
-        // have been instantiated eagerly must always survive final_check.
+        // Effective lazy threshold tightens with streak length.
+        // Exponential decay: threshold halves every 5 rounds of no conflicts.
+        //   streak 0-4: full lazy threshold (20.0)
+        //   streak 5:   20 / 1    = 20.0 (just starting)
+        //   streak 10:  20 / 2    = 10.0
+        //   streak 15:  20 / 4    = 5.0
+        //   streak 20:  20 / 8    = 2.5
+        //   streak 30:  20 / 32   = 0.625
+        // Floor at 0.5 to prevent total blockage (allow cheapest lazy through).
         double effective_lazy = m_params.m_qi_lazy_threshold;
-        if (m_final_check_no_conflict_streak > 5) {
-            effective_lazy = m_params.m_qi_lazy_threshold /
-                (1.0 + 0.25 * (m_final_check_no_conflict_streak - 5));
-            double floor = m_params.m_qi_eager_threshold;
-            if (effective_lazy < floor)
-                effective_lazy = floor;
+        if (m_final_check_no_conflict_streak > 4) {
+            double halvings = static_cast<double>(m_final_check_no_conflict_streak - 4) / 5.0;
+            effective_lazy = m_params.m_qi_lazy_threshold / std::pow(2.0, halvings);
+            if (effective_lazy < 0.5)
+                effective_lazy = 0.5;
         }
 
         TRACE(qi_queue, display_delayed_instances_stats(tout); tout << "lazy threshold: " << m_params.m_qi_lazy_threshold
