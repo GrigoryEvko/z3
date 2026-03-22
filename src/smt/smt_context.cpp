@@ -4473,6 +4473,15 @@ namespace smt {
             ++m_final_checks_since_restart;
         TRACE(final_check_stats, tout << "m_stats.m_num_final_checks = " << m_stats.m_num_final_checks << "\n";);
 
+        // Log before any early-exit paths (qmanager, theory checks).
+        if (m_adaptive_log) {
+            ALOG(m_adaptive_log, "FINAL_CHECK")
+                .u("c", m_num_conflicts)
+                .u("theories", m_theory_set.size())
+                .u("enodes", m_enodes.size())
+                .b("consistent", !inconsistent());
+        }
+
         final_check_status ok = m_qmanager->final_check_eh(false);
         if (ok != FC_DONE)
             return ok;
@@ -4546,13 +4555,6 @@ namespace smt {
         if (result == FC_DONE && has_lambda()) {
             m_last_search_failure = LAMBDAS;
             result = FC_GIVEUP;
-        }
-        if (m_adaptive_log) {
-            ALOG(m_adaptive_log, "FINAL_CHECK")
-                .u("c", m_num_conflicts)
-                .u("theories", m_theory_set.size())
-                .u("enodes", m_enodes.size())
-                .b("consistent", !inconsistent());
         }
         return result;
     }
