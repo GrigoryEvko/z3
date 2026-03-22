@@ -278,10 +278,18 @@ namespace smt {
         bool_var_data & d          = get_bdata(l.var());
         set_justification(l.var(), d, j);
         d.m_scope_lvl              = m_scope_lvl;
-        if (m_fparams.m_restart_adaptive && d.m_phase_available) {
-            m_agility             *= m_fparams.m_agility_factor;
-            if (!decision && d.m_phase == l.sign())
-                m_agility         += (1.0 - m_fparams.m_agility_factor);
+        if (d.m_phase_available) {
+            if (m_fparams.m_restart_adaptive) {
+                m_agility         *= m_fparams.m_agility_factor;
+                if (!decision && d.m_phase == l.sign())
+                    m_agility     += (1.0 - m_fparams.m_agility_factor);
+            }
+            // A1: belief variance — EMA of squared phase-flip deltas.
+            // delta=1 when phase flips, 0 when it doesn't; delta^2 = delta.
+            if (m_fparams.m_auto_tune) {
+                double delta = (d.m_phase != !l.sign()) ? 1.0 : 0.0;
+                m_belief_variance = 0.99 * m_belief_variance + 0.01 * delta;
+            }
         }
         d.m_phase_available        = true;
         d.m_phase                  = !l.sign();
@@ -5358,7 +5366,7 @@ namespace smt {
         strategy.m_effective_relevancy    = m_fparams.m_relevancy_lvl;
         strategy.m_effective_ematching    = m_fparams.m_ematching;
         strategy.m_effective_mbqi         = m_fparams.m_mbqi;
-        strategy.m_fallback_level         = 0; // placeholder until Phase C cascade
+        strategy.m_fallback_level         = m_fallback_cascade.m_level;
         strategy.m_conflicts_to_solve     = m_num_conflicts;
 
         // Evict oldest entries if cache exceeds limit to prevent unbounded growth.
