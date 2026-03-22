@@ -320,10 +320,24 @@ namespace smt {
     void qi_queue::insert(fingerprint * f, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
         quantifier * q         = static_cast<quantifier*>(f->get_data());
 
-        // Increment per-quantifier insert counter (used by surprisal).
+        // Increment per-quantifier insert counter and fast-reject when
+        // the surprisal alone guarantees cost > lazy threshold.
+        // This avoids the full get_cost() evaluation for loop quantifiers
+        // that the matching engine keeps finding triggers for.
         {
             q::quantifier_stat * stat = m_qm.get_stat(q);
-            if (stat) stat->inc_inserts_total();
+            if (stat) {
+                stat->inc_inserts_total();
+                unsigned ni = stat->get_inserts_total();
+                unsigned nc = stat->get_num_conflicts();
+                constexpr unsigned N0 = 5000;
+                if (nc == 0 && ni > N0) {
+                    double surprisal = 2.0 * std::log2(static_cast<double>(ni) / N0);
+                    if (surprisal > m_params.m_qi_lazy_threshold) {
+                        return;  // cost would exceed lazy threshold — skip entirely
+                    }
+                }
+            }
         }
 
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
