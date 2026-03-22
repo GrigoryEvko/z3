@@ -498,7 +498,9 @@ namespace smt {
                 unsigned ni = stat->get_inserts_total();
                 unsigned nc = stat->get_num_conflicts();
                 if (nc == 0 && ni > 5000) {
-                    double surprisal = 2.0 * std::log2(static_cast<double>(ni) / 5000.0);
+                    // Self-loop quantifiers use 2.5x coefficient (matches get_cost)
+                    double coeff = stat->is_self_loop() ? 2.5 : 2.0;
+                    double surprisal = coeff * std::log2(static_cast<double>(ni) / 5000.0);
                     if (surprisal > m_params.m_qi_lazy_threshold) {
                         return false;
                     }
