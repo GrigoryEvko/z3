@@ -333,6 +333,17 @@ namespace smt {
 
         q::quantifier_stat * stat = m_qm.get_stat(q);
 
+        // SBSC: skip substitution+rewrite if body is already satisfied with existing terms.
+        // Cheaper than the full is_sat path below because all_terms_exist is a fast
+        // structural check — if it fails, we avoid the deeper is_sat traversal entirely.
+        if (m_params.m_qi_feedback && !skip_sat_check &&
+            m_checker.all_terms_exist(q->get_expr(), num_bindings, bindings) &&
+            m_checker.is_sat(q->get_expr(), num_bindings, bindings)) {
+            TRACE(checker, tout << "SBSC: body already satisfied with existing terms\n";);
+            stat->inc_num_instances_checker_sat();
+            return;
+        }
+
         if (!skip_sat_check && m_checker.is_sat(q->get_expr(), num_bindings, bindings)) {
             TRACE(checker, tout << "instance already satisfied\n";);
             // we log the "dummy" instantiations separately from "instance"
