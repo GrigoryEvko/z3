@@ -45,8 +45,117 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter, defaultdict
+from itertools import combinations
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
+
+
+# ---------------------------------------------------------------------------
+# Table: auto-width, alignment, truncation, render-to-string
+# ---------------------------------------------------------------------------
+
+class Table:
+    """Reusable table formatter with auto-calculated column widths.
+
+    Supports two output modes via render(fmt):
+      - 'table': padded columns with auto-calculated widths, 2-space gap
+      - 'tsv':   tab-separated values, no padding
+
+    Column alignment is specified per-column: 'r' (right) or 'l' (left).
+    The last column can be auto-truncated to fit terminal width.
+    """
+
+    def __init__(self, columns: list[str], alignments: str | None = None,
+                 truncate_last: bool = False):
+        """
+        columns:       header names
+        alignments:    string of 'r'/'l' per column, e.g. "rrrl".
+                       Default: right-align all except last column.
+        truncate_last: if True, truncate last column to fit terminal width.
+        """
+        self.columns = columns
+        self.rows: list[list[str]] = []
+        n = len(columns)
+        if alignments is None:
+            self.alignments = ['r'] * (n - 1) + ['l'] if n > 1 else ['l']
+        else:
+            self.alignments = list(alignments.ljust(n, 'l'))
+        self.truncate_last = truncate_last
+
+    def add(self, *values) -> Table:
+        """Add a row. Values are converted to strings."""
+        self.rows.append([str(v) for v in values])
+        return self
+
+    def render(self, fmt: str = 'table') -> str:
+        """Render the table as a string.
+
+        fmt: 'table' for padded columns, 'tsv' for tab-separated.
+        """
+        if fmt == 'tsv':
+            return self._render_tsv()
+        return self._render_table()
+
+    def _terminal_width(self) -> int:
+        try:
+            return os.get_terminal_size().columns
+        except (OSError, ValueError):
+            return 120
+
+    def _render_tsv(self) -> str:
+        lines = ['\t'.join(self.columns)]
+        for row in self.rows:
+            lines.append('\t'.join(row))
+        return '\n'.join(lines)
+
+    def _render_table(self) -> str:
+        n = len(self.columns)
+        # Auto-calculate widths from headers and all data rows
+        widths = [len(c) for c in self.columns]
+        for row in self.rows:
+            for i, cell in enumerate(row):
+                if i < n:
+                    widths[i] = max(widths[i], len(cell))
+
+        # If truncate_last, compute max width for last column to fit terminal
+        max_last: int | None = None
+        if self.truncate_last and n > 1:
+            prefix_w = sum(widths[:-1]) + 2 * (n - 1)
+            term_w = self._terminal_width()
+            max_last = max(term_w - prefix_w, 20)
+
+        def fmt_cell(val: str, idx: int) -> str:
+            w = widths[idx]
+            if max_last is not None and idx == n - 1:
+                if len(val) > max_last:
+                    val = val[:max_last - 3] + '...'
+                w = min(w, max_last)
+            if self.alignments[idx] == 'r':
+                return val.rjust(w)
+            return val.ljust(w)
+
+        lines: list[str] = []
+        header = '  '.join(fmt_cell(c, i) for i, c in enumerate(self.columns))
+        lines.append(header)
+
+        for row in self.rows:
+            padded = row + [''] * (n - len(row))
+            line = '  '.join(fmt_cell(padded[i], i) for i in range(n))
+            lines.append(line.rstrip())
+        return '\n'.join(lines)
+
+    def to_dicts(self) -> list[dict[str, str]]:
+        """Return rows as list of dicts keyed by column name (for JSON)."""
+        result = []
+        for row in self.rows:
+            d: dict[str, str] = {}
+            for i, col in enumerate(self.columns):
+                d[col] = row[i] if i < len(row) else ''
+            result.append(d)
+        return result
+
+    def __str__(self) -> str:
+        return self.render()
 
 
 # ---------------------------------------------------------------------------
@@ -55,12 +164,42 @@ from typing import Sequence
 
 class TableWriter:
     """Writes aligned table or TSV output.  Handles headers, section breaks,
-    and key-value lines.  All output goes through this so --format and --quiet
-    are respected everywhere."""
+    and key-value lines.  All output goes through this so --format, --quiet,
+    --head and --tail are respected everywhere.
 
-    def __init__(self, fmt: str = "table", quiet: bool = False):
+    When head/tail limits are set, all output is buffered and truncated at
+    flush time (end of command).  Otherwise output streams directly."""
+
+    def __init__(self, fmt: str = "table", quiet: bool = False,
+                 head: int | None = None, tail: int | None = None):
         self.tsv = (fmt == "tsv")
         self.quiet = quiet
+        self._head = head
+        self._tail = tail
+        self._buffered = head is not None or tail is not None
+        self._buf: list[str] = []
+
+    # -- internal output -----------------------------------------------------
+
+    def _emit(self, line: str) -> None:
+        """Route a line to stdout or the internal buffer."""
+        if self._buffered:
+            self._buf.append(line)
+        else:
+            print(line)
+
+    def flush(self) -> None:
+        """Flush buffered output, applying --head/--tail truncation."""
+        if not self._buffered:
+            return
+        lines = self._buf
+        if self._tail is not None:
+            lines = lines[-self._tail:]
+        if self._head is not None:
+            lines = lines[:self._head]
+        for line in lines:
+            print(line)
+        self._buf.clear()
 
     # -- primitives ---------------------------------------------------------
 
@@ -68,43 +207,43 @@ class TableWriter:
         """Print a section header (suppressed in quiet or tsv mode)."""
         if self.quiet or self.tsv:
             return
-        print()
-        print(f"=== {title} ===")
+        self._emit("")
+        self._emit(f"=== {title} ===")
 
     def blank(self) -> None:
         """Print an empty line (suppressed in tsv mode)."""
         if not self.tsv:
-            print()
+            self._emit("")
 
     def separator(self, width: int = 60) -> None:
         """Print a horizontal rule (suppressed in tsv/quiet mode)."""
         if self.quiet or self.tsv:
             return
-        print("-" * width)
+        self._emit("-" * width)
 
     def kv(self, key: str, value) -> None:
         """Print a key: value line."""
         if self.tsv:
-            print(f"{key}\t{value}")
+            self._emit(f"{key}\t{value}")
         else:
-            print(f"{key}: {value}")
+            self._emit(f"{key}: {value}")
 
     def kv_indented(self, key: str, value, indent: int = 2) -> None:
         """Print an indented key: value line."""
         if self.tsv:
-            print(f"{key}\t{value}")
+            self._emit(f"{key}\t{value}")
         else:
-            print(f"{' ' * indent}{key}: {value}")
+            self._emit(f"{' ' * indent}{key}: {value}")
 
     def info(self, msg: str) -> None:
         """Print an informational line (suppressed in quiet mode)."""
         if self.quiet:
             return
-        print(msg)
+        self._emit(msg)
 
     def warn(self, msg: str) -> None:
         """Print a warning line (never suppressed)."""
-        print(f"WARNING: {msg}")
+        self._emit(f"WARNING: {msg}")
 
     def row(self, cells: Sequence, widths: Sequence[int] | None = None,
             aligns: str | None = None) -> None:
@@ -115,7 +254,7 @@ class TableWriter:
         per position.  In TSV mode widths/aligns are ignored.
         """
         if self.tsv:
-            print("\t".join(str(c) for c in cells))
+            self._emit("\t".join(str(c) for c in cells))
             return
         parts: list[str] = []
         for i, cell in enumerate(cells):
@@ -136,7 +275,7 @@ class TableWriter:
                     parts.append(s.ljust(w))
             else:
                 parts.append(s)
-        print("  ".join(parts))
+        self._emit("  ".join(parts))
 
     def header_row(self, cells: Sequence, widths: Sequence[int] | None = None,
                    aligns: str | None = None) -> None:
@@ -151,7 +290,38 @@ class TableWriter:
             return
         if self.tsv:
             return
-        print(f"  ... {msg}")
+        self._emit(f"  ... {msg}")
+
+
+# ---------------------------------------------------------------------------
+# Auto-detection
+# ---------------------------------------------------------------------------
+
+def auto_detect_trace() -> str | None:
+    """Find the most recent trace JSONL file in /tmp/."""
+    candidates: list[str] = []
+    for pattern in ["trace*.jsonl", "z3*.jsonl"]:
+        candidates.extend(globmod.glob(f"/tmp/{pattern}"))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return candidates[0]
+
+
+def resolve_trace_path(raw: str | None) -> str:
+    """Resolve a trace file path: use explicit arg, or auto-detect from /tmp/.
+    Prints which file was chosen to stderr when auto-detecting."""
+    if raw:
+        return raw
+    detected = auto_detect_trace()
+    if detected:
+        print(f"# auto-detected trace: {detected}", file=sys.stderr)
+        return detected
+    print("error: no trace file specified and none found in /tmp/",
+          file=sys.stderr)
+    print("hint: look for trace*.jsonl or z3*.jsonl, or pass path explicitly",
+          file=sys.stderr)
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +403,16 @@ def fmt_num(n) -> str:
 
 def safe_div(a: float, b: float, default: float = 0.0) -> float:
     return a / b if b != 0 else default
+
+
+def build_useful_set(events: list[dict]) -> set[str]:
+    """Return set of quantifier names that appear in any CONFLICT qi array."""
+    useful: set[str] = set()
+    for e in events:
+        if e.get("t") == "CONFLICT":
+            for qi in e.get("qi", []):
+                useful.add(qi.get("q", "?"))
+    return useful
 
 
 # ---------------------------------------------------------------------------
@@ -622,16 +802,18 @@ def show_timeline(events: list[dict], groups: dict[str, list[dict]],
 # ---------------------------------------------------------------------------
 
 def cmd_show(args) -> None:
-    w = TableWriter(fmt=args.format, quiet=args.quiet)
-    events = load_trace(args.trace)
-    check_nonempty_trace(events, args.trace)
+    w = TableWriter(fmt=args.format, quiet=args.quiet,
+                    head=args.head, tail=args.tail)
+    trace_path = resolve_trace_path(args.trace)
+    events = load_trace(trace_path)
+    check_nonempty_trace(events, trace_path)
     groups = by_type(events)
 
     sections = args.section if args.section else SHOW_SECTIONS
 
     for sec in sections:
         if sec == "overview":
-            show_overview(events, groups, w, args.trace)
+            show_overview(events, groups, w, trace_path)
         elif sec == "top":
             show_top(events, groups, w,
                      sort_by=args.by or "reward",
@@ -649,13 +831,16 @@ def cmd_show(args) -> None:
                   f"Valid: {', '.join(SHOW_SECTIONS)}", file=sys.stderr)
             sys.exit(1)
 
+    w.flush()
+
 
 # ---------------------------------------------------------------------------
 # Command: diff
 # ---------------------------------------------------------------------------
 
 def cmd_diff(args) -> None:
-    w = TableWriter(fmt=args.format, quiet=args.quiet)
+    w = TableWriter(fmt=args.format, quiet=args.quiet,
+                    head=args.head, tail=args.tail)
     evA = load_trace(args.base)
     evB = load_trace(args.other)
 
@@ -733,13 +918,16 @@ def cmd_diff(args) -> None:
     else:
         w.info("(identical)")
 
+    w.flush()
+
 
 # ---------------------------------------------------------------------------
 # Command: diagnose
 # ---------------------------------------------------------------------------
 
 def cmd_diagnose(args) -> None:
-    w = TableWriter(fmt=args.format, quiet=args.quiet)
+    w = TableWriter(fmt=args.format, quiet=args.quiet,
+                    head=args.head, tail=args.tail)
     evBase = load_trace(args.base)
     evReg = load_trace(args.regressed)
 
@@ -849,14 +1037,35 @@ def cmd_diagnose(args) -> None:
         for q, a, b, d in changes[:15]:
             w.row([f"{d:+d}", a, b, q], widths_ch)
 
+    w.flush()
+
 
 # ---------------------------------------------------------------------------
 # Command: filter
 # ---------------------------------------------------------------------------
 
 def cmd_filter(args) -> None:
-    w = TableWriter(fmt=args.format, quiet=args.quiet)
-    events = load_trace(args.trace)
+    w = TableWriter(fmt=args.format, quiet=args.quiet,
+                    head=args.head, tail=args.tail)
+    trace_path = resolve_trace_path(args.trace)
+    events = load_trace(trace_path)
+
+    # Handle preset shortcuts (they imply --type QI_INSERT)
+    if args.expensive:
+        args.type = args.type or "QI_INSERT"
+        if args.min_cost is None:
+            args.min_cost = 10.0
+
+    if args.useful or args.wasted:
+        useful_set = build_useful_set(events)
+        # Restrict to QI_INSERT events
+        events = [e for e in events if e.get("t") == "QI_INSERT"]
+        if args.useful:
+            events = [e for e in events if e.get("q", "?") in useful_set]
+        elif args.wasted:
+            events = [e for e in events if e.get("q", "?") not in useful_set]
+        # Don't apply --type again since we already filtered
+        args.type = None
 
     if args.type:
         events = [e for e in events if e.get("t") == args.type]
@@ -872,11 +1081,218 @@ def cmd_filter(args) -> None:
     limit = args.limit or 50
     w.kv("matched", len(events))
     for e in events[:limit]:
-        print(json.dumps(e))
+        w._emit(json.dumps(e))
 
     if len(events) > limit:
         print(f"# ... {len(events) - limit} more (use --limit N)",
               file=sys.stderr)
+
+    w.flush()
+
+
+# ---------------------------------------------------------------------------
+# Command: run
+# ---------------------------------------------------------------------------
+
+def find_z3_binary() -> str:
+    """Find z3 binary: check build/z3 relative to repo root, then PATH."""
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent
+    for candidate in [
+        repo_root / "build" / "z3",
+        repo_root / "build" / "Release" / "z3",
+        repo_root / "build" / "Debug" / "z3",
+    ]:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    found = shutil.which("z3")
+    if found:
+        return found
+    return "z3"
+
+
+def cmd_run(args) -> None:
+    z3_bin = args.z3 or find_z3_binary()
+
+    if not shutil.which(z3_bin) and not os.path.isfile(z3_bin):
+        print(f"error: z3 binary not found: {z3_bin}", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.isfile(args.input):
+        print(f"error: input file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+
+    fd, trace_path = tempfile.mkstemp(prefix="z3trace_", suffix=".jsonl")
+    os.close(fd)
+
+    try:
+        # Build Z3 command line
+        z3_cmd = [z3_bin, args.input, f"smt.adaptive_log={trace_path}"]
+        if args.feedback:
+            z3_cmd.append("smt.qi.feedback=true")
+        if args.auto_tune:
+            z3_cmd.append("smt.auto_tune=true")
+        timeout_sec = args.timeout or 60
+        z3_cmd.append(f"-T:{timeout_sec}")
+
+        # Pass through any extra Z3 parameters
+        if args.extra:
+            z3_cmd.extend(args.extra)
+
+        print(f"# running: {' '.join(z3_cmd)}", file=sys.stderr)
+
+        try:
+            result = subprocess.run(
+                z3_cmd, capture_output=True, text=True,
+                timeout=timeout_sec * 2 + 10,
+            )
+            if result.stdout.strip():
+                print(f"# z3 output: {result.stdout.strip()}", file=sys.stderr)
+            if result.returncode != 0 and result.stderr.strip():
+                print(f"# z3 stderr: {result.stderr.strip()}", file=sys.stderr)
+        except subprocess.TimeoutExpired:
+            print(f"# z3 timed out (subprocess killed)", file=sys.stderr)
+
+        # Check trace was produced
+        if not os.path.isfile(trace_path) or os.path.getsize(trace_path) == 0:
+            print("error: no trace produced (z3 may have exited before INIT)",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        # Determine which sections to display
+        sections = [s.strip() for s in args.section.split(",")]
+
+        # Reuse cmd_show with a synthetic args namespace
+        show_args = argparse.Namespace(
+            trace=trace_path,
+            format=args.format,
+            quiet=args.quiet,
+            head=args.head,
+            tail=args.tail,
+            section=sections,
+            by="reward",
+            n=10,
+            limit=10,
+            q=None,
+        )
+        cmd_show(show_args)
+
+        if args.keep_trace:
+            print(f"# trace kept at: {trace_path}", file=sys.stderr)
+    finally:
+        if not args.keep_trace:
+            try:
+                os.unlink(trace_path)
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Command: batch
+# ---------------------------------------------------------------------------
+
+def cmd_batch(args) -> None:
+    z3_bin = args.z3 or find_z3_binary()
+
+    # Collect input files
+    target = args.target
+    input_files: list[str] = []
+    if os.path.isdir(target):
+        for f in sorted(Path(target).glob("*.smt2")):
+            input_files.append(str(f))
+    else:
+        input_files = sorted(globmod.glob(target))
+
+    if not input_files:
+        print(f"error: no .smt2 files found matching: {target}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    print(f"# found {len(input_files)} input files", file=sys.stderr)
+
+    w = TableWriter(fmt=args.format, quiet=args.quiet,
+                    head=args.head, tail=args.tail)
+
+    name_width = max(len(Path(f).stem) for f in input_files)
+    name_width = max(name_width, 6)
+
+    widths = [-name_width, 7, 9, 8, 9, -50]
+    headers = ["QUERY", "RESULT", "CONFLICTS", "QI_TOTAL",
+               "QI_USEFUL", "TOP_QUANTIFIER"]
+    w.header_row(headers, widths)
+    w.separator(name_width + 7 + 9 + 8 + 9 + 50 + 10)
+
+    timeout_sec = args.timeout or 60
+
+    for input_file in input_files:
+        query_name = Path(input_file).stem
+
+        fd, trace_path = tempfile.mkstemp(prefix="z3batch_", suffix=".jsonl")
+        os.close(fd)
+
+        try:
+            z3_cmd = [z3_bin, input_file, f"smt.adaptive_log={trace_path}"]
+            if args.feedback:
+                z3_cmd.append("smt.qi.feedback=true")
+            if args.auto_tune:
+                z3_cmd.append("smt.auto_tune=true")
+            z3_cmd.append(f"-T:{timeout_sec}")
+
+            try:
+                result = subprocess.run(
+                    z3_cmd, capture_output=True, text=True,
+                    timeout=timeout_sec * 2 + 10,
+                )
+                z3_stdout = result.stdout.strip().split("\n")[0] \
+                    if result.stdout.strip() else "?"
+            except subprocess.TimeoutExpired:
+                z3_stdout = "TIMEOUT"
+
+            # Analyze trace
+            if os.path.isfile(trace_path) and os.path.getsize(trace_path) > 0:
+                events = load_trace(trace_path)
+                groups = by_type(events)
+
+                conflicts = groups.get("CONFLICT", [])
+                inserts = groups.get("QI_INSERT", [])
+                solves = groups.get("SOLVE", [])
+
+                solve_result = z3_stdout
+                if solves:
+                    solve_result = solves[-1].get("result", z3_stdout)
+
+                num_conflicts = len(conflicts)
+                qi_total = len(inserts)
+
+                useful_names = build_useful_set(events)
+                qi_useful = sum(1 for e in inserts
+                                if e.get("q", "?") in useful_names)
+
+                if inserts:
+                    inst_count = Counter(e.get("q", "?") for e in inserts)
+                    top_q_name, top_q_count = inst_count.most_common(1)[0]
+                    top_q_str = f"{top_q_name} ({top_q_count})"
+                else:
+                    top_q_str = "-"
+            else:
+                solve_result = z3_stdout
+                num_conflicts = 0
+                qi_total = 0
+                qi_useful = 0
+                top_q_str = "-"
+
+            w.row([query_name, solve_result, num_conflicts, qi_total,
+                   qi_useful, top_q_str], widths)
+
+        finally:
+            try:
+                os.unlink(trace_path)
+            except OSError:
+                pass
+
+    w.separator(name_width + 7 + 9 + 8 + 9 + 50 + 10)
+    w.info(f"# {len(input_files)} queries processed")
+    w.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -885,14 +1301,24 @@ def cmd_filter(args) -> None:
 
 USAGE_EXAMPLES = """
 examples:
-  z3trace.py show trace.jsonl                         # all sections
-  z3trace.py show trace.jsonl --section overview top   # specific sections
+  z3trace.py show                                      # auto-detect trace
+  z3trace.py show trace.jsonl                          # all sections
+  z3trace.py show trace.jsonl --section overview top    # specific sections
   z3trace.py show trace.jsonl --section top --by inst --n 30
   z3trace.py show trace.jsonl --section timeline --q "my_lemma"
-  z3trace.py show trace.jsonl --format tsv --quiet     # machine-readable
+  z3trace.py show trace.jsonl --format tsv --quiet      # machine-readable
+  z3trace.py --head 20 show trace.jsonl                 # first 20 lines only
+  z3trace.py --tail 10 show trace.jsonl                 # last 10 lines only
   z3trace.py diff base.jsonl other.jsonl
   z3trace.py diagnose base.jsonl regressed.jsonl
   z3trace.py filter trace.jsonl --type QI_INSERT --q "lemma" --min-cost 5
+  z3trace.py filter --expensive                         # auto-detect, cost>=10
+  z3trace.py filter --useful                            # quantifiers in conflicts
+  z3trace.py filter --wasted                            # quantifiers never useful
+  z3trace.py run input.smt2 --feedback                  # run Z3 + analyze
+  z3trace.py run input.smt2 --section overview,top      # run + specific sections
+  z3trace.py batch ./benchmarks/ --feedback --timeout 30
+  z3trace.py batch "tests/*.smt2" --auto-tune
 
 sections for 'show':
   overview   Event counts, QI/conflict/reward/restart summaries, result
@@ -916,6 +1342,10 @@ def main() -> None:
                              "or tsv (tab-separated, no decoration)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress section headers and decorative lines")
+    parser.add_argument("--head", type=int, default=None,
+                        help="Show only the first N lines of output")
+    parser.add_argument("--tail", type=int, default=None,
+                        help="Show only the last N lines of output")
 
     sub = parser.add_subparsers(dest="cmd")
 
@@ -926,7 +1356,8 @@ def main() -> None:
         description="Unified single-trace analysis.  Shows all sections by "
                     "default, or use --section to pick specific ones.",
     )
-    p.add_argument("trace", help="Path to JSONL trace file")
+    p.add_argument("trace", nargs="?", default=None,
+                   help="Path to JSONL trace file (auto-detected if omitted)")
     p.add_argument("--section", nargs="+", choices=SHOW_SECTIONS,
                    metavar="SECTION",
                    help=f"Sections to show (default: all). "
@@ -972,7 +1403,8 @@ def main() -> None:
         description="Output matching events as JSONL.  Combine multiple "
                     "filters (all must match).",
     )
-    p.add_argument("trace", help="Path to JSONL trace file")
+    p.add_argument("trace", nargs="?", default=None,
+                   help="Path to JSONL trace file (auto-detected if omitted)")
     p.add_argument("--type", help="Event type (QI_INSERT, CONFLICT, etc.)")
     p.add_argument("--q", metavar="NAME",
                    help="Quantifier name substring match")
@@ -984,6 +1416,58 @@ def main() -> None:
                    help="Only events at or before this conflict number")
     p.add_argument("--limit", type=int, default=50,
                    help="Max events to output (default: 50)")
+    p.add_argument("--expensive", action="store_true",
+                   help="Shortcut: QI_INSERT events with cost >= 10")
+    p.add_argument("--useful", action="store_true",
+                   help="Shortcut: QI_INSERT quantifiers that appear "
+                        "in CONFLICT qi arrays")
+    p.add_argument("--wasted", action="store_true",
+                   help="Shortcut: QI_INSERT quantifiers that never "
+                        "appear in any CONFLICT")
+
+    # -- run ----------------------------------------------------------------
+    p = sub.add_parser(
+        "run",
+        help="Run Z3 on a query and analyze the trace",
+        description="Run Z3 with adaptive tracing, then display analysis.  "
+                    "Combines z3 invocation and z3trace show in one step.",
+    )
+    p.add_argument("input", help="Path to .smt2 input file")
+    p.add_argument("--z3", default=None,
+                   help="Path to z3 binary (auto-detected if omitted)")
+    p.add_argument("--feedback", action="store_true",
+                   help="Enable smt.qi.feedback=true")
+    p.add_argument("--auto-tune", action="store_true", dest="auto_tune",
+                   help="Enable smt.auto_tune=true")
+    p.add_argument("--section", default="overview,top",
+                   help="Comma-separated sections to show "
+                        "(default: overview,top)")
+    p.add_argument("--keep-trace", action="store_true", dest="keep_trace",
+                   help="Keep the trace file instead of deleting it")
+    p.add_argument("--timeout", type=int, default=60,
+                   help="Z3 timeout in seconds (default: 60)")
+    p.add_argument("extra", nargs="*",
+                   help="Extra Z3 parameters passed through")
+
+    # -- batch --------------------------------------------------------------
+    p = sub.add_parser(
+        "batch",
+        help="Run analysis on multiple queries, produce comparison table",
+        description="Run Z3 with tracing on each .smt2 file in a directory "
+                    "or glob pattern, and produce a single summary table.",
+    )
+    p.add_argument("target",
+                   help="Directory of .smt2 files or glob pattern")
+    p.add_argument("--z3", default=None,
+                   help="Path to z3 binary (auto-detected if omitted)")
+    p.add_argument("--feedback", action="store_true",
+                   help="Enable smt.qi.feedback=true")
+    p.add_argument("--auto-tune", action="store_true", dest="auto_tune",
+                   help="Enable smt.auto_tune=true")
+    p.add_argument("--timeout", type=int, default=60,
+                   help="Z3 timeout in seconds per query (default: 60)")
+    p.add_argument("--top", type=int, default=5,
+                   help="Unused; reserved for future per-query top-N display")
 
     args = parser.parse_args()
 
@@ -997,6 +1481,8 @@ def main() -> None:
         "diff": cmd_diff,
         "diagnose": cmd_diagnose,
         "filter": cmd_filter,
+        "run": cmd_run,
+        "batch": cmd_batch,
     }
     dispatch[args.cmd](args)
 
