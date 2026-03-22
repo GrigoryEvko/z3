@@ -581,6 +581,35 @@ namespace smt {
             m_curv_count_nonqi = 0;
         }
 
+        // Theory importance skew: summarizes how importance is distributed across theories.
+        struct theory_skew {
+            double arith_imp;   //!< total importance from arithmetic theory atoms
+            double bv_imp;      //!< total importance from bitvector theory atoms
+            double uf_imp;      //!< total importance from all other theories (UF, arrays, etc.)
+            double total;       //!< sum of all theory importance
+            const char * dominant_theory() const {
+                if (total < 1e-6) return "none";
+                if (arith_imp >= bv_imp && arith_imp >= uf_imp) return "arith";
+                if (bv_imp >= arith_imp && bv_imp >= uf_imp) return "bv";
+                return "uf";
+            }
+            double dominant_fraction() const {
+                if (total < 1e-6) return 0.0;
+                double mx = arith_imp;
+                if (bv_imp > mx) mx = bv_imp;
+                if (uf_imp > mx) mx = uf_imp;
+                return mx / total;
+            }
+        };
+
+        // Compute theory importance skew across all bool_vars with importance > threshold.
+        theory_skew compute_importance_skew() const;
+
+        // Compute normalized Shannon entropy of QI reward distribution.
+        // H=1 means rewards spread evenly; H=0 means concentrated on one quantifier.
+        // Returns 0.0 if fewer than 2 quantifiers have reward > floor.
+        double compute_reward_entropy() const;
+
         bool is_assumption(bool_var v) const {
             return get_bdata(v).m_assumption;
         }

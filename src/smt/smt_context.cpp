@@ -4484,6 +4484,27 @@ namespace smt {
         return 0.0;
     }
 
+    context::theory_skew context::compute_importance_skew() const {
+        theory_skew sk = { 0.0, 0.0, 0.0, 0.0 };
+        unsigned sz = std::min(m_theory_importance.size(), m_bdata.size());
+        family_id arith_fid = arith_family_id;
+        family_id bv_fid    = m.mk_family_id("bv");
+        for (unsigned v = 0; v < sz; ++v) {
+            double imp = m_theory_importance[v];
+            if (imp <= 0.001) continue;
+            if (!m_bdata[v].is_theory_atom()) continue;
+            theory_id tid = m_bdata[v].get_theory();
+            if (tid == arith_fid)
+                sk.arith_imp += imp;
+            else if (tid == bv_fid)
+                sk.bv_imp += imp;
+            else
+                sk.uf_imp += imp;
+        }
+        sk.total = sk.arith_imp + sk.bv_imp + sk.uf_imp;
+        return sk;
+    }
+
     /*
       \brief we record and restore relevancy information for literals in conflict clauses.
       A literal may have been marked relevant within the scope that gets popped during
@@ -5191,6 +5212,41 @@ namespace smt {
                      << " quantifiers matched\n";
             );
         }
+    }
+
+    double context::compute_reward_entropy() const {
+        static constexpr double REWARD_FLOOR = 0.02;
+        if (!m_qmanager)
+            return 0.0;
+
+        // Sum rewards above floor and count active quantifiers.
+        double total_reward = 0.0;
+        unsigned count      = 0;
+        for (quantifier * q : *m_qmanager) {
+            q::quantifier_stat * s = m_qmanager->get_stat(q);
+            if (!s) continue;
+            double r = s->get_reward();
+            if (r > REWARD_FLOOR) {
+                total_reward += r;
+                ++count;
+            }
+        }
+        if (count < 2)
+            return 0.0;
+
+        // Shannon entropy: H = -Σ p_q * log(p_q), normalized by log(count).
+        double H = 0.0;
+        for (quantifier * q : *m_qmanager) {
+            q::quantifier_stat * s = m_qmanager->get_stat(q);
+            if (!s) continue;
+            double r = s->get_reward();
+            if (r > REWARD_FLOOR) {
+                double p = r / total_reward;
+                H -= p * log(p);
+            }
+        }
+        double log_count = log(static_cast<double>(count));
+        return (log_count > 1e-15) ? H / log_count : 0.0;
     }
 
 };
