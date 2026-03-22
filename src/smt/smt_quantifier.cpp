@@ -16,6 +16,7 @@ Author:
 Revision History:
 
 --*/
+#include <cmath>
 #include <iomanip>
 #include "ast/ast_pp.h"
 #include "ast/ast_ll_pp.h"
@@ -482,6 +483,22 @@ namespace smt {
                           unsigned min_top_generation,
                           unsigned max_top_generation,
                           vector<std::tuple<enode *, enode *>> & used_enodes) {
+
+            // Fast-reject: skip fingerprint + insert for quantifiers whose
+            // Bayesian surprisal exceeds the lazy threshold.  Uses inserts_total
+            // (incremented on every add_instance call) as evidence.
+            q::quantifier_stat * stat = get_stat(q);
+            if (stat) {
+                stat->inc_inserts_total();
+                unsigned ni = stat->get_inserts_total();
+                unsigned nc = stat->get_num_conflicts();
+                if (nc == 0 && ni > 5000) {
+                    double surprisal = 2.0 * std::log2(static_cast<double>(ni) / 5000.0);
+                    if (surprisal > m_params.m_qi_lazy_threshold) {
+                        return false;
+                    }
+                }
+            }
 
             // Skip multi-trigger instances if single-trigger already produced
             // instances for this quantifier. Single-trigger matches are more

@@ -320,26 +320,9 @@ namespace smt {
     void qi_queue::insert(fingerprint * f, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
         quantifier * q         = static_cast<quantifier*>(f->get_data());
 
-        // Increment per-quantifier insert counter and fast-reject when
-        // the surprisal alone guarantees cost > lazy threshold.
-        // This avoids the full get_cost() evaluation for loop quantifiers
-        // that the matching engine keeps finding triggers for.
-        {
-            q::quantifier_stat * stat = m_qm.get_stat(q);
-            if (stat) {
-                stat->inc_inserts_total();
-                unsigned ni = stat->get_inserts_total();
-                unsigned nc = stat->get_num_conflicts();
-                constexpr unsigned N0 = 5000;
-                if (nc == 0 && ni > N0) {
-                    double surprisal = 2.0 * std::log2(static_cast<double>(ni) / N0);
-                    if (surprisal > m_params.m_qi_lazy_threshold) {
-                        m_stats.m_num_fast_rejected++;
-                        return;  // cost would exceed lazy threshold — skip entirely
-                    }
-                }
-            }
-        }
+        // Note: inc_inserts_total() and surprisal fast-reject now happen
+        // earlier in add_instance() (smt_quantifier.cpp), before the
+        // fingerprint check, so we skip the duplicate work here.
 
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
         float const base_cost  = cost;  // snapshot for inflation cap
@@ -869,6 +852,23 @@ namespace smt {
                 entry & e       = m_delayed_entries[i];
                 TRACE(qi_queue, tout << e.m_qb << ", cost: " << e.m_cost << " min-cost: " << min_cost << ", instantiated: " << e.m_instantiated << "\n";);
                 if (!e.m_instantiated && e.m_cost <= min_cost) {
+                    // Recheck surprisal: the entry's stored cost is from insert time.
+                    // The insert count may have grown since then, making the entry
+                    // effectively too expensive to instantiate.
+                    {
+                        quantifier * qa = static_cast<quantifier*>(e.m_qb->get_data());
+                        q::quantifier_stat * stat = m_qm.get_stat(qa);
+                        if (stat) {
+                            unsigned ni = stat->get_inserts_total();
+                            unsigned nc = stat->get_num_conflicts();
+                            if (nc == 0 && ni > 5000) {
+                                double surprisal = 2.0 * std::log2(static_cast<double>(ni) / 5000.0);
+                                if (e.m_cost + surprisal > m_params.m_qi_lazy_threshold * 2.0) {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
                     TRACE(qi_queue,
                           tout << "lazy quantifier instantiation...\n" << mk_pp(static_cast<quantifier*>(e.m_qb->get_data()), m) << "\ncost: " << e.m_cost << "\n";);
                     result             = false;
@@ -885,6 +885,23 @@ namespace smt {
             entry & e       = m_delayed_entries[i];
             TRACE(qi_queue, tout << e.m_qb << ", cost: " << e.m_cost << ", instantiated: " << e.m_instantiated << "\n";);
             if (!e.m_instantiated && e.m_cost <= m_params.m_qi_lazy_threshold)  {
+                // Recheck surprisal: the entry's stored cost is from insert time.
+                // The insert count may have grown since then, making the entry
+                // effectively too expensive to instantiate.
+                {
+                    quantifier * qa = static_cast<quantifier*>(e.m_qb->get_data());
+                    q::quantifier_stat * stat = m_qm.get_stat(qa);
+                    if (stat) {
+                        unsigned ni = stat->get_inserts_total();
+                        unsigned nc = stat->get_num_conflicts();
+                        if (nc == 0 && ni > 5000) {
+                            double surprisal = 2.0 * std::log2(static_cast<double>(ni) / 5000.0);
+                            if (e.m_cost + surprisal > m_params.m_qi_lazy_threshold * 2.0) {
+                                continue;
+                            }
+                        }
+                    }
+                }
                 TRACE(qi_queue,
                       tout << "lazy quantifier instantiation...\n" << mk_pp(static_cast<quantifier*>(e.m_qb->get_data()), m) << "\ncost: " << e.m_cost << "\n";);
                 result             = false;
