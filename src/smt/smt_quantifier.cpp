@@ -490,16 +490,16 @@ namespace smt {
                           vector<std::tuple<enode *, enode *>> & used_enodes) {
 
             // Fast-reject: skip fingerprint + insert for quantifiers whose
-            // Bayesian surprisal exceeds the lazy threshold.  Uses inserts_total
-            // (incremented on every add_instance call) as evidence.
+            // Bayesian surprisal exceeds the lazy threshold.  Checks
+            // inserts_total WITHOUT incrementing — the counter is incremented
+            // post-fingerprint in qi_queue::insert() so it reflects unique
+            // instances, not total attempts (including fingerprint duplicates).
             q::quantifier_stat * stat = get_stat(q);
             if (stat) {
-                stat->inc_inserts_total();
                 unsigned ni = stat->get_inserts_total();
                 unsigned nc = stat->get_num_conflicts();
                 if (nc == 0 && ni > 5000) {
-                    // Self-loop quantifiers use 2.5x coefficient (matches get_cost)
-                    double coeff = stat->is_self_loop() ? 2.5 : 2.0;
+                    double coeff = 2.0;
                     double surprisal = coeff * std::log2(static_cast<double>(ni) / 5000.0);
                     if (surprisal > m_params.m_qi_lazy_threshold) {
                         return false;

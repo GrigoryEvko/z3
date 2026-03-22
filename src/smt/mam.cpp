@@ -3992,10 +3992,19 @@ namespace {
                 });
 
 #endif
-            // Per-quantifier match budget: cut unproductive self-loop quantifiers at the source
+            // Soft MAM match budget: track remaining matches per quantifier.
+            // When budget is exhausted, probabilistically skip matches
+            // rather than hard-blocking — allows occasional instances
+            // through for quantifiers that might still be productive.
             q::quantifier_stat * stat = m_context.get_quantifier_stat(qa);
             if (stat) {
-                if (stat->get_match_budget() == 0) return;
+                if (stat->get_match_budget() == 0) {
+                    // Soft skip: allow 1-in-16 matches through even when budget is 0.
+                    // This prevents complete starvation of self-loop quantifiers
+                    // that are actually productive (legitimate recursive axioms).
+                    if ((m_context.get_num_conflicts() & 0xF) != 0)
+                        return;
+                }
                 stat->dec_match_budget();
             }
 

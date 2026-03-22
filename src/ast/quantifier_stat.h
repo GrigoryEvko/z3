@@ -172,17 +172,21 @@ namespace q {
          * Non-self-loop quantifiers: unlimited (they don't cause matching loops).
          */
         void refresh_match_budget() {
-            if (!m_is_self_loop || m_num_conflicts > 0) {
+            if (m_num_conflicts > 0 || !m_is_self_loop) {
                 m_match_budget = 100000;
                 return;
             }
-            // Self-loop quantifier with zero conflict utility
+            // Self-loop quantifier with zero conflict utility.
+            // Use a gentler decay: budget starts dropping after 10K inserts
+            // and bottoms out at 10K matches (still generous enough for
+            // legitimate recursive axioms in F*/Pulse).
             unsigned ni = m_inserts_total;
-            if (ni < 5000) {
-                m_match_budget = 100000; // warmup: generous
+            if (ni < 10000) {
+                m_match_budget = 100000;
             } else {
-                double decay = 1.0 + std::log2(static_cast<double>(ni) / 5000.0);
-                m_match_budget = static_cast<unsigned>(10000.0 / decay);
+                double decay = 1.0 + std::log2(static_cast<double>(ni) / 10000.0);
+                m_match_budget = static_cast<unsigned>(50000.0 / decay);
+                if (m_match_budget < 10000) m_match_budget = 10000;
             }
         }
 

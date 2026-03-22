@@ -225,7 +225,7 @@ namespace smt {
             // productive recursive quantifiers during the N0 warmup window.
             constexpr unsigned N0 = 5000;
             if (k == 0 && n > N0) {
-                double coeff = stat->is_self_loop() ? 2.5 : 2.0;
+                double coeff = 2.0;
                 r += static_cast<float>(coeff * std::log2(static_cast<double>(n) / N0));
             }
         }
@@ -325,9 +325,13 @@ namespace smt {
     void qi_queue::insert(fingerprint * f, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
         quantifier * q         = static_cast<quantifier*>(f->get_data());
 
-        // Note: inc_inserts_total() and surprisal fast-reject now happen
-        // earlier in add_instance() (smt_quantifier.cpp), before the
-        // fingerprint check, so we skip the duplicate work here.
+        // Increment inserts_total here (post-fingerprint) so it counts
+        // unique instances only, not fingerprint-rejected duplicates.
+        // The fast-reject in add_instance() reads this counter without
+        // incrementing, so it stays in sync.
+        q::quantifier_stat * stat = m_qm.get_stat(q);
+        if (stat)
+            stat->inc_inserts_total();
 
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
         float const base_cost  = cost;  // snapshot for inflation cap
@@ -853,22 +857,13 @@ namespace smt {
         }
         m_last_conflict_count = current_conflicts;
 
-        // Effective lazy threshold tightens with streak length.
-        // Exponential decay: threshold halves every 5 rounds of no conflicts.
-        //   streak 0-4: full lazy threshold (20.0)
-        //   streak 5:   20 / 1    = 20.0 (just starting)
-        //   streak 10:  20 / 2    = 10.0
-        //   streak 15:  20 / 4    = 5.0
-        //   streak 20:  20 / 8    = 2.5
-        //   streak 30:  20 / 32   = 0.625
-        // Floor at 0.5 to prevent total blockage (allow cheapest lazy through).
+        // The lazy threshold is kept at its default value.  Loop suppression
+        // is handled by the per-quantifier surprisal gate in the processing
+        // loop below.  A streak-based global tightening was attempted but
+        // noise conflicts from unrelated quantifiers kept resetting the
+        // streak in Boogie incremental queries, while also blocking useful
+        // delayed entries in F*/Pulse queries that need them.
         double effective_lazy = m_params.m_qi_lazy_threshold;
-        if (m_final_check_no_conflict_streak > 4) {
-            double halvings = static_cast<double>(m_final_check_no_conflict_streak - 4) / 5.0;
-            effective_lazy = m_params.m_qi_lazy_threshold / std::pow(2.0, halvings);
-            if (effective_lazy < 0.5)
-                effective_lazy = 0.5;
-        }
 
         TRACE(qi_queue, display_delayed_instances_stats(tout); tout << "lazy threshold: " << m_params.m_qi_lazy_threshold
               << " (effective: " << effective_lazy << ", streak: " << m_final_check_no_conflict_streak << ")"
@@ -910,7 +905,7 @@ namespace smt {
                             unsigned nc = stat->get_num_conflicts();
                             constexpr unsigned N0 = 5000;
                             if (nc == 0 && ni > N0) {
-                                double coeff = stat->is_self_loop() ? 2.5 : 2.0;
+                                double coeff = 2.0;
                                 double surprisal = coeff * std::log2(static_cast<double>(ni) / N0);
                                 if (surprisal > m_eager_cost_threshold) {
                                     continue;
@@ -943,7 +938,7 @@ namespace smt {
                         unsigned nc = stat->get_num_conflicts();
                         constexpr unsigned N0 = 5000;
                         if (nc == 0 && ni > N0) {
-                            double coeff = stat->is_self_loop() ? 2.5 : 2.0;
+                            double coeff = 2.0;
                             double surprisal = coeff * std::log2(static_cast<double>(ni) / N0);
                             if (surprisal > m_eager_cost_threshold) {
                                 continue;
