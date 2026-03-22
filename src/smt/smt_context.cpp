@@ -286,7 +286,10 @@ namespace smt {
             }
             // A1: belief variance — EMA of squared phase-flip deltas.
             // delta=1 when phase flips, 0 when it doesn't; delta^2 = delta.
-            if (m_fparams.m_auto_tune) {
+            // Always accumulated (cheap: one multiply + add) to avoid a conditional
+            // branch in this hot path that changes code layout and amplifies
+            // ASLR-induced timing nondeterminism.
+            {
                 double delta = (d.m_phase != !l.sign()) ? 1.0 : 0.0;
                 m_belief_variance = 0.99 * m_belief_variance + 0.01 * delta;
             }
