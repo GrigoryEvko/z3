@@ -325,6 +325,14 @@ namespace smt {
 
         unsigned                    m_final_check_idx = 0; // circular counter used for implementing fairness
 
+        // E13.1: per-theory conflict counter and final_check reordering
+        svector<unsigned>           m_th_conflict_count;    //!< per theory_set index conflict count
+        unsigned_vector             m_thid_to_set_idx;      //!< theory_id (family_id) -> m_theory_set index
+        unsigned_vector             m_final_check_order;    //!< permutation of m_theory_set indices, sorted by conflict count
+
+        // E13.2: bridge conflict detection (multi-theory lemmas)
+        unsigned                    m_bridge_conflict_count { 0 }; //!< count of conflicts spanning 2+ theories
+
         bool                        m_is_auxiliary = false; // used to prevent unwanted information from being logged.
         class parallel*             m_par = nullptr;
         unsigned                    m_par_index = 0;
@@ -377,6 +385,10 @@ namespace smt {
         // E5: failure recording — hashes that repeatedly fail skip warm-start
         static constexpr unsigned   MAX_FAILURE_CACHE         = 128;
         std::unordered_map<uint64_t, unsigned> m_failure_cache;
+
+        // E14: persistent cross-session learning
+        bool                        m_persistent_cache_loaded = false;
+        bool                        m_persistent_cache_dirty  = false;
 
         // -----------------------------------
         //
@@ -1575,6 +1587,10 @@ namespace smt {
             return m_num_conflicts;
         }
 
+        unsigned get_restart_count() const {
+            return m_restart_count;
+        }
+
         static bool is_eq(enode const * n1, enode const * n2) { return n1->get_root() == n2->get_root(); }
 
         bool is_diseq(enode * n1, enode * n2) const;
@@ -1726,6 +1742,12 @@ namespace smt {
         void bump_theory_importance(unsigned num_lits, literal const * lits);
 
         void decay_theory_importance();
+
+        // E13.1: sort final_check_order by per-theory conflict count (descending)
+        void sort_final_check_order();
+
+        // E13.2: detect bridge conflicts (multi-theory lemmas) and apply 1.5x activity bump
+        void detect_bridge_conflict(unsigned num_lits, literal const * lits);
 
         void bump_soft_relevancy(unsigned num_lits, literal const * lits);
 

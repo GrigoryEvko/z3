@@ -45,6 +45,7 @@ Revision History:
 #include "smt/smt_model_finder.h"
 #include "smt/smt_parallel.h"
 #include "smt/smt_arith_value.h"
+#include "smt/smt_persistent_cache.h"
 #include "ast/static_features.h"
 #include <iostream>
 
@@ -186,6 +187,11 @@ namespace smt {
     }
 
     context::~context() {
+        // E14: Save persistent cache if dirty and not already saved
+        if (m_persistent_cache_dirty && !m_fparams.m_cache_file.empty()) {
+            persistent_cache::save(m_fparams.m_cache_file, m_proof_cache, m_failure_cache, m_proof_cache_generation);
+            m_persistent_cache_dirty = false;
+        }
         flush();
         m_asserted_formulas.finalize();
     }
@@ -2867,7 +2873,20 @@ namespace smt {
         SASSERT(std::find(m_theory_set.begin(), m_theory_set.end(), th) == m_theory_set.end());
         m_theories.register_plugin(th);
         th->init();
+        unsigned set_idx = m_theory_set.size();
         m_theory_set.push_back(th);
+
+        // E13.1: maintain theory_id -> m_theory_set index mapping and conflict counter
+        theory_id tid = th->get_family_id();
+        if (tid >= 0) {
+            unsigned utid = static_cast<unsigned>(tid);
+            if (utid >= m_thid_to_set_idx.size())
+                m_thid_to_set_idx.resize(utid + 1, UINT_MAX);
+            m_thid_to_set_idx[utid] = set_idx;
+        }
+        m_th_conflict_count.resize(set_idx + 1, 0);
+        m_final_check_order.resize(set_idx + 1);
+        m_final_check_order[set_idx] = set_idx;
         {
 #ifdef Z3DEBUG
             // It is unsafe to invoke push_trail from the method push_scope_eh.
@@ -3523,6 +3542,18 @@ namespace smt {
             m_applied_strategy_hash = 0;
         }
 
+        // E14: Save persistent cache on UNSAT if configured
+        if (r == l_false && !m_fparams.m_cache_file.empty()) {
+            m_persistent_cache_dirty = true;
+            ++m_proof_cache_generation;
+            persistent_cache::save(m_fparams.m_cache_file, m_proof_cache, m_failure_cache, m_proof_cache_generation);
+            TRACE(proof_strategy,
+                tout << "persistent cache saved to " << m_fparams.m_cache_file
+                     << ": " << m_proof_cache.size() << " strategies, gen="
+                     << m_proof_cache_generation << "\n";
+            );
+        }
+
         if (r == l_true && gparams::get_value("model_validate") == "true") {
             recfun::util u(m);
             if (u.get_rec_funs().empty() && m_proto_model) {
@@ -3635,6 +3666,18 @@ namespace smt {
         } catch (oom_exception&) {
             return l_undef;
         }
+
+        // E14: Load persistent cache on first check if configured
+        if (!m_fparams.m_cache_file.empty() && !m_persistent_cache_loaded) {
+            persistent_cache::load(m_fparams.m_cache_file, m_proof_cache, m_failure_cache);
+            m_persistent_cache_loaded = true;
+            TRACE(proof_strategy,
+                tout << "persistent cache loaded from " << m_fparams.m_cache_file
+                     << ": " << m_proof_cache.size() << " strategies, "
+                     << m_failure_cache.size() << " failures\n";
+            );
+        }
+
         expr_ref_vector theory_assumptions(m);
         add_theory_assumptions(theory_assumptions);
         if (!theory_assumptions.empty()) {
@@ -3796,6 +3839,10 @@ namespace smt {
         m_unsat_core                   .reset();
         m_dyn_ack_manager              .init_search_eh();
         m_final_check_idx              = 0;
+        // E13: reset per-theory conflict counters and bridge counter on search init.
+        for (unsigned i = 0; i < m_th_conflict_count.size(); ++i)
+            m_th_conflict_count[i] = 0;
+        m_bridge_conflict_count        = 0;
         m_phase_default                = false;
         m_case_split_queue             ->init_search_eh();
         m_next_progress_sample         = 0;
@@ -4396,7 +4443,10 @@ namespace smt {
             TRACE(final_check_step, tout << "processing: " << m_final_check_idx << ", result: " << result << "\n";);
             final_check_status ok;
             if (m_final_check_idx < num_th) {
-                theory * th = m_theory_set[m_final_check_idx];
+                // E13.1: use permutation array for conflict-frequency-ordered traversal
+                unsigned th_idx = (m_final_check_idx < m_final_check_order.size())
+                    ? m_final_check_order[m_final_check_idx] : m_final_check_idx;
+                theory * th = m_theory_set[th_idx];
                 IF_VERBOSE(100, verbose_stream() << "(smt.final-check \"" << th->get_name() << "\")\n";);
                 ok = th->final_check_eh(level);
                 max_level = std::max(max_level, th->num_final_check_levels());
@@ -4549,6 +4599,10 @@ namespace smt {
                 m_th_imp_decay_counter = 0;
                 decay_theory_importance();
             }
+
+            // E13.2: detect bridge conflicts (multi-theory lemmas) and boost activity.
+            // Must be done before pop_scope_core since m_bdata is needed.
+            detect_bridge_conflict(num_lits, lits);
 
             // Bump soft relevancy for all literals in the conflict lemma.
             bump_soft_relevancy(num_lits, lits);
@@ -4846,12 +4900,27 @@ namespace smt {
     }
 
     void context::bump_theory_importance(unsigned num_lits, literal const * lits) {
+        // E13.1: track which theories appear so we can increment per-theory conflict counters.
+        uint64_t seen_theories = 0;
         for (unsigned i = 0; i < num_lits; ++i) {
             bool_var v = lits[i].var();
             if (v < m_theory_importance.size() && v < m_bdata.size() && get_bdata(v).is_theory_atom()) {
                 double & imp = m_theory_importance[v];
                 imp = 0.95 * imp + 0.05;
+                // E13.1: map theory_id -> set index for conflict counting
+                theory_id tid = get_bdata(v).get_theory();
+                if (tid >= 0 && static_cast<unsigned>(tid) < m_thid_to_set_idx.size()) {
+                    unsigned idx = m_thid_to_set_idx[static_cast<unsigned>(tid)];
+                    if (idx < 64 && idx < m_th_conflict_count.size())
+                        seen_theories |= (1ULL << idx);
+                }
             }
+        }
+        // Increment conflict counter for each distinct theory in this conflict.
+        while (seen_theories) {
+            unsigned idx = __builtin_ctzll(seen_theories);
+            m_th_conflict_count[idx]++;
+            seen_theories &= seen_theories - 1;
         }
     }
 
@@ -4859,6 +4928,87 @@ namespace smt {
         unsigned sz = m_theory_importance.size();
         for (unsigned i = 0; i < sz; ++i)
             m_theory_importance[i] *= 0.99;
+    }
+
+    /**
+     * E13.1: Sort m_final_check_order by per-theory conflict count descending.
+     * Called at each restart (meta_update_on_restart). Theories with more conflicts
+     * get checked first in final_check(), enabling earlier detection of theory
+     * inconsistencies and reducing wasted work on less productive theories.
+     * Resets conflict counters after sorting.
+     */
+    void context::sort_final_check_order() {
+        unsigned num_th = m_theory_set.size();
+        if (num_th <= 1) return;
+        // Ensure order array is properly sized (defensive).
+        if (m_final_check_order.size() < num_th) {
+            m_final_check_order.resize(num_th);
+            for (unsigned i = 0; i < num_th; ++i)
+                m_final_check_order[i] = i;
+        }
+        // Insertion sort is fine for the tiny number of theories (typically 2-5).
+        for (unsigned i = 1; i < num_th; ++i) {
+            unsigned key = m_final_check_order[i];
+            unsigned key_cnt = key < m_th_conflict_count.size() ? m_th_conflict_count[key] : 0;
+            int j = static_cast<int>(i) - 1;
+            while (j >= 0) {
+                unsigned oj = m_final_check_order[j];
+                unsigned oj_cnt = oj < m_th_conflict_count.size() ? m_th_conflict_count[oj] : 0;
+                if (oj_cnt >= key_cnt) break;
+                m_final_check_order[j + 1] = oj;
+                --j;
+            }
+            m_final_check_order[j + 1] = key;
+        }
+        TRACE(auto_tune,
+            tout << "E13.1: final_check_order sorted by conflict count:";
+            for (unsigned i = 0; i < num_th; ++i) {
+                unsigned idx = m_final_check_order[i];
+                tout << " " << m_theory_set[idx]->get_name()
+                     << "(" << (idx < m_th_conflict_count.size() ? m_th_conflict_count[idx] : 0) << ")";
+            }
+            tout << "\n";
+        );
+        // Reset counters for next restart interval.
+        for (unsigned i = 0; i < m_th_conflict_count.size(); ++i)
+            m_th_conflict_count[i] = 0;
+    }
+
+    /**
+     * E13.2: Detect bridge conflicts — lemmas containing theory atoms from 2+
+     * different theories. These indicate inter-theory interaction and the involved
+     * variables receive a 1.5x activity bump to prioritize their branching.
+     */
+    void context::detect_bridge_conflict(unsigned num_lits, literal const * lits) {
+        // Collect distinct theory_ids among theory atoms in the lemma.
+        // Use a small inline bitset (theories are typically < 64).
+        uint64_t theory_mask = 0;
+        unsigned theory_count = 0;
+        for (unsigned i = 0; i < num_lits; ++i) {
+            bool_var v = lits[i].var();
+            if (v < m_bdata.size() && get_bdata(v).is_theory_atom()) {
+                theory_id tid = get_bdata(v).get_theory();
+                if (tid >= 0 && tid < 64) {
+                    uint64_t bit = 1ULL << tid;
+                    if (!(theory_mask & bit)) {
+                        theory_mask |= bit;
+                        ++theory_count;
+                    }
+                }
+            }
+        }
+        if (theory_count < 2) return;
+        // Bridge conflict detected: apply 1.5x activity bump to all involved variables.
+        m_bridge_conflict_count++;
+        for (unsigned i = 0; i < num_lits; ++i) {
+            bool_var v = lits[i].var();
+            inc_bvar_activity(v, 0.5); // +0.5 on top of the normal +1.0 bump = 1.5x total
+        }
+        TRACE(auto_tune,
+            tout << "E13.2: bridge conflict #" << m_bridge_conflict_count
+                 << " spanning " << theory_count << " theories, "
+                 << num_lits << " lits bumped 1.5x\n";
+        );
     }
 
     void context::bump_soft_relevancy(unsigned num_lits, literal const * lits) {
@@ -6055,6 +6205,9 @@ namespace smt {
                                                rl_rem, rl_has)) {
             fallback_escalate();
         }
+
+        // E13.1: sort final_check order by per-theory conflict frequency.
+        sort_final_check_order();
 
         m_meta_update_count++;
 
