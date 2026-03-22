@@ -554,12 +554,11 @@ impl TraceAccumulator {
     // -----------------------------------------------------------------------
 
     fn on_mam(&mut self, val: &simd_json::BorrowedValue<'_>) {
-        let matches = bval_i64(val, "matches") as u64;
-        let fp_hit = bval_i64(val, "fp_hit") as u64;
-        let fp_miss = bval_i64(val, "fp_miss") as u64;
-        self.engine.mam_matches += matches;
-        self.engine.fp_hits += fp_hit;
-        self.engine.fp_misses += fp_miss;
+        // C++ emits cumulative m_mam_match_total / m_fp_hit_total / m_fp_miss_total
+        // at every 10K-match interval, so take the latest snapshot (not sum).
+        self.engine.mam_matches = bval_i64(val, "matches") as u64;
+        self.engine.fp_hits = bval_i64(val, "fp_hit") as u64;
+        self.engine.fp_misses = bval_i64(val, "fp_miss") as u64;
     }
 
     fn on_qi_batch(&mut self, val: &simd_json::BorrowedValue<'_>) {
