@@ -490,10 +490,18 @@ namespace smt {
                           vector<std::tuple<enode *, enode *>> & used_enodes) {
 
             // Fast-reject: skip fingerprint + insert for quantifiers whose
-            // Bayesian surprisal exceeds the lazy threshold.  Checks
-            // inserts_total WITHOUT incrementing — the counter is incremented
-            // post-fingerprint in qi_queue::insert() so it reflects unique
-            // instances, not total attempts (including fingerprint duplicates).
+            // Bayesian surprisal proves they are in a matching loop.
+            //
+            // The threshold is 2× the eager cost threshold (default 14.0).
+            // This blocks at ~640K zero-conflict inserts — well above any
+            // productive quantifier (max observed: 9.2K per-quantifier in
+            // solved UFLIA queries) and well below any matching loop
+            // (min observed: 1.8M in timeout queries, 130× gap).
+            //
+            // Using lazy_threshold (20.0) here was too permissive: it allowed
+            // 5.12M inserts before blocking. Using eager_threshold (7.0)
+            // was too aggressive: it blocked at 56K, starving F* definitional
+            // axioms that need up to 165K zero-conflict inserts.
             q::quantifier_stat * stat = get_stat(q);
             if (stat) {
                 unsigned ni = stat->get_inserts_total();
@@ -501,7 +509,7 @@ namespace smt {
                 if (nc == 0 && ni > 5000) {
                     double coeff = 2.0;
                     double surprisal = coeff * std::log2(static_cast<double>(ni) / 5000.0);
-                    if (surprisal > m_params.m_qi_lazy_threshold) {
+                    if (surprisal > m_params.m_qi_eager_threshold * 1.5) {
                         return false;
                     }
                 }
