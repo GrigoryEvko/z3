@@ -45,6 +45,7 @@ Revision History:
 #include "smt/smt_model_finder.h"
 #include "smt/smt_parallel.h"
 #include "smt/smt_arith_value.h"
+#include "ast/static_features.h"
 #include <iostream>
 
 namespace smt {
@@ -3572,6 +3573,7 @@ namespace smt {
         try {
             internalize_assertions();
             compute_assertion_hash();
+            check_reprofile();
         } catch (oom_exception&) {
             return l_undef;
         }
@@ -3643,6 +3645,7 @@ namespace smt {
             try {
                 internalize_assertions();
                 compute_assertion_hash();
+                check_reprofile();
                 add_theory_assumptions(asms);
                 TRACE(unsat_core_bug, tout << asms << '\n';);
                 init_assumptions(asms);
@@ -3670,6 +3673,7 @@ namespace smt {
             try {
                 internalize_assertions();
                 compute_assertion_hash();
+                check_reprofile();
                 add_theory_assumptions(asms);
                 // introducing proxies: if (!validate_assumptions(asms)) return l_undef;
                 for (auto const& clause : clauses) if (!validate_assumptions(clause)) return l_undef;
@@ -3703,6 +3707,16 @@ namespace smt {
         m_restart_threshold            = m_fparams.m_restart_initial;
         m_restart_outer_threshold      = m_fparams.m_restart_initial;
         m_agility                      = 0.0;
+        m_restart_conflict_count       = 0;
+        m_cv_current                   = 0.0;
+        m_cv_baseline                  = 0.0;
+        m_cv_calibration_count         = 0;
+        m_restart_count                = 0;
+        m_meta_update_count            = 0;
+        m_param_cooldown.reset();
+        m_belief_variance              = 0.0;
+        m_consecutive_stuck            = 0;
+        m_fallback_cascade.reset();
         m_luby_idx                     = 1;
         m_lemma_gc_threshold           = m_fparams.m_lemma_gc_initial;
         m_last_search_failure          = OK;
@@ -3801,6 +3815,183 @@ namespace smt {
         m_num_conflicts_since_restart = 0;
     }
 
+    double context::compute_conflict_velocity_trend() const {
+        return m_cv_current / std::max(m_cv_baseline, 1.0);
+    }
+
+    void context::log_auto_tune_signals() const {
+        TRACE(auto_tune,
+            double cn    = compute_curvature_noise();
+            double re    = compute_reward_entropy();
+            theory_skew sk = compute_importance_skew();
+            double trend = compute_conflict_velocity_trend();
+            tout << "auto_tune signals @ restart=" << m_restart_count
+                 << " conflicts=" << m_num_conflicts
+                 << " meta_updates=" << m_meta_update_count
+                 << "\n  curvature_noise=" << cn
+                 << " reward_entropy=" << re
+                 << " belief_variance=" << m_belief_variance
+                 << "\n  velocity_trend=" << trend
+                 << " cv_current=" << m_cv_current
+                 << " cv_baseline=" << m_cv_baseline
+                 << "\n  theory_skew: dom=" << sk.dominant_theory()
+                 << " frac=" << sk.dominant_fraction()
+                 << " arith=" << sk.arith_imp
+                 << " bv=" << sk.bv_imp
+                 << " uf=" << sk.uf_imp << "\n";);
+    }
+
+    void context::adjust_phase_from_belief_variance(double bv) {
+        // B3: low belief variance = strong consensus → use theory-driven phase.
+        //     high variance = volatile beliefs → fall back to caching.
+        if (!m_param_cooldown.can_change_phase(m_restart_count))
+            return;
+        if (bv < 0.01 && m_num_conflicts > 1000 &&
+            m_fparams.m_phase_selection != PS_THEORY) {
+            TRACE(auto_tune, tout << "B3: belief_variance=" << bv
+                  << " (low), phase " << m_fparams.m_phase_selection
+                  << " -> PS_THEORY\n";);
+            m_fparams.m_phase_selection = PS_THEORY;
+            m_param_cooldown.record_phase_change(m_restart_count);
+        }
+        else if (bv > 0.1 &&
+                 m_fparams.m_phase_selection != PS_CACHING) {
+            TRACE(auto_tune, tout << "B3: belief_variance=" << bv
+                  << " (high), phase " << m_fparams.m_phase_selection
+                  << " -> PS_CACHING\n";);
+            m_fparams.m_phase_selection = PS_CACHING;
+            m_param_cooldown.record_phase_change(m_restart_count);
+        }
+    }
+
+    void context::adjust_qi_from_curvature(double cn) {
+        // B4: high curvature noise = QI-sourced variables dominate conflicts
+        //     → tighten threshold to suppress low-value instantiations.
+        //     Low curvature = QI not contributing to conflicts → loosen.
+        if (!m_param_cooldown.can_change_qi(m_restart_count))
+            return;
+        if (cn > 3.0 && m_fparams.m_qi_eager_threshold < 100.0) {
+            double old_t = m_fparams.m_qi_eager_threshold;
+            m_fparams.m_qi_eager_threshold = std::min(old_t * 1.5, 100.0);
+            TRACE(auto_tune, tout << "B4: curvature=" << cn
+                  << " (high), qi_eager_threshold " << old_t
+                  << " -> " << m_fparams.m_qi_eager_threshold << "\n";);
+            m_param_cooldown.record_qi_change(m_restart_count);
+        }
+        else if (cn < 0.5 && m_fparams.m_qi_eager_threshold > 10.0) {
+            double old_t = m_fparams.m_qi_eager_threshold;
+            m_fparams.m_qi_eager_threshold *= 0.8;
+            TRACE(auto_tune, tout << "B4: curvature=" << cn
+                  << " (low), qi_eager_threshold " << old_t
+                  << " -> " << m_fparams.m_qi_eager_threshold << "\n";);
+            m_param_cooldown.record_qi_change(m_restart_count);
+        }
+    }
+
+    void context::adjust_qi_from_entropy(double re) {
+        // B5: very low entropy = one quantifier dominates all reward → likely
+        //     matching loop. Switch to MBQI if past warm-up.
+        //     Moderately low entropy → tighten threshold as precaution.
+        if (!m_param_cooldown.can_change_ematching(m_restart_count))
+            return;
+        if (re < 0.1 && m_num_conflicts > 1000 &&
+            m_fparams.m_ematching && !m_fparams.m_mbqi) {
+            TRACE(auto_tune, tout << "B5: reward_entropy=" << re
+                  << " (critical), switching ematching -> MBQI\n";);
+            m_fparams.m_ematching = false;
+            m_fparams.m_mbqi = true;
+            m_param_cooldown.record_ematching_change(m_restart_count);
+        }
+        else if (re < 0.3 && m_fparams.m_qi_eager_threshold < 100.0 &&
+                 m_param_cooldown.can_change_qi(m_restart_count)) {
+            double old_t = m_fparams.m_qi_eager_threshold;
+            m_fparams.m_qi_eager_threshold = std::min(old_t * 1.3, 100.0);
+            TRACE(auto_tune, tout << "B5: reward_entropy=" << re
+                  << " (low), qi_eager_threshold " << old_t
+                  << " -> " << m_fparams.m_qi_eager_threshold << "\n";);
+            m_param_cooldown.record_qi_change(m_restart_count);
+        }
+    }
+
+    void context::adjust_theory_focus(theory_skew const & sk) {
+        if (sk.total < 1e-6) return;
+        // B6: if BV dominates (>80% of importance) and delay threshold is low, raise it
+        if (sk.bv_imp > 0.8 * sk.total && m_fparams.m_bv_delay_threshold < 24) {
+            TRACE(auto_tune, tout << "B6: BV dominates (" << (sk.bv_imp / sk.total)
+                  << "), raising bv_delay_threshold " << m_fparams.m_bv_delay_threshold << " -> 24\n";);
+            m_fparams.m_bv_delay_threshold = 24;
+        }
+    }
+
+    void context::detect_stuck(double trend) {
+        // B7: track consecutive low-velocity restarts
+        if (trend < 0.3)
+            m_consecutive_stuck++;
+        else if (trend >= 0.7)
+            m_consecutive_stuck = 0;
+    }
+
+    void context::handle_stuck_relevancy() {
+        // B8: on first stuck detection, relax relevancy to 0
+        if (m_consecutive_stuck != 1) return;
+        if (!m_param_cooldown.can_change_relevancy(m_restart_count)) return;
+        TRACE(auto_tune, tout << "B8: stuck=1, relaxing relevancy_lvl " << m_relevancy_lvl << " -> 0\n";);
+        m_relevancy_lvl = 0;
+        m_param_cooldown.record_relevancy_change(m_restart_count);
+    }
+
+    void context::handle_stuck_mbqi() {
+        // B9: on second consecutive stuck, switch from ematching to MBQI
+        if (m_consecutive_stuck != 2) return;
+        if (!m_fparams.m_ematching || m_fparams.m_mbqi) return;
+        if (!m_param_cooldown.can_change_ematching(m_restart_count)) return;
+        TRACE(auto_tune, tout << "B9: stuck=2, switching ematching -> MBQI\n";);
+        m_fparams.m_ematching = false;
+        m_fparams.m_mbqi = true;
+        m_param_cooldown.record_ematching_change(m_restart_count);
+    }
+
+    void context::fallback_escalate() {
+        m_fallback_cascade.m_level++;
+        m_consecutive_stuck = 0;
+        m_fallback_cascade.m_level_start_conflicts = m_num_conflicts;
+
+        unsigned lvl = m_fallback_cascade.m_level;
+
+        if (lvl == 2) {
+            // C3: relaxed -- drop relevancy, reset qi threshold, enable mbqi
+            TRACE(auto_tune, tout << "C3: fallback level 2 (relaxed): relevancy=0, qi_eager=10.0, mbqi=true\n";);
+            m_relevancy_lvl = 0;
+            m_fparams.m_relevancy_lvl = 0;
+            m_fparams.m_qi_eager_threshold = 10.0;
+            m_fparams.m_mbqi = true;
+            m_fparams.m_ematching = true;
+        }
+        else if (lvl == 3) {
+            // C4: opposite -- flip ematching polarity
+            bool was_ematching = m_fparams.m_ematching;
+            m_fparams.m_ematching = !was_ematching;
+            if (!was_ematching) {
+                // re-enabling ematching: use wider threshold to avoid matching loops
+                m_fparams.m_qi_eager_threshold = 20.0;
+            }
+            TRACE(auto_tune, tout << "C4: fallback level 3 (opposite): ematching "
+                  << was_ematching << " -> " << m_fparams.m_ematching
+                  << ", qi_eager=" << m_fparams.m_qi_eager_threshold << "\n";);
+        }
+        else if (lvl >= 4) {
+            // C5: nuclear -- reset ALL params to upstream Z3 defaults
+            TRACE(auto_tune, tout << "C5: fallback level 4 (stock defaults): "
+                  << "relevancy=2, ematching=true, mbqi=false, qi_eager=10.0, bv_delay_threshold=12\n";);
+            m_relevancy_lvl = 2;
+            m_fparams.m_relevancy_lvl = 2;
+            m_fparams.m_ematching = true;
+            m_fparams.m_mbqi = false;
+            m_fparams.m_qi_eager_threshold = 10.0;
+            m_fparams.m_bv_delay_threshold = 12;
+        }
+        // Level 1 is Phase B incremental adjustments (no-op here)
+    }
 
     lbool context::search() {
         if (m_asserted_formulas.inconsistent()) {
@@ -3887,6 +4078,16 @@ namespace smt {
             status = l_undef;
             return false;
         }
+        // Conflict velocity: track conflicts-per-restart interval
+        {
+            double interval = static_cast<double>(m_num_conflicts - m_restart_conflict_count);
+            m_cv_current = interval;
+            if (m_cv_calibration_count < 3) {
+                m_cv_baseline = (m_cv_baseline * m_cv_calibration_count + interval) / (m_cv_calibration_count + 1);
+                m_cv_calibration_count++;
+            }
+            m_restart_conflict_count = m_num_conflicts;
+        }
         inc_limits();
         if (status == l_true || !m_fparams.m_restart_adaptive || m_agility < m_fparams.m_restart_agility_threshold) {
             SASSERT(!inconsistent());
@@ -3894,6 +4095,10 @@ namespace smt {
             // execute the restart
             m_stats.m_num_restarts++;
             m_num_restarts++;
+            m_restart_count++;
+            // B11: invoke meta-update orchestrator when auto-tuning is enabled.
+            if (m_fparams.m_auto_tune)
+                meta_update_on_restart();
             if (m_scope_lvl > curr_lvl) {
                 pop_scope(m_scope_lvl - curr_lvl);
                 SASSERT(at_search_level());
@@ -5032,6 +5237,12 @@ namespace smt {
         if (h == 0) h = 1;
         m_assertion_hash = h;
 
+        // D1: Delta detection — mark profile dirty when assertion content changes.
+        if (h != m_prev_assertion_hash) {
+            m_profile_dirty = true;
+            m_prev_assertion_hash = h;
+        }
+
         TRACE(assertion_hash,
             tout << "assertion_hash: 0x" << std::hex << h << std::dec
                  << " asserts=" << num_asserts
@@ -5047,6 +5258,50 @@ namespace smt {
         );
 
         return h;
+    }
+
+    /**
+     * D2: Incremental re-profiling.
+     * When m_profile_dirty is set (assertion hash changed) and auto_config
+     * is enabled, re-run the query profiler on fresh static_features.
+     * If the category changed, apply new tuning and reset cascade/stuck state.
+     */
+    void context::check_reprofile() {
+        if (!m_profile_dirty || !m_fparams.m_auto_config)
+            return;
+
+        m_profile_dirty = false;
+
+        // Collect fresh static features from current assertions
+        static_features st(m);
+        ptr_vector<expr> fmls;
+        get_asserted_formulas(fmls);
+        if (fmls.empty())
+            return;
+        st.collect(fmls.size(), fmls.data());
+
+        // Classify and check for category change
+        query_profile qp;
+        qp.classify(st);
+
+        query_category new_cat = qp.cat;
+        if (new_cat != m_current_category) {
+            qp.apply_tuning(m_fparams);
+            m_relevancy_lvl = m_fparams.m_relevancy_lvl;
+
+            TRACE(query_profile,
+                tout << "incremental re-profile: category "
+                     << query_profile_category_name(m_current_category)
+                     << " -> " << qp.category_name()
+                     << " (hash=0x" << std::hex << m_assertion_hash << std::dec << ")\n";
+            );
+
+            IF_VERBOSE(10, verbose_stream() << "(smt.reprofile "
+                       << query_profile_category_name(m_current_category)
+                       << " -> " << qp.category_name() << ")\n";);
+
+            m_current_category = new_cat;
+        }
     }
 
     /**
@@ -5097,6 +5352,14 @@ namespace smt {
             strategy.m_entries.push_back({ candidates[i].signature,
                                            candidates[i].reward });
         }
+
+        // E2: capture effective configuration at proof time.
+        strategy.m_effective_qi_threshold = m_fparams.m_qi_eager_threshold;
+        strategy.m_effective_relevancy    = m_fparams.m_relevancy_lvl;
+        strategy.m_effective_ematching    = m_fparams.m_ematching;
+        strategy.m_effective_mbqi         = m_fparams.m_mbqi;
+        strategy.m_fallback_level         = 0; // placeholder until Phase C cascade
+        strategy.m_conflicts_to_solve     = m_num_conflicts;
 
         // Evict oldest entries if cache exceeds limit to prevent unbounded growth.
         // 64 entries * ~20 quantifiers * 16 bytes/entry = ~20KB max.
@@ -5168,10 +5431,32 @@ namespace smt {
             return applied;
         };
 
+        // E3: warm-start solver parameters from cached effective configuration.
+        // Only applies when the cached strategy used fallback level >= 2, meaning
+        // the solver had to deviate significantly from defaults to find a proof.
+        auto apply_effective_config = [&](proof_strategy const& strategy) {
+            if (strategy.m_fallback_level < 2)
+                return;
+            m_fparams.m_qi_eager_threshold = strategy.m_effective_qi_threshold;
+            m_fparams.m_relevancy_lvl      = strategy.m_effective_relevancy;
+            m_fparams.m_ematching          = strategy.m_effective_ematching;
+            m_fparams.m_mbqi               = strategy.m_effective_mbqi;
+            TRACE(proof_strategy,
+                tout << "warm-start config from cache: qi_threshold="
+                     << strategy.m_effective_qi_threshold
+                     << " relevancy=" << strategy.m_effective_relevancy
+                     << " ematching=" << strategy.m_effective_ematching
+                     << " mbqi=" << strategy.m_effective_mbqi
+                     << " (fallback_level=" << strategy.m_fallback_level
+                     << " conflicts=" << strategy.m_conflicts_to_solve << ")\n";
+            );
+        };
+
         // Tier 1: exact assertion hash match
         auto it = m_proof_cache.find(m_assertion_hash);
         if (it != m_proof_cache.end() && !it->second.m_entries.empty()) {
             unsigned applied = apply_strategy(it->second, 1.0); (void)applied;
+            apply_effective_config(it->second);
             TRACE(proof_strategy,
                 tout << "applied proof strategy (exact) for hash 0x"
                      << std::hex << m_assertion_hash << std::dec
@@ -5204,6 +5489,7 @@ namespace smt {
         if (best_strategy && best_ratio >= proof_strategy::FUZZY_THRESHOLD) {
             // Scale rewards by match ratio: partial match gets proportional credit
             unsigned applied = apply_strategy(*best_strategy, best_ratio); (void)applied;
+            apply_effective_config(*best_strategy);
             TRACE(proof_strategy,
                 tout << "applied proof strategy (fuzzy, ratio="
                      << best_ratio << ") for hash 0x"
@@ -5247,6 +5533,45 @@ namespace smt {
         }
         double log_count = log(static_cast<double>(count));
         return (log_count > 1e-15) ? H / log_count : 0.0;
+    }
+
+    void context::meta_update_on_restart() {
+        // Warmup gate: skip until enough conflicts and restarts have accumulated.
+        if (m_num_conflicts < 1000 || m_restart_count < 3)
+            return;
+
+        // Compute all 5 signals.
+        double cn    = compute_curvature_noise();
+        double re    = compute_reward_entropy();
+        theory_skew sk = compute_importance_skew();
+        double trend = compute_conflict_velocity_trend();
+        double bv    = m_belief_variance;
+
+        // Diagnostic logging.
+        log_auto_tune_signals();
+
+        // Apply adjustments (B3-B9).
+        adjust_phase_from_belief_variance(bv);
+        adjust_qi_from_curvature(cn);
+        adjust_qi_from_entropy(re);
+        adjust_theory_focus(sk);
+        detect_stuck(trend);
+        handle_stuck_relevancy();
+        handle_stuck_mbqi();
+
+        // C2: fallback cascade escalation on prolonged stuck
+        if (m_consecutive_stuck >= 3 &&
+            m_fallback_cascade.should_escalate(m_num_conflicts, m_consecutive_stuck)) {
+            fallback_escalate();
+        }
+
+        m_meta_update_count++;
+
+        // B12: reset per-restart accumulators.
+        // Curvature noise accumulators reset for next interval.
+        reset_curvature_noise();
+        // m_restart_conflict_count already updated by the velocity tracker in restart().
+        // Do NOT reset m_belief_variance (continuous EMA) or m_cv_baseline (frozen).
     }
 
 };

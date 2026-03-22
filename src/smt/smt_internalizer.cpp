@@ -229,6 +229,23 @@ namespace smt {
         TRACE(internalize_assertion_ll, tout << mk_ll_pp(n, m) << "\n";); 
         TRACE(generation, tout << "generation: " << m_generation << "\n";);
         TRACE(incompleteness_bug, tout << "[internalize-assertion]: #" << n->get_id() << "\n";);
+
+        // D3: Lightweight incremental feature counters for re-profiling hints.
+        if (is_quantifier(n)) {
+            ++m_incr_quant_count;
+        }
+        if (is_app(n)) {
+            family_id bvfid = m.mk_family_id(symbol("bv"));
+            app * a = to_app(n);
+            for (unsigned i = 0; i < a->get_num_args(); ++i) {
+                sort * s = a->get_arg(i)->get_sort();
+                if (s->get_family_id() == bvfid) {
+                    ++m_incr_bv_count;
+                    break;
+                }
+            }
+        }
+
         flet<unsigned> l(m_generation, generation);
         m_stats.m_max_generation = std::max(m_generation, m_stats.m_max_generation);
         internalize_deep(n);

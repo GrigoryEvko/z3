@@ -84,4 +84,11 @@ namespace smt {
         char const * category_name() const;
     };
 
+    // Free function for converting a bare query_category to a name string.
+    inline char const * query_profile_category_name(query_category cat) {
+        query_profile tmp;
+        tmp.cat = cat;
+        return tmp.category_name();
+    }
+
 }

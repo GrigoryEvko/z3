@@ -22,6 +22,7 @@ Revision History:
 #include "ast/simplifiers/dependent_expr_state.h"
 #include "smt/smt_clause.h"
 #include "smt/smt_setup.h"
+#include "smt/smt_query_profile.h"
 #include "smt/smt_enode.h"
 #include "smt/smt_cg_table.h"
 #include "smt/smt_b_justification.h"
@@ -109,7 +110,84 @@ namespace smt {
             uint64_t m_signature;  // quantifier structural hash (quantifier_signature)
             double   m_reward;     // reward EMA at proof completion
         };
-        svector<entry> m_entries;
+        svector<entry>  m_entries;
+        // Effective configuration captured at proof time (E1).
+        double          m_effective_qi_threshold = 10.0;
+        unsigned        m_effective_relevancy    = 2;
+        bool            m_effective_ematching    = true;
+        bool            m_effective_mbqi         = true;
+        unsigned        m_fallback_level         = 0;
+        unsigned        m_conflicts_to_solve     = 0;
+    };
+
+    /**
+     * Per-parameter cooldown tracker for meta-update oscillation prevention.
+     * After changing a parameter, we wait at least COOLDOWN_INTERVAL restart
+     * intervals before allowing another change to that parameter.
+     */
+    struct param_cooldown {
+        static constexpr unsigned COOLDOWN_INTERVAL = 2;
+
+        unsigned m_qi_last_restart         = 0;
+        unsigned m_phase_last_restart      = 0;
+        unsigned m_relevancy_last_restart  = 0;
+        unsigned m_ematching_last_restart  = 0;
+
+        bool can_change_qi(unsigned current_restart) const {
+            return current_restart >= m_qi_last_restart + COOLDOWN_INTERVAL;
+        }
+        bool can_change_phase(unsigned current_restart) const {
+            return current_restart >= m_phase_last_restart + COOLDOWN_INTERVAL;
+        }
+        bool can_change_relevancy(unsigned current_restart) const {
+            return current_restart >= m_relevancy_last_restart + COOLDOWN_INTERVAL;
+        }
+        bool can_change_ematching(unsigned current_restart) const {
+            return current_restart >= m_ematching_last_restart + COOLDOWN_INTERVAL;
+        }
+
+        void record_qi_change(unsigned current_restart)        { m_qi_last_restart = current_restart; }
+        void record_phase_change(unsigned current_restart)     { m_phase_last_restart = current_restart; }
+        void record_relevancy_change(unsigned current_restart)  { m_relevancy_last_restart = current_restart; }
+        void record_ematching_change(unsigned current_restart)  { m_ematching_last_restart = current_restart; }
+
+        void reset() {
+            m_qi_last_restart        = 0;
+            m_phase_last_restart     = 0;
+            m_relevancy_last_restart = 0;
+            m_ematching_last_restart = 0;
+        }
+    };
+
+    /**
+     * Fallback cascade: progressively more aggressive configuration changes
+     * when the solver remains stuck across multiple restart intervals.
+     * Level 0 = normal operation (Phase B incremental adjustments).
+     * Level 1 = reserved for Phase B incremental (no-op here).
+     * Level 2 = relaxed: drop relevancy, reset qi threshold, enable mbqi.
+     * Level 3 = opposite: flip ematching polarity.
+     * Level 4 = nuclear: reset ALL params to upstream Z3 defaults.
+     */
+    struct fallback_cascade {
+        unsigned m_level                = 0;
+        unsigned m_level_start_conflicts = 0;
+
+        unsigned budget() const {
+            // 10000 * 3^level, capped at 270000
+            unsigned b = 10000;
+            for (unsigned i = 0; i < m_level && b < 270000; ++i)
+                b *= 3;
+            return std::min(b, 270000u);
+        }
+
+        bool should_escalate(unsigned conflicts, unsigned consecutive_stuck) const {
+            return (conflicts - m_level_start_conflicts > budget()) && consecutive_stuck >= 3;
+        }
+
+        void reset() {
+            m_level                = 0;
+            m_level_start_conflicts = 0;
+        }
     };
 
     class context {
@@ -171,6 +249,17 @@ namespace smt {
         svector<double> m_lit_scores[2];
 
         uint64_t                    m_assertion_hash = 0;
+
+        // D1: Incremental re-profiling — delta detection
+        uint64_t                    m_prev_assertion_hash = 0;
+        bool                        m_profile_dirty = false;
+
+        // D2: Current query category from last profiling run
+        query_category              m_current_category = query_category::MIXED;
+
+        // D3: Lightweight incremental counters — O(1) "profile likely changed?" hint
+        unsigned                    m_incr_bv_count    = 0;
+        unsigned                    m_incr_quant_count = 0;
 
         // Proof strategy cache: assertion_hash -> proof strategy (top-K quantifiers by reward)
         std::unordered_map<uint64_t, proof_strategy> m_proof_cache;
@@ -609,6 +698,9 @@ namespace smt {
         // H=1 means rewards spread evenly; H=0 means concentrated on one quantifier.
         // Returns 0.0 if fewer than 2 quantifiers have reward > floor.
         double compute_reward_entropy() const;
+
+        // Log all 5 auto-tune signals via TRACE(auto_tune, ...).
+        void log_auto_tune_signals() const;
 
         bool is_assumption(bool_var v) const {
             return get_bdata(v).m_assumption;
@@ -1195,7 +1287,24 @@ namespace smt {
         unsigned           m_restart_outer_threshold;
         unsigned           m_luby_idx;
         double             m_agility;
+        unsigned           m_restart_conflict_count;   // conflict count at last restart
+        double             m_cv_current;               // current conflict velocity (conflicts/restart)
+        double             m_cv_baseline;              // frozen baseline velocity (avg of first 3 restarts)
+        unsigned           m_cv_calibration_count;     // restarts used for baseline calibration
         unsigned           m_lemma_gc_threshold;
+
+        // Meta-update infrastructure (B1/B2/B10)
+        unsigned           m_restart_count       { 0 };  //!< monotonic restart counter for meta-update scheduling
+        unsigned           m_meta_update_count   { 0 };  //!< number of meta-updates applied
+        param_cooldown     m_param_cooldown;              //!< per-parameter oscillation prevention
+        double             m_belief_variance     { 0.0 }; //!< EMA of squared phase-flip deltas (belief volatility)
+
+        // Stuck detection (B7-B9)
+        unsigned           m_consecutive_stuck   { 0 };  //!< consecutive low-velocity restarts
+
+        // Fallback cascade (C1-C5)
+        fallback_cascade   m_fallback_cascade;             //!< escalation state for stuck solver
+        void               fallback_escalate();            //!< advance cascade level and apply config
 
         void assign_core(literal l, b_justification j, bool decision = false);
         void trace_assign(literal l, b_justification j, bool decision) const;
@@ -1437,6 +1546,32 @@ namespace smt {
         void inc_limits();
 
         bool restart(lbool& status, unsigned curr_lvl);
+
+        double compute_conflict_velocity_trend() const;
+
+        // B3: switch phase strategy from belief variance signal
+        void adjust_phase_from_belief_variance(double bv);
+
+        // B4: tighten/loosen QI eager threshold from curvature noise
+        void adjust_qi_from_curvature(double cn);
+
+        // B5: adjust QI strategy (ematching vs MBQI) from reward entropy
+        void adjust_qi_from_entropy(double re);
+
+        // B6: auto-tune BV delay threshold when BV dominates importance
+        void adjust_theory_focus(theory_skew const & sk);
+
+        // B7: update stuck counter from velocity trend
+        void detect_stuck(double trend);
+
+        // B8: relax relevancy on first stuck detection
+        void handle_stuck_relevancy();
+
+        // B9: switch ematching->MBQI on second stuck detection
+        void handle_stuck_mbqi();
+
+        // B10: meta-update orchestrator called on each restart
+        void meta_update_on_restart();
 
         void tick(unsigned & counter) const;
 
@@ -1946,6 +2081,8 @@ namespace smt {
 
         uint64_t compute_assertion_hash();
         uint64_t get_assertion_hash() const { return m_assertion_hash; }
+
+        void check_reprofile();
 
         void capture_proof_strategy();
         void apply_proof_strategy();

@@ -39,6 +39,7 @@ void qi_params::updt_params(params_ref const & _p) {
     m_qi_quick_checker = static_cast<quick_checker_mode>(p.qi_quick_checker());
     m_qi_trigger_selectivity = p.qi_trigger_selectivity();
     m_qi_feedback = p.qi_feedback();
+    m_auto_tune = p.auto_tune();
 }
 
 #define DISPLAY_PARAM(X) out << #X"=" << X << '\n';
