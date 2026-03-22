@@ -47,6 +47,14 @@ namespace q {
         unsigned m_instances_total;     //!< total instances ever created (never reset)
         double   m_reward;              //!< EMA of conflict participation rate (instances_in_conflict / total_instances)
 
+        // Ring buffer of recent binding structure hashes (E2.3).
+        // Used by attribute_qi_conflict to mark useful patterns in the
+        // Bloom filter.  16 entries gives ~16 recent instantiations of
+        // lookback per quantifier.
+        static constexpr unsigned BINDING_RING_SIZE = 16;
+        uint64_t m_binding_hash_ring[BINDING_RING_SIZE];
+        unsigned m_binding_hash_ring_pos;
+
         friend class quantifier_stat_gen;
 
         quantifier_stat(unsigned generation);
@@ -158,6 +166,32 @@ namespace q {
 
         float get_max_cost() const {
             return m_max_cost;
+        }
+
+        /**
+         * Record a binding structure hash in the per-quantifier ring buffer.
+         * Called after each successful instantiation so that
+         * attribute_qi_conflict can mark recent bindings as useful.
+         */
+        void record_binding_hash(uint64_t h) {
+            m_binding_hash_ring[m_binding_hash_ring_pos & (BINDING_RING_SIZE - 1)] = h;
+            m_binding_hash_ring_pos++;
+        }
+
+        /**
+         * Iterate over recent binding hashes in the ring buffer.
+         * Calls fn(hash) for each non-zero entry.  At most
+         * BINDING_RING_SIZE entries are visited.
+         */
+        template<typename Fn>
+        void for_each_recent_binding_hash(Fn && fn) const {
+            unsigned n = m_binding_hash_ring_pos < BINDING_RING_SIZE
+                       ? m_binding_hash_ring_pos : BINDING_RING_SIZE;
+            for (unsigned i = 0; i < n; ++i) {
+                uint64_t h = m_binding_hash_ring[i];
+                if (h != 0)
+                    fn(h);
+            }
         }
     };
 

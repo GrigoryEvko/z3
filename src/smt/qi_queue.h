@@ -29,9 +29,69 @@ Revision History:
 #include "ast/cost_evaluator.h"
 #include "util/statistics.h"
 #include "tactic/user_propagator_base.h"
+#include <cstring>
 
 namespace smt {
     class context;
+
+    /**
+     * Dual-half Bloom filter for binding-level feedback.
+     *
+     * Tracks which binding structure hashes have appeared in conflict
+     * antecedent chains.  Two 64KB halves (active/shadow) implement
+     * epoch-based aging: every EPOCH_INSERTIONS marks, active is
+     * replaced by shadow and shadow is cleared.  This gives a sliding
+     * window of "useful" binding patterns without unbounded growth.
+     *
+     * k=3 independent hash functions from golden-ratio multiplicative
+     * constants.  False positive rate ~1-5% at typical load.
+     */
+    struct qi_bloom_filter {
+        static constexpr unsigned FILTER_SIZE      = 65536;  // 64KB per half
+        static constexpr unsigned EPOCH_INSERTIONS = 20000;
+        static constexpr uint64_t K1 = 0x9E3779B97F4A7C15ULL; // golden ratio
+        static constexpr uint64_t K2 = 0x517CC1B727220A95ULL; // sqrt(3) frac
+        static constexpr uint64_t K3 = 0x6C62272E07BB0142ULL; // sqrt(5) frac
+
+        uint8_t  m_active[FILTER_SIZE];
+        uint8_t  m_shadow[FILTER_SIZE];
+        unsigned m_insert_count;
+        unsigned m_total_marks;
+
+        void init() {
+            memset(m_active, 0, sizeof(m_active));
+            memset(m_shadow, 0, sizeof(m_shadow));
+            m_insert_count = 0;
+            m_total_marks  = 0;
+        }
+
+        void indices(uint64_t h, unsigned & i1, unsigned & i2, unsigned & i3) const {
+            i1 = static_cast<unsigned>((h * K1) >> 48) & (FILTER_SIZE - 1);
+            i2 = static_cast<unsigned>((h * K2) >> 48) & (FILTER_SIZE - 1);
+            i3 = static_cast<unsigned>((h * K3) >> 48) & (FILTER_SIZE - 1);
+        }
+
+        void mark_useful(uint64_t h) {
+            unsigned i1, i2, i3;
+            indices(h, i1, i2, i3);
+            m_active[i1] = 1; m_active[i2] = 1; m_active[i3] = 1;
+            m_shadow[i1] = 1; m_shadow[i2] = 1; m_shadow[i3] = 1;
+            m_total_marks++;
+            if (++m_insert_count >= EPOCH_INSERTIONS) {
+                memcpy(m_active, m_shadow, FILTER_SIZE);
+                memset(m_shadow, 0, FILTER_SIZE);
+                m_insert_count = 0;
+            }
+        }
+
+        bool probably_useful(uint64_t h) const {
+            unsigned i1, i2, i3;
+            indices(h, i1, i2, i3);
+            return m_active[i1] && m_active[i2] && m_active[i3];
+        }
+
+        bool is_empty() const { return m_total_marks == 0; }
+    };
 
     struct qi_queue_stats {
         unsigned m_num_instances, m_num_lazy_instances;
@@ -40,12 +100,32 @@ namespace smt {
         qi_queue_stats() { reset(); }
     };
 
+    /**
+     * E-graph metrics for adaptive QI throttling.
+     * Tracks growth rate, binding depth, and equivalence class connectivity
+     * across QI batches to modulate instantiation thresholds.
+     */
+    struct egraph_qi_metrics {
+        unsigned m_enodes_before_qi;        // enode count snapshot before instantiate()
+        float    m_growth_rate_ema;          // EMA of (enodes_after - enodes_before) / enodes_before
+        float    m_avg_binding_depth_ema;    // EMA of max binding depth per insert()
+        float    m_avg_connectivity_ema;     // EMA of distinct_roots / num_bindings
+        unsigned m_add_eq_at_last_qi;        // m_num_add_eq snapshot before instantiate()
+        unsigned m_instances_at_last_qi;     // m_num_instances snapshot before instantiate()
+        float    m_qi_merge_ratio_ema;       // EMA of add_eq_delta / instances_delta
+        unsigned m_deep_instance_count;      // instances with max_binding_depth >= 6
+        void reset() { memset(this, 0, sizeof(egraph_qi_metrics)); }
+        egraph_qi_metrics() { reset(); }
+    };
+
     class qi_queue {
         quantifier_manager &          m_qm;
         context &                     m_context;
         ast_manager &                 m;
         qi_params &                   m_params;
         qi_queue_stats                m_stats;
+        qi_bloom_filter               m_binding_filter;
+        egraph_qi_metrics             m_egraph_metrics;
         checker                       m_checker;
         expr_ref                      m_cost_function;
         expr_ref                      m_new_gen_function;
@@ -104,6 +184,7 @@ namespace smt {
             m_on_binding = on_binding;
         }
         void inc_global_qi_conflicts() { m_stats.m_num_qi_conflicts++; }
+        void mark_binding_useful(uint64_t h) { m_binding_filter.mark_useful(h); }
     };
 };
 

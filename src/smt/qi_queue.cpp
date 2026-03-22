@@ -18,6 +18,7 @@ Revision History:
 --*/
 #include "util/warning.h"
 #include "util/stats.h"
+#include "util/hash.h"
 #include "ast/ast_pp.h"
 #include "ast/ast_ll_pp.h"
 #include "ast/rewriter/var_subst.h"
@@ -27,6 +28,38 @@ Revision History:
 #include <iostream>
 
 namespace smt {
+
+    /**
+     * Hash the "skeleton" of an enode to depth 2.
+     * Skeleton = func_decl ID of the enode, mixed with its arity
+     * and the func_decl IDs of its immediate children.
+     * This captures the structural shape of a binding without
+     * depending on specific term identities.
+     */
+    static uint64_t binding_skeleton_hash(enode const * e) {
+        uint64_t h = fmix64(static_cast<uint64_t>(e->get_decl_id()));
+        h ^= fmix64(static_cast<uint64_t>(e->get_num_args()) + 0x9E3779B9ULL);
+        unsigned nargs = e->get_num_args();
+        for (unsigned i = 0; i < nargs; ++i) {
+            enode const * child = e->get_arg(i);
+            h ^= fmix64(static_cast<uint64_t>(child->get_decl_id()) + i + 1);
+        }
+        return h;
+    }
+
+    /**
+     * Compute a structure hash for an entire binding vector.
+     * Combines the quantifier ID with each binding's skeleton hash
+     * via fmix64 accumulation.  The result identifies the "shape"
+     * of a quantifier instantiation for Bloom filter lookup.
+     */
+    static uint64_t qi_binding_structure_hash(quantifier * q, unsigned num_bindings, enode * const * bindings) {
+        uint64_t h = fmix64(static_cast<uint64_t>(q->get_id()));
+        for (unsigned i = 0; i < num_bindings; ++i) {
+            h ^= fmix64(binding_skeleton_hash(bindings[i]) + i);
+        }
+        return h;
+    }
 
     qi_queue::qi_queue(quantifier_manager & qm, context & ctx, qi_params & params):
         m_qm(qm),
@@ -42,6 +75,7 @@ namespace smt {
         m_instances(m) {
         init_parser_vars();
         m_vals.resize(15, 0.0f);
+        m_binding_filter.init();
     }
 
     void qi_queue::setup() {
@@ -214,6 +248,65 @@ namespace smt {
             double factor = (1.0 - rel_w) + rel_w / binding_rel;
             cost = static_cast<float>(cost * factor);
         }
+        // E4.2: Depth penalty — penalize bindings with deep AST terms.
+        // Deep terms indicate long instantiation chains that may diverge.
+        if (m_params.m_qi_feedback) {
+            unsigned num_bindings = f->get_num_args();
+            unsigned max_depth = 0;
+            for (unsigned i = 0; i < num_bindings; ++i) {
+                unsigned d = f->get_arg(i)->get_expr()->get_depth();
+                if (d > max_depth) max_depth = d;
+            }
+            if (max_depth >= 6) {
+                cost += static_cast<float>(std::log2(static_cast<double>(max_depth - 4)));
+                m_egraph_metrics.m_deep_instance_count++;
+            }
+            // Update binding depth EMA (alpha = 0.05)
+            constexpr float depth_alpha = 0.05f;
+            m_egraph_metrics.m_avg_binding_depth_ema =
+                (1.0f - depth_alpha) * m_egraph_metrics.m_avg_binding_depth_ema +
+                depth_alpha * static_cast<float>(max_depth);
+
+            // E4.3: Connectivity discount/penalty — reward bindings from
+            // diverse equivalence classes (more cross-cutting information).
+            if (num_bindings >= 2) {
+                enode * roots[8];
+                unsigned n_roots = std::min(num_bindings, 8u);
+                unsigned distinct = 0;
+                for (unsigned i = 0; i < n_roots; ++i) {
+                    enode * r = f->get_arg(i)->get_root();
+                    bool dup = false;
+                    for (unsigned j = 0; j < distinct; ++j) {
+                        if (roots[j] == r) { dup = true; break; }
+                    }
+                    if (!dup) roots[distinct++] = r;
+                }
+                float connectivity = static_cast<float>(distinct) / static_cast<float>(n_roots);
+                if (connectivity >= 0.9f) {
+                    cost *= 0.9f;   // high diversity — discount
+                } else if (connectivity < 0.5f) {
+                    cost *= 1.1f;   // low diversity — penalty
+                }
+                // Update connectivity EMA (alpha = 0.05)
+                constexpr float conn_alpha = 0.05f;
+                m_egraph_metrics.m_avg_connectivity_ema =
+                    (1.0f - conn_alpha) * m_egraph_metrics.m_avg_connectivity_ema +
+                    conn_alpha * connectivity;
+            }
+        }
+
+        // E2.4: Binding-level Bloom filter boost.
+        // If the binding's structural hash matches a pattern that
+        // previously appeared in a conflict antecedent chain, apply
+        // a 20% cost discount.  Boost-only: unknown patterns are
+        // never penalized.
+        if (m_params.m_qi_feedback && !m_binding_filter.is_empty()) {
+            uint64_t bh = qi_binding_structure_hash(q, f->get_num_args(), f->get_args());
+            if (m_binding_filter.probably_useful(bh)) {
+                cost *= 0.8f;
+            }
+        }
+
         TRACE(qi_queue_detail,
               tout << "new instance of " << q->get_qid() << ", weight " << q->get_weight()
               << ", generation: " << generation << ", scope_level: " << m_context.get_scope_level() << ", cost: " << cost << "\n";
@@ -242,6 +335,19 @@ namespace smt {
         // perturbing proof search on marginal queries. Tightening by 10%
         // only delays instances near the cost boundary, preserving all
         // low-cost (high-quality) instances.
+        // E4.4: Snapshot E-graph state before instantiation batch.
+        unsigned enodes_before = 0;
+        unsigned add_eq_before = 0;
+        unsigned inst_before   = 0;
+        if (m_params.m_qi_feedback) {
+            enodes_before = m_context.enodes().size();
+            add_eq_before = m_context.m_stats.m_num_add_eq;
+            inst_before   = m_stats.m_num_instances;
+            m_egraph_metrics.m_enodes_before_qi   = enodes_before;
+            m_egraph_metrics.m_add_eq_at_last_qi   = add_eq_before;
+            m_egraph_metrics.m_instances_at_last_qi = inst_before;
+        }
+
         double effective_threshold = m_eager_cost_threshold;
         unsigned total_inst = m_stats.m_num_instances;
         if (m_params.m_qi_feedback && total_inst >= 50000) {
@@ -260,6 +366,23 @@ namespace smt {
                   << " success_rate=" << success_rate
                   << " base_threshold=" << m_eager_cost_threshold
                   << " effective_threshold=" << effective_threshold << "\n";);
+        }
+
+        // E4.4: E-graph growth and merge ratio throttle (uses EMAs from
+        // previous batches). High growth rate means QI is expanding the
+        // E-graph too fast — tighten threshold. Low merge ratio means
+        // instances aren't unifying terms — tighten. High merge ratio
+        // means productive merging — loosen.
+        if (m_params.m_qi_feedback && total_inst >= 1000) {
+            if (m_egraph_metrics.m_growth_rate_ema > 0.05f) {
+                effective_threshold *= 0.8;
+            }
+            float mr = m_egraph_metrics.m_qi_merge_ratio_ema;
+            if (mr > 0.0f && mr < 0.1f) {
+                effective_threshold *= 0.9;
+            } else if (mr > 2.0f) {
+                effective_threshold *= 1.2;
+            }
         }
 
         unsigned since_last_check = 0;
@@ -303,6 +426,37 @@ namespace smt {
                 since_last_check = 0;
             }
         }
+        // E4.4: Post-batch E-graph growth and merge ratio tracking.
+        if (m_params.m_qi_feedback && enodes_before > 0) {
+            unsigned enodes_after = m_context.enodes().size();
+            float growth = static_cast<float>(enodes_after - enodes_before) /
+                           static_cast<float>(enodes_before);
+            constexpr float growth_alpha = 0.1f;
+            m_egraph_metrics.m_growth_rate_ema =
+                (1.0f - growth_alpha) * m_egraph_metrics.m_growth_rate_ema +
+                growth_alpha * growth;
+
+            // Merge ratio: add_eq events per instance in this batch.
+            unsigned add_eq_after = m_context.m_stats.m_num_add_eq;
+            unsigned inst_after   = m_stats.m_num_instances;
+            unsigned inst_delta   = inst_after - inst_before;
+            if (inst_delta > 0) {
+                float merge_ratio = static_cast<float>(add_eq_after - add_eq_before) /
+                                    static_cast<float>(inst_delta);
+                constexpr float merge_alpha = 0.1f;
+                m_egraph_metrics.m_qi_merge_ratio_ema =
+                    (1.0f - merge_alpha) * m_egraph_metrics.m_qi_merge_ratio_ema +
+                    merge_alpha * merge_ratio;
+            }
+
+            TRACE(qi_queue, tout << "egraph metrics: growth=" << growth
+                  << " growth_ema=" << m_egraph_metrics.m_growth_rate_ema
+                  << " merge_ema=" << m_egraph_metrics.m_qi_merge_ratio_ema
+                  << " deep_count=" << m_egraph_metrics.m_deep_instance_count
+                  << " depth_ema=" << m_egraph_metrics.m_avg_binding_depth_ema
+                  << " conn_ema=" << m_egraph_metrics.m_avg_connectivity_ema << "\n";);
+        }
+
         m_new_entries.reset();
         TRACE(new_entries_bug, tout << "[qi:instantiate]\n";);
     }
@@ -393,6 +547,13 @@ namespace smt {
         TRACE(qi_queue, tout << "simplified instance:\n" << s_instance << "\n";);
         stat->inc_num_instances();
         stat->inc_instances_total();
+        // Record binding structure hash in per-quantifier ring buffer (E2.3).
+        // attribute_qi_conflict will iterate the ring and mark useful hashes
+        // in the Bloom filter for future QI cost discount.
+        if (m_params.m_qi_feedback) {
+            uint64_t bh = qi_binding_structure_hash(q, num_bindings, bindings);
+            stat->record_binding_hash(bh);
+        }
         if (stat->get_num_instances() % m_params.m_qi_profile_freq == 0) {
             m_qm.display_stats(verbose_stream(), q);
         }
@@ -532,6 +693,7 @@ namespace smt {
     void qi_queue::init_search_eh() {
         m_subst.reset();
         m_new_entries.reset();
+        m_egraph_metrics.reset();
     }
 
     bool qi_queue::final_check_eh() {

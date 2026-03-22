@@ -17,6 +17,7 @@ Revision History:
 
 --*/
 #include "ast/quantifier_stat.h"
+#include <cstring>
 
 namespace q {
 
@@ -37,7 +38,9 @@ namespace q {
         m_num_conflicts(0),
         m_num_conflicts_curr_search(0),
         m_instances_total(0),
-        m_reward(0.1) {
+        m_reward(0.1),
+        m_binding_hash_ring_pos(0) {
+        memset(m_binding_hash_ring, 0, sizeof(m_binding_hash_ring));
     }
 
     quantifier_stat_gen::quantifier_stat_gen(ast_manager & m, region & r):
