@@ -96,6 +96,16 @@ public:
     void inc_cancel();
     void dec_cancel();
     void auto_cancel();
+
+    /** Returns remaining budget before exhaustion (0 if already exhausted). */
+    uint64_t remaining() const {
+        return m_count >= m_limit ? 0 : m_limit - m_count;
+    }
+
+    /** True when a finite resource limit has been set. */
+    bool has_limit() const {
+        return m_limit != std::numeric_limits<uint64_t>::max();
+    }
 };
 
 class scoped_rlimit {
