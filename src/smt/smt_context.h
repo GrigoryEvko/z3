@@ -111,6 +111,14 @@ namespace smt {
             double   m_reward;     // reward EMA at proof completion
         };
         svector<entry>  m_entries;
+        // E8.3: Ordered proof sequence — records the causal chain of quantifiers
+        // that led to UNSAT, deduped by first occurrence. Used for replay.
+        static constexpr unsigned MAX_PROOF_SEQ = 32;
+        struct seq_entry {
+            uint64_t m_quantifier_sig;
+            unsigned m_position;
+        };
+        svector<seq_entry> m_proof_sequence;
         // Effective configuration captured at proof time (E1).
         double          m_effective_qi_threshold = 10.0;
         unsigned        m_effective_relevancy    = 2;
@@ -207,6 +215,69 @@ namespace smt {
         }
     };
 
+    /**
+     * E9: SAT-vs-UNSAT mode detector.
+     * Combines 5 normalized signals into a polarity score in [0,1].
+     * Score > 0.65 => UNSAT_MODE (proof-heavy: boost QI, raise relevancy).
+     * Score < 0.35 => SAT_MODE  (model-heavy: throttle QI, drop relevancy).
+     * Uses hysteresis: 3-restart streak to enter, 5-restart streak to flip,
+     * 5-restart cooldown after flip.
+     */
+    enum solver_polarity { POLARITY_UNDECIDED, POLARITY_SAT_MODE, POLARITY_UNSAT_MODE };
+
+    struct polarity_detector {
+        solver_polarity m_current   = POLARITY_UNDECIDED;
+        solver_polarity m_candidate = POLARITY_UNDECIDED;
+        unsigned        m_streak       = 0;
+        unsigned        m_cooldown_left = 0;
+        double          m_unsat_score  = 0.5;
+
+        static constexpr unsigned ENTER_THRESHOLD = 3;
+        static constexpr unsigned FLIP_THRESHOLD  = 5;
+        static constexpr unsigned COOLDOWN_RESTARTS = 5;
+
+        solver_polarity classify(double score) const {
+            if (score > 0.65) return POLARITY_UNSAT_MODE;
+            if (score < 0.35) return POLARITY_SAT_MODE;
+            return POLARITY_UNDECIDED;
+        }
+
+        void update(double score) {
+            m_unsat_score = score;
+            if (m_cooldown_left > 0) {
+                --m_cooldown_left;
+                return;
+            }
+            solver_polarity sig = classify(score);
+            if (sig == POLARITY_UNDECIDED) {
+                // Ambiguous signal: decay streak toward undecided.
+                if (m_streak > 0) --m_streak;
+                if (m_streak == 0) m_candidate = POLARITY_UNDECIDED;
+                return;
+            }
+            if (sig == m_candidate) {
+                ++m_streak;
+            } else {
+                m_candidate = sig;
+                m_streak = 1;
+            }
+            unsigned threshold = (m_current == POLARITY_UNDECIDED) ? ENTER_THRESHOLD : FLIP_THRESHOLD;
+            if (m_streak >= threshold && sig != m_current) {
+                m_current = sig;
+                m_streak = 0;
+                m_cooldown_left = COOLDOWN_RESTARTS;
+            }
+        }
+
+        void reset() {
+            m_current      = POLARITY_UNDECIDED;
+            m_candidate    = POLARITY_UNDECIDED;
+            m_streak       = 0;
+            m_cooldown_left = 0;
+            m_unsat_score  = 0.5;
+        }
+    };
+
     class context {
         friend class model_generator;
         friend class lookahead;
@@ -294,6 +365,14 @@ namespace smt {
         // E4: tracks which cached strategy was applied this solve, for confidence update
         uint64_t                    m_applied_strategy_hash   = 0;
         unsigned                    m_proof_cache_generation  = 0;
+
+        // E8.2: Accumulated proof chain across all conflicts in this solve.
+        // Each entry is (quantifier_signature, chain_position) deduped by first occurrence.
+        svector<conflict_resolution::qi_chain_entry> m_accumulated_proof_chain;
+
+        // E8.4/E8.5: Proof replay state
+        bool                        m_replay_active           = false;
+        unsigned                    m_replay_conflict_budget  = 0;
 
         // E5: failure recording — hashes that repeatedly fail skip warm-start
         static constexpr unsigned   MAX_FAILURE_CACHE         = 128;
@@ -1354,6 +1433,15 @@ namespace smt {
         fallback_cascade   m_fallback_cascade;             //!< escalation state for stuck solver
         void               fallback_escalate();            //!< advance cascade level and apply config
 
+        // E9: SAT-vs-UNSAT polarity detector
+        polarity_detector  m_polarity;                      //!< hysteresis-based mode detector
+        double             m_avg_backjump_ratio      { 0.0 }; //!< EMA of (scope_lvl - new_lvl) / scope_lvl
+        unsigned           m_final_checks_since_restart { 0 }; //!< final_check calls since last restart
+
+        // E9: polarity-driven strategy adjustments
+        double compute_polarity_score() const;
+        void   apply_polarity_strategy(solver_polarity pol);
+
         void assign_core(literal l, b_justification j, bool decision = false);
         void trace_assign(literal l, b_justification j, bool decision) const;
 
@@ -2140,6 +2228,7 @@ namespace smt {
 
         void capture_proof_strategy();
         void apply_proof_strategy();
+        void replay_proof_sequence(proof_strategy const & strategy);
 
         void get_units(expr_ref_vector& result);
 

@@ -3491,6 +3491,17 @@ namespace smt {
         if (r == l_false)
             capture_proof_strategy();
 
+        // E8.5: On UNSAT within replay budget, boost confidence.
+        if (r == l_false && m_replay_active && m_applied_strategy_hash != 0) {
+            auto cit = m_proof_cache.find(m_applied_strategy_hash);
+            if (cit != m_proof_cache.end())
+                cit->second.m_confidence = std::min(cit->second.m_confidence * 1.2, 1.0);
+            TRACE(proof_strategy,
+                tout << "replay succeeded within budget, boosting confidence\n";
+            );
+        }
+        m_replay_active = false;
+
         // E4: update confidence for the strategy we applied this solve.
         // E5: record failures for strategies that didn't lead to UNSAT.
         if (m_applied_strategy_hash != 0) {
@@ -3742,6 +3753,9 @@ namespace smt {
             th->init_search_eh();
         }
         m_qmanager->init_search_eh();
+        m_accumulated_proof_chain.reset();
+        m_replay_active          = false;
+        m_replay_conflict_budget = 0;
         apply_proof_strategy();
         m_incomplete_theories.reset();
         m_num_conflicts                = 0;
@@ -3765,6 +3779,9 @@ namespace smt {
         m_param_cooldown.reset();
         m_belief_variance              = 0.0;
         m_consecutive_stuck            = 0;
+        m_polarity.reset();
+        m_avg_backjump_ratio           = 0.0;
+        m_final_checks_since_restart   = 0;
         // Restore relevancy if G4 retry changed it (prevents permanent mutation across check-sat calls)
         if (m_relevancy_retried) {
             m_fparams.m_relevancy_lvl = m_saved_relevancy_lvl;
@@ -4355,6 +4372,9 @@ namespace smt {
         }
 
         m_stats.m_num_final_checks++;
+        // E9: track final checks per restart for polarity detection.
+        if (m_fparams.m_polarity_detection)
+            ++m_final_checks_since_restart;
         TRACE(final_check_stats, tout << "m_stats.m_num_final_checks = " << m_stats.m_num_final_checks << "\n";);
 
         final_check_status ok = m_qmanager->final_check_eh(false);
@@ -4456,6 +4476,31 @@ namespace smt {
         m_num_conflicts ++;
         m_num_conflicts_since_restart ++;
         m_num_conflicts_since_lemma_gc ++;
+
+        // E8.5: Check replay budget. If active and budget exceeded,
+        // reset QI rewards and deactivate replay mode.
+        if (m_replay_active && m_num_conflicts > m_replay_conflict_budget) {
+            m_replay_active = false;
+            // Reset all quantifier rewards to baseline
+            if (m_qmanager) {
+                for (quantifier * qi : *m_qmanager) {
+                    q::quantifier_stat * stat = m_qmanager->get_stat(qi);
+                    if (stat)
+                        stat->set_reward(0.01);
+                }
+            }
+            // Decay confidence of the applied strategy
+            if (m_applied_strategy_hash != 0) {
+                auto cit = m_proof_cache.find(m_applied_strategy_hash);
+                if (cit != m_proof_cache.end())
+                    cit->second.m_confidence *= 0.7;
+            }
+            TRACE(proof_strategy,
+                tout << "replay budget exceeded at conflict " << m_num_conflicts
+                     << " (budget=" << m_replay_conflict_budget << "), deactivating\n";
+            );
+        }
+
         switch (m_conflict.get_kind()) {
         case b_justification::CLAUSE:
         case b_justification::BIN_CLAUSE:
@@ -4464,7 +4509,7 @@ namespace smt {
         default:
             break;
         }
-        if (m_fparams.m_phase_selection == PS_THEORY || 
+        if (m_fparams.m_phase_selection == PS_THEORY ||
             m_fparams.m_phase_selection == PS_CACHING_CONSERVATIVE || 
             m_fparams.m_phase_selection == PS_CACHING_CONSERVATIVE2)
             forget_phase_of_vars_in_current_level();
@@ -4480,6 +4525,13 @@ namespace smt {
             SASSERT(num_lits > 0);
             unsigned conflict_lvl = get_assign_level(lits[0]);
             SASSERT(conflict_lvl <= m_scope_lvl);
+
+            // E9: Update backjump ratio EMA for polarity detection.
+            if (m_fparams.m_polarity_detection && conflict_lvl > 0) {
+                double ratio = static_cast<double>(conflict_lvl - new_lvl) / static_cast<double>(conflict_lvl);
+                static constexpr double BJ_ALPHA = 0.05;
+                m_avg_backjump_ratio = BJ_ALPHA * ratio + (1.0 - BJ_ALPHA) * m_avg_backjump_ratio;
+            }
 
             // Attribute this conflict to contributing quantifier instantiations.
             // Must be done before pop_scope_core since justifications are invalidated.
@@ -4777,6 +4829,18 @@ namespace smt {
         }
         // E5.3: Periodic decay of failure filter counters.
         m_qmanager->on_conflict_failure_decay();
+
+        // E8.2: Append the ordered QI chain from this conflict to the
+        // accumulated proof chain. Cap total size to avoid unbounded growth.
+        auto const & chain = m_conflict_resolution->get_qi_chain();
+        if (!chain.empty() && m_accumulated_proof_chain.size() < 512) {
+            unsigned base_pos = m_accumulated_proof_chain.size();
+            for (auto const & ce : chain) {
+                if (m_accumulated_proof_chain.size() >= 512)
+                    break;
+                m_accumulated_proof_chain.push_back({ce.m_q, base_pos + ce.m_chain_position});
+            }
+        }
     }
 
     void context::bump_theory_importance(unsigned num_lits, literal const * lits) {
@@ -5562,6 +5626,25 @@ namespace smt {
         strategy.m_fallback_level         = m_fallback_cascade.m_level;
         strategy.m_conflicts_to_solve     = m_num_conflicts;
 
+        // E8.3: Build proof sequence from accumulated proof chain.
+        // Dedup by first occurrence of each quantifier signature, cap at 32.
+        if (!m_accumulated_proof_chain.empty()) {
+            svector<uint64_t> seen_sigs;
+            for (auto const & ce : m_accumulated_proof_chain) {
+                if (strategy.m_proof_sequence.size() >= proof_strategy::MAX_PROOF_SEQ)
+                    break;
+                uint64_t sig = quantifier_signature(ce.m_q);
+                bool already = false;
+                for (unsigned j = 0; j < seen_sigs.size(); ++j) {
+                    if (seen_sigs[j] == sig) { already = true; break; }
+                }
+                if (!already) {
+                    seen_sigs.push_back(sig);
+                    strategy.m_proof_sequence.push_back({sig, strategy.m_proof_sequence.size()});
+                }
+            }
+        }
+
         // E6: evict lowest-confidence entry (ties broken by oldest m_last_use).
         // 64 entries * ~20 quantifiers * 16 bytes/entry = ~20KB max.
         constexpr unsigned MAX_CACHE_SIZE = 64;
@@ -5694,6 +5777,8 @@ namespace smt {
             unsigned applied = apply_strategy(it->second, 1.0); (void)applied;
             apply_effective_config(it->second, m_assertion_hash);
             record_strategy_use(m_assertion_hash);
+            // E8.4: Replay proof sequence if available
+            replay_proof_sequence(it->second);
             TRACE(proof_strategy,
                 tout << "applied proof strategy (exact) for hash 0x"
                      << std::hex << m_assertion_hash << std::dec
@@ -5731,6 +5816,8 @@ namespace smt {
             unsigned applied = apply_strategy(*best_strategy, best_ratio); (void)applied;
             apply_effective_config(*best_strategy, best_hash);
             record_strategy_use(best_hash);
+            // E8.4: Replay proof sequence if available
+            replay_proof_sequence(*best_strategy);
             TRACE(proof_strategy,
                 tout << "applied proof strategy (fuzzy, ratio="
                      << best_ratio << ") for hash 0x"
@@ -5742,6 +5829,64 @@ namespace smt {
         else {
             ++m_proof_cache_misses;
         }
+    }
+
+    /**
+     * E8.4: Replay proof sequence from a cached strategy.
+     *
+     * On cache hit with a proof sequence: map cached signatures to current
+     * quantifiers, check coverage >= 60%. For matches, set reward to 10.0.
+     * Activate replay mode with conflict budget = 2x cached conflicts_to_solve.
+     */
+    void context::replay_proof_sequence(proof_strategy const & strategy) {
+        if (strategy.m_proof_sequence.empty())
+            return;
+        if (!m_qmanager || m_qmanager->num_quantifiers() == 0)
+            return;
+
+        // Build signature -> stat* map for current quantifiers
+        std::unordered_map<uint64_t, svector<q::quantifier_stat*>> sig_map;
+        sig_map.reserve(m_qmanager->num_quantifiers());
+        for (quantifier * qi : *m_qmanager) {
+            q::quantifier_stat * stat = m_qmanager->get_stat(qi);
+            if (!stat)
+                continue;
+            uint64_t sig = quantifier_signature(qi);
+            sig_map[sig].push_back(stat);
+        }
+
+        // Check coverage: how many cached sequence entries have matching quantifiers?
+        unsigned matched = 0;
+        unsigned total   = strategy.m_proof_sequence.size();
+        for (auto const & se : strategy.m_proof_sequence) {
+            if (sig_map.count(se.m_quantifier_sig))
+                ++matched;
+        }
+
+        double coverage = static_cast<double>(matched) / total;
+        if (coverage < 0.6)
+            return;
+
+        // Apply replay rewards: set reward to 10.0 for matched quantifiers
+        for (auto const & se : strategy.m_proof_sequence) {
+            auto it = sig_map.find(se.m_quantifier_sig);
+            if (it != sig_map.end()) {
+                for (q::quantifier_stat * stat : it->second)
+                    stat->set_reward(10.0);
+            }
+        }
+
+        // Activate replay mode with conflict budget
+        m_replay_active          = true;
+        m_replay_conflict_budget = (strategy.m_conflicts_to_solve > 0)
+                                   ? 2 * strategy.m_conflicts_to_solve
+                                   : 10000;
+
+        TRACE(proof_strategy,
+            tout << "replay_proof_sequence: coverage=" << coverage
+                 << " (" << matched << "/" << total << ")"
+                 << " budget=" << m_replay_conflict_budget << "\n";
+        );
     }
 
     double context::compute_reward_entropy() const {
@@ -5779,10 +5924,103 @@ namespace smt {
         return (log_count > 1e-15) ? H / log_count : 0.0;
     }
 
+    // E9: Combine 5 normalized signals into a polarity score in [0,1].
+    // Higher score => more UNSAT-like (proof search dominates).
+    // Lower score  => more SAT-like (model construction dominates).
+    double context::compute_polarity_score() const {
+        // Signal weights: conflict velocity trend, backjump ratio,
+        // QI conflict participation, belief variance, final-check frequency.
+        static constexpr double W[5] = { 0.30, 0.25, 0.20, 0.15, 0.10 };
+
+        // S1: Conflict velocity trend — high velocity means UNSAT (lots of learning).
+        // Normalize: trend > 1.5 => 1.0, trend < 0.5 => 0.0.
+        double trend = compute_conflict_velocity_trend();
+        double s1 = std::min(std::max((trend - 0.5) / 1.0, 0.0), 1.0);
+
+        // S2: Backjump ratio — large backjumps (high ratio) suggest UNSAT.
+        // Already an EMA in [0,1].
+        double s2 = std::min(std::max(m_avg_backjump_ratio, 0.0), 1.0);
+
+        // S3: QI conflict participation — high ratio means QI is driving proofs (UNSAT).
+        double s3 = 0.5; // default when no quantifiers
+        if (m_qmanager && m_qmanager->has_quantifiers() && m_num_conflicts > 100) {
+            unsigned qi_conf = m_qmanager->get_qi_conflicts();
+            s3 = static_cast<double>(qi_conf) / static_cast<double>(m_num_conflicts);
+            s3 = std::min(s3, 1.0);
+        }
+
+        // S4: Belief variance — high variance means UNSAT (lots of phase flipping).
+        // Normalize: variance > 0.2 => 1.0, variance < 0.01 => 0.0.
+        double s4 = std::min(std::max((m_belief_variance - 0.01) / 0.19, 0.0), 1.0);
+
+        // S5: Final-check frequency — many final checks per restart means SAT (model building).
+        // Invert: high frequency => low score (SAT), low frequency => high score (UNSAT).
+        double fc_rate = (m_num_restarts > 0)
+            ? static_cast<double>(m_final_checks_since_restart) / 1.0  // per-restart count
+            : 0.0;
+        // Normalize: 0 final checks => 1.0 (UNSAT), >=3 final checks => 0.0 (SAT).
+        double s5 = std::min(std::max(1.0 - fc_rate / 3.0, 0.0), 1.0);
+
+        return W[0]*s1 + W[1]*s2 + W[2]*s3 + W[3]*s4 + W[4]*s5;
+    }
+
+    // E9: Apply strategy adjustments based on detected solver polarity.
+    void context::apply_polarity_strategy(solver_polarity pol) {
+        if (pol == POLARITY_UNDECIDED)
+            return;
+
+        double base_qi_threshold = m_fparams.m_qi_eager_threshold;
+
+        if (pol == POLARITY_SAT_MODE) {
+            // SAT mode: throttle QI, drop relevancy to let model construction proceed.
+            if (m_param_cooldown.ok_to_change("qi_threshold", m_restart_count)) {
+                m_fparams.m_qi_eager_threshold = base_qi_threshold / 3.0;
+                if (m_fparams.m_qi_eager_threshold < 1.0)
+                    m_fparams.m_qi_eager_threshold = 1.0;
+            }
+            if (m_param_cooldown.ok_to_change("relevancy", m_restart_count)) {
+                m_relevancy_lvl = 0;
+            }
+            TRACE(auto_tune,
+                tout << "E9: SAT_MODE applied: qi_threshold=" << m_fparams.m_qi_eager_threshold
+                     << " relevancy=" << m_relevancy_lvl << "\n";
+            );
+        }
+        else {
+            // UNSAT mode: boost QI, raise relevancy to focus on proof-relevant terms.
+            if (m_param_cooldown.ok_to_change("qi_threshold", m_restart_count)) {
+                m_fparams.m_qi_eager_threshold = base_qi_threshold * 3.0;
+                if (m_fparams.m_qi_eager_threshold > 100.0)
+                    m_fparams.m_qi_eager_threshold = 100.0;
+            }
+            if (m_param_cooldown.ok_to_change("relevancy", m_restart_count)) {
+                m_relevancy_lvl = 2;
+            }
+            TRACE(auto_tune,
+                tout << "E9: UNSAT_MODE applied: qi_threshold=" << m_fparams.m_qi_eager_threshold
+                     << " relevancy=" << m_relevancy_lvl << "\n";
+            );
+        }
+    }
+
     void context::meta_update_on_restart() {
         // Warmup gate: skip until enough conflicts and restarts have accumulated.
         if (m_num_conflicts < 1000 || m_restart_count < 3)
             return;
+
+        // E9: polarity detection — update before B3-B9 so adjustments respect mode.
+        if (m_fparams.m_polarity_detection) {
+            double pscore = compute_polarity_score();
+            m_polarity.update(pscore);
+            TRACE(auto_tune,
+                tout << "E9: polarity_score=" << pscore
+                     << " current=" << static_cast<int>(m_polarity.m_current)
+                     << " candidate=" << static_cast<int>(m_polarity.m_candidate)
+                     << " streak=" << m_polarity.m_streak
+                     << " cooldown=" << m_polarity.m_cooldown_left << "\n";
+            );
+            apply_polarity_strategy(m_polarity.m_current);
+        }
 
         // Compute all 5 signals.
         double cn    = compute_curvature_noise();
