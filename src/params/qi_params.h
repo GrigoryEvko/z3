@@ -48,6 +48,7 @@ struct qi_params {
     double             m_qi_ucb_c = 0.0;
     bool               m_auto_tune = false;
     bool               m_polarity_detection = false;
+    std::string        m_cache_file;
     bool               m_qe_lite = false;
 
     bool               m_mbqi = true;

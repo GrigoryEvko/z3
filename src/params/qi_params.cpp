@@ -43,6 +43,7 @@ void qi_params::updt_params(params_ref const & _p) {
     m_qi_ucb_c = p.qi_ucb_c();
     m_auto_tune = p.auto_tune();
     m_polarity_detection = p.polarity_detection();
+    m_cache_file = p.cache_file();
     if (p.auto_solve()) {
         m_qi_feedback = true;
         m_auto_tune = true;

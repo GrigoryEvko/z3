@@ -39,6 +39,7 @@ z3_add_component(smt
     smt_model_finder.cpp
     smt_model_generator.cpp
     smt_parallel.cpp
+    smt_persistent_cache.cpp
     smt_quantifier.cpp
     smt_quick_checker.cpp
     smt_relevancy.cpp
