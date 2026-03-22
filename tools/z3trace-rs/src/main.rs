@@ -51,6 +51,7 @@ enum Section {
     Timeline,
     Waste,
     Chain,
+    Engine,
 }
 
 #[derive(Clone, ValueEnum, PartialEq, Eq)]
@@ -109,6 +110,38 @@ struct SolveInfo {
     cache_size: Option<i64>,
     replay: Option<bool>,
     cascade: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
+// Engine stats -- accumulated from new trace event types
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct EngineStats {
+    mam_matches: u64,
+    fp_hits: u64,
+    fp_misses: u64,
+    qi_eager: u64,
+    qi_delayed: u64,
+    max_delayed_q: u64,
+    last_enodes: u64,
+    last_merges: u64,
+    last_decisions: u64,
+    last_props: u64,
+    last_clauses: u64,
+    pushes: u64,
+    pops: u64,
+    max_scope: u64,
+    final_checks: u64,
+    // Internal tracking
+    propagate_total: u64,
+    propagate_conflicts: u64,
+    sat_restarts: u64,
+    egraph_snapshots: u64,
+    sat_snapshots: u64,
+    qi_batch_count: u64,
+    final_consistent: u64,
+    final_inconsistent: u64,
 }
 
 /// P-square algorithm for streaming percentile estimation.
@@ -251,6 +284,8 @@ struct TraceAccumulator {
     restart_cn_max: f64,
     restart_max_stuck: i64,
     restart_max_cascade: i64,
+    // Engine stats
+    engine: EngineStats,
 }
 
 impl TraceAccumulator {
@@ -285,6 +320,7 @@ impl TraceAccumulator {
             restart_cn_max: f64::MIN,
             restart_max_stuck: 0,
             restart_max_cascade: 0,
+            engine: EngineStats::default(),
         }
     }
 
@@ -309,6 +345,14 @@ impl TraceAccumulator {
             "REWARD" => self.on_reward(val),
             "RESTART" => self.on_restart(val),
             "SOLVE" => self.on_solve(val),
+            "MAM" => self.on_mam(val),
+            "QI_BATCH" => self.on_qi_batch(val),
+            "EGRAPH" => self.on_egraph(val),
+            "SAT" => self.on_sat(val),
+            "PUSH" => self.on_push(val),
+            "POP" => self.on_pop(val),
+            "FINAL_CHECK" => self.on_final_check(val),
+            "PROPAGATE" => self.on_propagate(val),
             _ => {}
         }
     }
@@ -503,6 +547,95 @@ impl TraceAccumulator {
         if let Some(v) = val.get("cascade") { info.cascade = v.as_i64(); }
 
         self.solve = Some(info);
+    }
+
+    // -----------------------------------------------------------------------
+    // Engine event handlers
+    // -----------------------------------------------------------------------
+
+    fn on_mam(&mut self, val: &simd_json::BorrowedValue<'_>) {
+        let matches = bval_i64(val, "matches") as u64;
+        let fp_hit = bval_i64(val, "fp_hit") as u64;
+        let fp_miss = bval_i64(val, "fp_miss") as u64;
+        self.engine.mam_matches += matches;
+        self.engine.fp_hits += fp_hit;
+        self.engine.fp_misses += fp_miss;
+    }
+
+    fn on_qi_batch(&mut self, val: &simd_json::BorrowedValue<'_>) {
+        let eager = bval_i64(val, "eager") as u64;
+        let delayed = bval_i64(val, "delayed") as u64;
+        let delayed_q = bval_i64(val, "delayed_q") as u64;
+        self.engine.qi_eager += eager;
+        self.engine.qi_delayed += delayed;
+        if delayed_q > self.engine.max_delayed_q {
+            self.engine.max_delayed_q = delayed_q;
+        }
+        self.engine.qi_batch_count += 1;
+    }
+
+    fn on_egraph(&mut self, val: &simd_json::BorrowedValue<'_>) {
+        self.engine.last_enodes = bval_i64(val, "enodes") as u64;
+        self.engine.last_merges = bval_i64(val, "eq") as u64;
+        self.engine.egraph_snapshots += 1;
+    }
+
+    fn on_sat(&mut self, val: &simd_json::BorrowedValue<'_>) {
+        self.engine.last_decisions = bval_i64(val, "decisions") as u64;
+        self.engine.last_props = bval_i64(val, "props") as u64;
+        self.engine.last_clauses = bval_i64(val, "clauses") as u64;
+        let restarts = bval_i64(val, "restarts") as u64;
+        if restarts > self.engine.sat_restarts {
+            self.engine.sat_restarts = restarts;
+        }
+        self.engine.sat_snapshots += 1;
+    }
+
+    fn on_push(&mut self, val: &simd_json::BorrowedValue<'_>) {
+        let scope = bval_i64(val, "scope") as u64;
+        self.engine.pushes += 1;
+        if scope > self.engine.max_scope {
+            self.engine.max_scope = scope;
+        }
+        // Update last_enodes if provided
+        let enodes = bval_i64(val, "enodes") as u64;
+        if enodes > 0 {
+            self.engine.last_enodes = enodes;
+        }
+    }
+
+    fn on_pop(&mut self, val: &simd_json::BorrowedValue<'_>) {
+        let scope = bval_i64(val, "scope") as u64;
+        self.engine.pops += 1;
+        if scope > self.engine.max_scope {
+            self.engine.max_scope = scope;
+        }
+        let enodes = bval_i64(val, "enodes") as u64;
+        if enodes > 0 {
+            self.engine.last_enodes = enodes;
+        }
+    }
+
+    fn on_final_check(&mut self, val: &simd_json::BorrowedValue<'_>) {
+        self.engine.final_checks += 1;
+        let consistent = bval_i64(val, "consistent");
+        if consistent != 0 {
+            self.engine.final_consistent += 1;
+        } else {
+            self.engine.final_inconsistent += 1;
+        }
+        // Snapshot latest egraph state if provided
+        let enodes = bval_i64(val, "enodes") as u64;
+        if enodes > 0 {
+            self.engine.last_enodes = enodes;
+        }
+    }
+
+    fn on_propagate(&mut self, val: &simd_json::BorrowedValue<'_>) {
+        let props = bval_i64(val, "props") as u64;
+        let c = bval_i64(val, "c") as u64;
+        self.engine.propagate_total += props;
+        self.engine.propagate_conflicts += c;
     }
 }
 
@@ -1270,6 +1403,106 @@ fn show_chain(acc: &TraceAccumulator, n: usize) {
     }
 }
 
+fn show_engine(acc: &TraceAccumulator) {
+    println!();
+    println!("=== ENGINE STATS ===");
+
+    let e = &acc.engine;
+    let has_data = e.mam_matches > 0
+        || e.fp_hits > 0
+        || e.qi_eager > 0
+        || e.last_enodes > 0
+        || e.last_decisions > 0
+        || e.pushes > 0
+        || e.final_checks > 0
+        || e.propagate_total > 0;
+
+    if !has_data {
+        println!("(no engine events recorded)");
+        return;
+    }
+
+    // MAM section
+    if e.mam_matches > 0 || e.fp_hits > 0 || e.fp_misses > 0 {
+        let fp_total = e.fp_hits + e.fp_misses;
+        println!();
+        println!("MAM (E-matching):");
+        println!("  matches:       {:>12}", e.mam_matches);
+        println!("  fp_hits:       {:>12}", e.fp_hits);
+        println!("  fp_misses:     {:>12}", e.fp_misses);
+        if fp_total > 0 {
+            println!(
+                "  fp_hit_rate:   {:>11.1}%",
+                100.0 * e.fp_hits as f64 / fp_total as f64
+            );
+        }
+    }
+
+    // QI batch section
+    if e.qi_eager > 0 || e.qi_delayed > 0 {
+        let qi_total = e.qi_eager + e.qi_delayed;
+        println!();
+        println!("QI batching:");
+        println!("  eager:         {:>12}", e.qi_eager);
+        println!("  delayed:       {:>12}", e.qi_delayed);
+        println!("  total:         {:>12}", qi_total);
+        println!("  max_delayed_q: {:>12}", e.max_delayed_q);
+        println!("  batches:       {:>12}", e.qi_batch_count);
+        if qi_total > 0 {
+            println!(
+                "  eager_pct:     {:>11.1}%",
+                100.0 * e.qi_eager as f64 / qi_total as f64
+            );
+        }
+    }
+
+    // E-graph section
+    if e.last_enodes > 0 || e.egraph_snapshots > 0 {
+        println!();
+        println!("E-graph (last snapshot):");
+        println!("  enodes:        {:>12}", e.last_enodes);
+        println!("  merges:        {:>12}", e.last_merges);
+        println!("  snapshots:     {:>12}", e.egraph_snapshots);
+    }
+
+    // SAT section
+    if e.last_decisions > 0 || e.sat_snapshots > 0 {
+        println!();
+        println!("SAT (last snapshot):");
+        println!("  decisions:     {:>12}", e.last_decisions);
+        println!("  propagations:  {:>12}", e.last_props);
+        println!("  clauses:       {:>12}", e.last_clauses);
+        println!("  restarts:      {:>12}", e.sat_restarts);
+        println!("  snapshots:     {:>12}", e.sat_snapshots);
+    }
+
+    // Scope section
+    if e.pushes > 0 || e.pops > 0 {
+        println!();
+        println!("Scope management:");
+        println!("  pushes:        {:>12}", e.pushes);
+        println!("  pops:          {:>12}", e.pops);
+        println!("  max_scope:     {:>12}", e.max_scope);
+    }
+
+    // Final check section
+    if e.final_checks > 0 {
+        println!();
+        println!("Final checks:");
+        println!("  total:         {:>12}", e.final_checks);
+        println!("  consistent:    {:>12}", e.final_consistent);
+        println!("  inconsistent:  {:>12}", e.final_inconsistent);
+    }
+
+    // Propagate section
+    if e.propagate_total > 0 || e.propagate_conflicts > 0 {
+        println!();
+        println!("Theory propagation:");
+        println!("  propagations:  {:>12}", e.propagate_total);
+        println!("  conflicts:     {:>12}", e.propagate_conflicts);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -1305,6 +1538,7 @@ fn main() {
                 Section::Timeline,
                 Section::Waste,
                 Section::Chain,
+                Section::Engine,
             ];
             let sections = section.unwrap_or(all_sections);
             let path_str = trace.display().to_string();
@@ -1319,6 +1553,7 @@ fn main() {
                     Section::Timeline => show_timeline(&acc),
                     Section::Waste => show_waste(&acc, n),
                     Section::Chain => show_chain(&acc, n),
+                    Section::Engine => show_engine(&acc),
                 }
             }
         }

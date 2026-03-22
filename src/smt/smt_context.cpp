@@ -1710,6 +1710,15 @@ namespace smt {
             if (!can_propagate()) {
                 CASSERT("diseq_bug", inconsistent() || check_missing_diseq_conflict());
                 CASSERT("eqc_bool", check_eqc_bool_assignment());
+                // Only log when there are quantifiers (QI-relevant queries)
+                if (m_adaptive_log && m_qmanager && m_qmanager->has_quantifiers()) {
+                    // Log every 50000 propagations to avoid spam
+                    if (m_stats.m_num_propagations % 50000 == 0 && m_stats.m_num_propagations > 0) {
+                        ALOG(m_adaptive_log, "PROPAGATE")
+                            .u("props", m_stats.m_num_propagations)
+                            .u("c", m_num_conflicts);
+                    }
+                }
                 return true;
             }
         }
@@ -1906,6 +1915,8 @@ namespace smt {
 
         if (m.has_trace_stream() && !m_is_auxiliary)
             m.trace_stream() << "[push] " << m_scope_lvl << "\n";
+
+        ALOG(m_adaptive_log, "PUSH").u("scope", m_scope_lvl).u("enodes", m_enodes.size());
 
         m_scope_lvl++;
         m_region.push_scope();
@@ -2476,6 +2487,9 @@ namespace smt {
         reassert_units(units_to_reassert_lim);
         TRACE(pop_scope_detail, tout << "end of pop_scope: \n"; display(tout););
         CASSERT("context", check_invariant());
+
+        ALOG(m_adaptive_log, "POP").u("scope", m_scope_lvl).u("enodes", m_enodes.size());
+
         return num_bool_vars;
     }
 
@@ -4536,6 +4550,13 @@ namespace smt {
             m_last_search_failure = LAMBDAS;
             result = FC_GIVEUP;
         }
+        if (m_adaptive_log) {
+            ALOG(m_adaptive_log, "FINAL_CHECK")
+                .u("c", m_num_conflicts)
+                .u("theories", m_theory_set.size())
+                .u("enodes", m_enodes.size())
+                .b("consistent", !inconsistent());
+        }
         return result;
     }
 
@@ -4563,6 +4584,21 @@ namespace smt {
         m_stats.m_num_conflicts++;
         m_num_conflicts ++;
         m_num_conflicts_since_restart ++;
+
+        if (m_adaptive_log && m_num_conflicts % 5000 == 0) {
+            ALOG(m_adaptive_log, "EGRAPH")
+                .u("c", m_num_conflicts)
+                .u("enodes", m_enodes.size())
+                .u("eq", m_stats.m_num_add_eq);
+        }
+        if (m_adaptive_log && m_num_conflicts % 10000 == 0 && m_num_conflicts > 0) {
+            ALOG(m_adaptive_log, "SAT")
+                .u("c", m_num_conflicts)
+                .u("decisions", m_stats.m_num_decisions)
+                .u("props", m_stats.m_num_propagations)
+                .u("clauses", m_stats.m_num_mk_clause)
+                .u("restarts", m_num_restarts);
+        }
         m_num_conflicts_since_lemma_gc ++;
 
         // E8.5: Check replay budget. If active and budget exceeded,
@@ -4914,7 +4950,8 @@ namespace smt {
         if (m_adaptive_log && !seen_q.empty()) {
             auto ev = ALOG(m_adaptive_log, "CONFLICT");
             ev.u("c", m_num_conflicts)
-              .u("sz", num_lits).u("qi_count", seen_q.size());
+              .u("sz", num_lits).u("qi_count", seen_q.size())
+              .u("lvl", m_scope_lvl);
             // Log each contributing quantifier inline
             fprintf(m_adaptive_log, ",\"qi\":[");
             for (unsigned i = 0; i < seen_q.size(); ++i) {
