@@ -47,6 +47,7 @@ struct qi_params {
     double             m_qi_relevancy_weight = 0.0;
     double             m_qi_ucb_c = 0.0;
     bool               m_auto_tune = false;
+    bool               m_polarity_detection = false;
     bool               m_qe_lite = false;
 
     bool               m_mbqi = true;

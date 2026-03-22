@@ -4200,6 +4200,8 @@ namespace smt {
             // B11: invoke meta-update orchestrator when auto-tuning is enabled.
             if (m_fparams.m_auto_tune)
                 meta_update_on_restart();
+            // E9: reset per-restart final-check counter after polarity score consumes it.
+            m_final_checks_since_restart = 0;
             if (m_scope_lvl > curr_lvl) {
                 pop_scope(m_scope_lvl - curr_lvl);
                 SASSERT(at_search_level());
@@ -5973,13 +5975,15 @@ namespace smt {
 
         if (pol == POLARITY_SAT_MODE) {
             // SAT mode: throttle QI, drop relevancy to let model construction proceed.
-            if (m_param_cooldown.ok_to_change("qi_threshold", m_restart_count)) {
+            if (m_param_cooldown.can_change_qi(m_restart_count)) {
                 m_fparams.m_qi_eager_threshold = base_qi_threshold / 3.0;
                 if (m_fparams.m_qi_eager_threshold < 1.0)
                     m_fparams.m_qi_eager_threshold = 1.0;
+                m_param_cooldown.record_qi_change(m_restart_count);
             }
-            if (m_param_cooldown.ok_to_change("relevancy", m_restart_count)) {
+            if (m_param_cooldown.can_change_relevancy(m_restart_count)) {
                 m_relevancy_lvl = 0;
+                m_param_cooldown.record_relevancy_change(m_restart_count);
             }
             TRACE(auto_tune,
                 tout << "E9: SAT_MODE applied: qi_threshold=" << m_fparams.m_qi_eager_threshold
@@ -5988,13 +5992,15 @@ namespace smt {
         }
         else {
             // UNSAT mode: boost QI, raise relevancy to focus on proof-relevant terms.
-            if (m_param_cooldown.ok_to_change("qi_threshold", m_restart_count)) {
+            if (m_param_cooldown.can_change_qi(m_restart_count)) {
                 m_fparams.m_qi_eager_threshold = base_qi_threshold * 3.0;
                 if (m_fparams.m_qi_eager_threshold > 100.0)
                     m_fparams.m_qi_eager_threshold = 100.0;
+                m_param_cooldown.record_qi_change(m_restart_count);
             }
-            if (m_param_cooldown.ok_to_change("relevancy", m_restart_count)) {
+            if (m_param_cooldown.can_change_relevancy(m_restart_count)) {
                 m_relevancy_lvl = 2;
+                m_param_cooldown.record_relevancy_change(m_restart_count);
             }
             TRACE(auto_tune,
                 tout << "E9: UNSAT_MODE applied: qi_threshold=" << m_fparams.m_qi_eager_threshold

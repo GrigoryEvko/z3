@@ -100,6 +100,7 @@ namespace smt {
         void register_on_binding(std::function<bool(quantifier*, expr*)> & f);
 
         void inc_global_qi_conflicts();
+        unsigned get_qi_conflicts() const;
         void mark_binding_useful(uint64_t h);
         void record_binding_failure(uint64_t h);
         void record_binding_success(uint64_t h);

@@ -189,6 +189,7 @@ namespace smt {
             m_on_binding = on_binding;
         }
         void inc_global_qi_conflicts() { m_stats.m_num_qi_conflicts++; }
+        unsigned get_qi_conflicts() const { return m_stats.m_num_qi_conflicts; }
         void mark_binding_useful(uint64_t h) { m_binding_filter.mark_useful(h); }
         void record_binding_failure(uint64_t h) { m_failure_filter.record_failure(h); }
         void record_binding_success(uint64_t h) { m_failure_filter.record_success(h); }

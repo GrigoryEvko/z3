@@ -544,6 +544,10 @@ namespace smt {
         m_imp->m_qi_queue.inc_global_qi_conflicts();
     }
 
+    unsigned quantifier_manager::get_qi_conflicts() const {
+        return m_imp->m_qi_queue.get_qi_conflicts();
+    }
+
     void quantifier_manager::mark_binding_useful(uint64_t h) {
         m_imp->m_qi_queue.mark_binding_useful(h);
     }
