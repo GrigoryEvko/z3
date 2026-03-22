@@ -597,11 +597,6 @@ impl TraceAccumulator {
         if scope > self.engine.max_scope {
             self.engine.max_scope = scope;
         }
-        // Update last_enodes if provided
-        let enodes = bval_i64(val, "enodes") as u64;
-        if enodes > 0 {
-            self.engine.last_enodes = enodes;
-        }
     }
 
     fn on_pop(&mut self, val: &simd_json::BorrowedValue<'_>) {
@@ -610,32 +605,24 @@ impl TraceAccumulator {
         if scope > self.engine.max_scope {
             self.engine.max_scope = scope;
         }
-        let enodes = bval_i64(val, "enodes") as u64;
-        if enodes > 0 {
-            self.engine.last_enodes = enodes;
-        }
     }
 
     fn on_final_check(&mut self, val: &simd_json::BorrowedValue<'_>) {
         self.engine.final_checks += 1;
-        let consistent = bval_i64(val, "consistent");
-        if consistent != 0 {
+        // C++ emits "consistent" as a JSON boolean (true/false), not an integer.
+        let consistent = bval_bool(val, "consistent");
+        if consistent {
             self.engine.final_consistent += 1;
         } else {
             self.engine.final_inconsistent += 1;
         }
-        // Snapshot latest egraph state if provided
-        let enodes = bval_i64(val, "enodes") as u64;
-        if enodes > 0 {
-            self.engine.last_enodes = enodes;
-        }
     }
 
     fn on_propagate(&mut self, val: &simd_json::BorrowedValue<'_>) {
-        let props = bval_i64(val, "props") as u64;
-        let c = bval_i64(val, "c") as u64;
-        self.engine.propagate_total += props;
-        self.engine.propagate_conflicts += c;
+        // C++ emits cumulative m_stats.m_num_propagations and m_num_conflicts,
+        // so take the latest snapshot rather than accumulating.
+        self.engine.propagate_total = bval_i64(val, "props") as u64;
+        self.engine.propagate_conflicts = bval_i64(val, "c") as u64;
     }
 }
 
@@ -666,6 +653,19 @@ fn bval_i64(val: &simd_json::BorrowedValue<'_>, key: &str) -> i64 {
             else { 0 }
         }
         None => 0,
+    }
+}
+
+#[inline]
+fn bval_bool(val: &simd_json::BorrowedValue<'_>, key: &str) -> bool {
+    match val.get(key) {
+        Some(v) => {
+            if let Some(b) = v.as_bool() { b }
+            else if let Some(i) = v.as_i64() { i != 0 }
+            else if let Some(u) = v.as_u64() { u != 0 }
+            else { false }
+        }
+        None => false,
     }
 }
 

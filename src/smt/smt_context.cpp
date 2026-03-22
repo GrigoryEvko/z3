@@ -1710,14 +1710,11 @@ namespace smt {
             if (!can_propagate()) {
                 CASSERT("diseq_bug", inconsistent() || check_missing_diseq_conflict());
                 CASSERT("eqc_bool", check_eqc_bool_assignment());
-                // Only log when there are quantifiers (QI-relevant queries)
-                if (m_adaptive_log && m_qmanager && m_qmanager->has_quantifiers()) {
-                    // Log every 50000 propagations to avoid spam
-                    if (m_stats.m_num_propagations % 50000 == 0 && m_stats.m_num_propagations > 0) {
-                        ALOG(m_adaptive_log, "PROPAGATE")
-                            .u("props", m_stats.m_num_propagations)
-                            .u("c", m_num_conflicts);
-                    }
+                // Periodic propagation summary (every 5000 propagations)
+                if (m_adaptive_log && m_stats.m_num_propagations > 0 && m_stats.m_num_propagations % 5000 == 0) {
+                    ALOG(m_adaptive_log, "PROPAGATE")
+                        .u("props", m_stats.m_num_propagations)
+                        .u("c", m_num_conflicts);
                 }
                 return true;
             }
@@ -4585,13 +4582,13 @@ namespace smt {
         m_num_conflicts ++;
         m_num_conflicts_since_restart ++;
 
-        if (m_adaptive_log && m_num_conflicts % 5000 == 0) {
+        if (m_adaptive_log && m_num_conflicts > 0 && m_num_conflicts % 50 == 0) {
             ALOG(m_adaptive_log, "EGRAPH")
                 .u("c", m_num_conflicts)
                 .u("enodes", m_enodes.size())
                 .u("eq", m_stats.m_num_add_eq);
         }
-        if (m_adaptive_log && m_num_conflicts % 10000 == 0 && m_num_conflicts > 0) {
+        if (m_adaptive_log && m_num_conflicts > 0 && m_num_conflicts % 100 == 0) {
             ALOG(m_adaptive_log, "SAT")
                 .u("c", m_num_conflicts)
                 .u("decisions", m_stats.m_num_decisions)

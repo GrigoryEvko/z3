@@ -515,8 +515,8 @@ namespace smt {
                 ++m_fp_hit_total;   // duplicate fingerprint = hit (already seen)
             }
 
-            // Periodic MAM pipeline summary
-            if ((m_mam_match_total % 50000) == 0) {
+            // Periodic MAM pipeline summary (every 10000 matches)
+            if (m_mam_match_total > 0 && (m_mam_match_total % 10000) == 0) {
                 ALOG(m_context.get_adaptive_log(), "MAM")
                     .u("matches", m_mam_match_total)
                     .u("fp_hit", m_fp_hit_total)
