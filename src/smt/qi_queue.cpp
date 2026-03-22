@@ -24,6 +24,7 @@ Revision History:
 #include "ast/rewriter/var_subst.h"
 #include "smt/smt_context.h"
 #include "smt/qi_queue.h"
+#include "smt/adaptive_log.h"
 #include <cmath>
 #include <iostream>
 
@@ -405,6 +406,16 @@ namespace smt {
             heat = compute_binding_heat(q, f->get_num_args(), f->get_args());
         }
         TRACE(new_entries_bug, tout << "[qi:insert]\n";);
+
+        // Adaptive log: QI_INSERT with cost + heat
+        ALOG(m_context.get_adaptive_log(), "QI_INSERT")
+            .u("c", m_context.get_num_conflicts())
+            .s("q", q->get_qid().str().c_str())
+            .u("vars", q->get_num_decls())
+            .d("cost", (double)cost)
+            .d("heat", (double)heat)
+            .u("gen", generation);
+
         m_new_entries.push_back(entry(f, cost, heat, generation));
     }
 

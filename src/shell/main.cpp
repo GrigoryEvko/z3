@@ -323,11 +323,27 @@ static void parse_cmd_line_args(std::string& input_file, int argc, char ** argv)
                 exit(ERR_CMD_LINE);
             }
         }
-        else if (argv[i][0] != '"' && argv[i][0] != '/' && argv[i][0] != '.' && (eq_pos = strchr(argv[i], '=')) && !get_extension(eq_pos + 1)) {
-            char * key   = argv[i];
-            *eq_pos      = 0;
-            char * value = eq_pos+1; 
-            gparams::set(key, value);
+        else if (argv[i][0] != '"' && argv[i][0] != '/' && argv[i][0] != '.' && (eq_pos = strchr(argv[i], '='))) {
+            // Module-qualified params (e.g. smt.adaptive_log=/tmp/trace.jsonl)
+            // always have a '.' before the '='. For these, skip the extension
+            // heuristic — the value may legitimately be a file path with an
+            // extension. Only apply the extension guard for global params where
+            // the key has no dot (to avoid confusing "file=name.smt2" with a
+            // param assignment).
+            bool has_module_dot = (memchr(argv[i], '.', eq_pos - argv[i]) != nullptr);
+            if (has_module_dot || !get_extension(eq_pos + 1)) {
+                char * key   = argv[i];
+                *eq_pos      = 0;
+                char * value = eq_pos+1;
+                gparams::set(key, value);
+            }
+            else {
+                // Looks like a filename with '=' in it (unlikely but possible)
+                if (g_input_file)
+                    warning_msg("input file was already specified.");
+                else
+                    g_input_file = arg;
+            }
         }
         else {
             if (get_extension(arg) && strcmp(get_extension(arg), "drat") == 0) {

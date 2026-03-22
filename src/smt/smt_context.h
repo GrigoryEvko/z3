@@ -722,6 +722,9 @@ namespace smt {
 
         double get_soft_relevancy(expr * e) const;
 
+        // Adaptive log file accessor (null when logging is disabled)
+        FILE* get_adaptive_log() const { return m_adaptive_log; }
+
         // E7: func_decl heat accessor — returns VSIDS-style activity score for a function symbol
         double get_func_decl_heat(func_decl const * d) const {
             unsigned id = d->get_small_id();
@@ -2373,6 +2376,9 @@ namespace smt {
         // E14: persistent cross-session learning
         bool                        m_persistent_cache_loaded = false;
         bool                        m_persistent_cache_dirty  = false;
+
+        // Adaptive engine JSONL trace logger
+        FILE*                       m_adaptive_log = nullptr;
 
     };
 

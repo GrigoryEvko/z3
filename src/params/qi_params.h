@@ -49,6 +49,7 @@ struct qi_params {
     bool               m_auto_tune = false;
     bool               m_polarity_detection = false;
     std::string        m_cache_file;
+    std::string        m_adaptive_log;   // JSONL trace file path, empty = disabled
     bool               m_qe_lite = false;
 
     bool               m_mbqi = true;

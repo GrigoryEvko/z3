@@ -34,6 +34,7 @@ Revision History:
 #include "model/model.h"
 #include "model/model_pp.h"
 #include "smt/smt_context.h"
+#include "smt/adaptive_log.h"
 #include "smt/smt_quick_checker.h"
 #include "smt/uses_theory.h"
 #include "smt/theory_special_relations.h"
@@ -191,6 +192,11 @@ namespace smt {
         if (m_persistent_cache_dirty && !m_fparams.m_cache_file.empty()) {
             persistent_cache::save(m_fparams.m_cache_file, m_proof_cache, m_failure_cache, m_proof_cache_generation);
             m_persistent_cache_dirty = false;
+        }
+        // Close adaptive log file
+        if (m_adaptive_log) {
+            fclose(m_adaptive_log);
+            m_adaptive_log = nullptr;
         }
         flush();
         m_asserted_formulas.finalize();
@@ -3556,6 +3562,17 @@ namespace smt {
             );
         }
 
+        // Adaptive log: SOLVE summary
+        ALOG(m_adaptive_log, "SOLVE")
+            .s("result", r == l_false ? "unsat" : r == l_true ? "sat" : "unknown")
+            .u("conflicts", m_num_conflicts)
+            .u("restarts", m_num_restarts)
+            .u("cache_hits", m_proof_cache_hits)
+            .u("cache_misses", m_proof_cache_misses)
+            .u("cache_size", (unsigned)m_proof_cache.size())
+            .b("replay", m_replay_active)
+            .u("cascade", m_fallback_cascade.m_level);
+
         if (r == l_true && gparams::get_value("model_validate") == "true") {
             recfun::util u(m);
             if (u.get_rec_funs().empty() && m_proto_model) {
@@ -3797,6 +3814,17 @@ namespace smt {
     }
 
     void context::init_search() {
+        // Open adaptive log lazily: m_fparams.m_adaptive_log is only populated
+        // after updt_params() which runs AFTER the constructor. So the open
+        // must happen here (post-params) rather than in the constructor.
+        if (!m_adaptive_log && !m_fparams.m_adaptive_log.empty()) {
+            m_adaptive_log = fopen(m_fparams.m_adaptive_log.c_str(), "w");
+            if (m_adaptive_log) {
+                ALOG(m_adaptive_log, "INIT")
+                    .s("version", "z3-adaptive-log-v1");
+            }
+        }
+
         for (theory* th : m_theory_set) {
             th->init_search_eh();
         }
@@ -4878,11 +4906,33 @@ namespace smt {
                 seen_depth.push_back(d);
             }
         }
+        // Log the conflict with QI attribution
+        if (m_adaptive_log && !seen_q.empty()) {
+            auto ev = ALOG(m_adaptive_log, "CONFLICT");
+            ev.u("c", m_num_conflicts)
+              .u("sz", num_lits).u("qi_count", seen_q.size());
+            // Log each contributing quantifier inline
+            fprintf(m_adaptive_log, ",\"qi\":[");
+            for (unsigned i = 0; i < seen_q.size(); ++i) {
+                if (i > 0) fprintf(m_adaptive_log, ",");
+                fprintf(m_adaptive_log, "{\"q\":\"%s\",\"d\":%u}",
+                    seen_q[i]->get_qid().str().c_str(), seen_depth[i]);
+            }
+            fprintf(m_adaptive_log, "]");
+        }
+
         for (unsigned i = 0; i < seen_q.size(); ++i) {
             q::quantifier_stat * stat = m_qmanager->get_stat(seen_q[i]);
             if (stat) {
                 unsigned d = seen_depth[i] < 10 ? seen_depth[i] : 10;
+                double old_reward = stat->get_reward();
                 stat->inc_num_conflicts_weighted(decay_table[d]);
+                // Log reward update
+                ALOG(m_adaptive_log, "REWARD")
+                    .u("c", m_num_conflicts)
+                    .s("q", seen_q[i]->get_qid().str().c_str())
+                    .d("old", old_reward).d("new", stat->get_reward())
+                    .d("weight", decay_table[d]).u("depth", d);
                 // E2.3: Mark recent binding hashes from this quantifier
                 // as useful in the Bloom filter.  The ring buffer holds
                 // the last 16 binding structure hashes; any of them may
@@ -6203,6 +6253,15 @@ namespace smt {
 
         // Diagnostic logging.
         log_auto_tune_signals();
+
+        // Adaptive log: RESTART event with all signals
+        ALOG(m_adaptive_log, "RESTART")
+            .u("r", m_restart_count).u("c", m_num_conflicts)
+            .d("vel", trend).d("bv", bv).d("cn", cn).d("re", re)
+            .s("skew", sk.dominant_theory())
+            .d("skew_frac", sk.dominant_fraction())
+            .u("stuck", m_consecutive_stuck)
+            .u("cascade", m_fallback_cascade.m_level);
 
         // Apply adjustments (B3-B9).
         adjust_phase_from_belief_variance(bv);
