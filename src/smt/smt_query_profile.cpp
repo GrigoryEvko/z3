@@ -7,21 +7,104 @@ Module Name:
 
 Abstract:
 
-    Automatic query profiler for SMT solver configuration.
+    Automatic query profiler — the static-analysis layer of Z3's auto-tune system.
 
-    Classification logic:
-      1. Count theory term/atom occurrences from static_features
-      2. Compute fractional breakdown across UF, arith, BV, array, DT
-      3. Map to a query_category based on dominant theory + quantifier count
-      4. Apply tuned parameters for that category
+    ═══════════════════════════════════════════════════════════════════════
+    AUTO-TUNE SYSTEM OVERVIEW
+    ═══════════════════════════════════════════════════════════════════════
 
-    Tuning rationale:
-      - QF_BV:  relevancy=0, no QI overhead, ext gates for bit-blasting
-      - QF_LIA: relevancy=0, phase=theory for arith-heavy search
-      - UFLIA_HEAVY_QI: Fstar/Boogie pattern - QI feedback, conservative restart,
-        eager threshold based on pattern density, relevancy=2 for pruning
-      - PURE_SAT: stripped-down config, no theory overhead
-      - BV_WITH_QI: combine BV bit-blasting with QI
+    Three user-facing parameters control the adaptive machinery:
+
+      smt.auto_solve   Master switch. Forces qi.feedback=true AND auto_tune=true.
+      smt.auto_tune    Enables manifold-aware meta-updates on restart (Phase B/C).
+      smt.qi.feedback  Enables conflict-driven QI reward scoring and adaptive budget.
+
+    When auto_solve is set, all adaptive features activate together.
+
+    ── 1. Auto-profiler (this file) ──────────────────────────────────────
+
+    Runs once per check-sat (or on incremental re-profile). Classifies the
+    query into one of 12 categories using static_features collected from the
+    assertion set:
+
+      Quantifier-free: PURE_SAT, QF_UF, QF_BV, QF_LIA, QF_LRA, QF_NLA,
+                       QF_AUFLIA, MIXED
+      Quantified:      UFLIA_LIGHT_QI (<100 quants), UFLIA_HEAVY_QI (>=100),
+                       BV_WITH_QI, DT_WITH_QI
+
+    Classification examines theory term/atom counts per family, computes a
+    fractional breakdown (UF, arith, BV, array, DT), and selects the category
+    from the dominant theory combined with quantifier count. Each category maps
+    to a tuned parameter preset applied on top of the logic-specific defaults.
+
+    ── 2. Five manifold signals (smt_context.cpp) ────────────────────────
+
+    Continuously accumulated during search, read at every restart:
+
+      belief_variance      EMA of phase-flip rate. Low = strong polarity
+                           consensus, high = chaotic search.
+      curvature_noise      Variance of conflict-resolution bump magnitudes,
+                           split into QI vs non-QI streams. High values
+                           signal unstable reward gradients.
+      reward_entropy       Shannon entropy over per-quantifier reward EMAs.
+                           Low = few quantifiers dominate, high = uniform.
+      theory_importance    Per-theory activity skew (arith, BV, array, UF).
+                           Tracked per bool_var via VSIDS-style bumps on
+                           theory-propagated conflicts.
+      conflict_velocity    Ratio of recent conflict rate to calibrated
+                           baseline. Values <1 indicate the solver is stuck.
+
+    ── 3. Meta-update on restart (auto_tune=true) ────────────────────────
+
+    meta_update_on_restart() fires after a warmup gate (>=1000 conflicts,
+    >=3 restarts) and reads all 5 signals. Adjustments (B3-B9):
+
+      B3  Phase strategy:    belief_variance < 0.15 → PS_THEORY,
+                              belief_variance > 0.45 → PS_CACHING.
+      B4  QI threshold:      curvature_noise > 0.6 → tighten threshold,
+                              curvature_noise < 0.2 → relax.
+      B5  QI strategy:       reward_entropy < 0.5 → switch ematching→MBQI.
+      B6  Theory focus:      importance skew → adjust arith/BV-specific params.
+      B7  Stuck detection:   conflict_velocity < 0.5 → increment consecutive_stuck.
+      B8  Relevancy:         consecutive_stuck >= 2 → drop relevancy level.
+      B9  MBQI toggle:       consecutive_stuck >= 3 → enable MBQI fallback.
+
+    Each parameter has a per-restart cooldown to prevent oscillation.
+
+    ── 4. Fallback cascade (Phases C) ────────────────────────────────────
+
+    When consecutive_stuck >= 3, the solver escalates through 4 levels with
+    exponential conflict budgets (10000 * 3^level, capped at 270000):
+
+      Level 1  Incremental adjustments (already done by B3-B9).
+      Level 2  Relaxed: drop relevancy, reset QI threshold, enable MBQI.
+      Level 3  Opposite: flip ematching polarity.
+      Level 4  Nuclear: reset ALL parameters to upstream Z3 stock defaults.
+
+    Budget is clamped to remaining rlimit / 4 when a resource limit is active.
+
+    ── 5. Proof strategy cache (Phase E) ─────────────────────────────────
+
+    On UNSAT, capture_proof_strategy() records the top-K quantifiers by
+    reward EMA, their structural signatures (quantifier_signature()), and
+    the effective solver configuration (θ). Keyed by assertion_hash.
+
+    On subsequent check-sat, apply_proof_strategy() performs two-tier lookup:
+      Tier 1: Exact assertion_hash match → apply cached rewards (scale 1.0)
+              and warm-start θ (qi threshold, relevancy, ematching, mbqi).
+      Tier 2: Fuzzy match — scan all cached strategies, compute signature
+              overlap. If >= 80% match, apply with scale = overlap ratio.
+    Cache is LRU-bounded at 64 entries (~20KB).
+
+    ── 6. Incremental re-profiling (Phase D) ─────────────────────────────
+
+    Between check-sat calls (push/pop, new assertions), compute_assertion_hash()
+    detects content changes via a 64-bit hash over assertion structure. When the
+    hash differs from the previous call, check_reprofile() re-runs static_features
+    and reclassifies. If the category changes, new tuning is applied and all
+    meta-update state (cascade level, stuck counter) is reset.
+
+    ═══════════════════════════════════════════════════════════════════════
 
 Author:
 
