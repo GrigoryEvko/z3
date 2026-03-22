@@ -19,6 +19,7 @@ Global flags (before the command):
     --quiet              Suppress section headers and decorative lines
     --head N             Show only the first N lines of output
     --tail N             Show only the last N lines of output
+    --json               Output as a single JSON object (machine-readable)
 
 Sections for 'show' (default: all):
     overview    Event counts, QI stats, conflict stats, reward summary, result
@@ -27,6 +28,8 @@ Sections for 'show' (default: all):
     restarts    Per-restart signal values
     cost        Cost distribution histogram and per-quantifier average cost
     timeline    Conflict density over time (or per-quantifier with --q)
+    waste       Wasted QI analysis (instances never contributing to conflicts)
+    chain       Conflict co-occurrence / proof chain analysis
 
 Filter shortcuts for common patterns:
     --expensive  QI_INSERT events with cost >= 10
@@ -284,6 +287,15 @@ class TableWriter:
             return
         self.row(cells, widths, aligns)
 
+    def emit_table(self, tbl: Table, indent: int = 0) -> None:
+        """Render a Table object using the current format and emit its lines."""
+        fmt = "tsv" if self.tsv else "table"
+        text = tbl.render(fmt)
+        # No indentation in TSV mode (it would corrupt fields)
+        prefix = ' ' * indent if indent > 0 and not self.tsv else ''
+        for line in text.split('\n'):
+            self._emit(f"{prefix}{line}" if prefix else line)
+
     def footer(self, msg: str) -> None:
         """Print a footer/overflow line (suppressed in quiet mode)."""
         if self.quiet:
@@ -291,6 +303,19 @@ class TableWriter:
         if self.tsv:
             return
         self._emit(f"  ... {msg}")
+
+
+class _NullWriter(TableWriter):
+    """A writer that discards all output. Used in --json mode."""
+
+    def __init__(self):
+        super().__init__(fmt="table", quiet=True)
+
+    def _emit(self, line: str) -> None:
+        pass
+
+    def flush(self) -> None:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +430,146 @@ def safe_div(a: float, b: float, default: float = 0.0) -> float:
     return a / b if b != 0 else default
 
 
+def _compute_waste(inserts: list[dict], conflicts: list[dict]) -> dict:
+    """Compute wasted QI statistics: instances that never appeared in any conflict."""
+    conflict_qi: set[str] = set()
+    for c in conflicts:
+        for qi in c.get("qi", []):
+            conflict_qi.add(qi.get("q", "?"))
+
+    inst_count = Counter(e.get("q", "?") for e in inserts)
+    total_qi = sum(inst_count.values())
+
+    qi_cost_sum: dict[str, float] = defaultdict(float)
+    for e in inserts:
+        qi_cost_sum[e.get("q", "?")] += e.get("cost", 0)
+
+    wasted_quantifiers: list[dict] = []
+    total_wasted_instances = 0
+    total_wasted_cost = 0.0
+
+    for q, cnt in inst_count.items():
+        if q not in conflict_qi:
+            wasted_quantifiers.append({
+                "q": q, "instances": cnt,
+                "total_cost": round(qi_cost_sum[q], 2),
+            })
+            total_wasted_instances += cnt
+            total_wasted_cost += qi_cost_sum[q]
+
+    wasted_quantifiers.sort(key=lambda x: -x["instances"])
+
+    # Low-yield: high instances but <1% conflict hit rate
+    conflict_qi_count: Counter = Counter()
+    for c in conflicts:
+        for qi in c.get("qi", []):
+            conflict_qi_count[qi.get("q", "?")] += 1
+
+    low_yield: list[dict] = []
+    for q, instances in inst_count.items():
+        conf = conflict_qi_count.get(q, 0)
+        if instances >= 10 and conf > 0:
+            ratio = conf / instances
+            if ratio < 0.01:
+                low_yield.append({
+                    "q": q, "instances": instances,
+                    "conflicts": conf, "hit_rate": round(ratio, 6),
+                })
+    low_yield.sort(key=lambda x: -x["instances"])
+
+    return {
+        "total_qi_instances": total_qi,
+        "wasted_instances": total_wasted_instances,
+        "wasted_pct": round(100.0 * total_wasted_instances / max(total_qi, 1), 1),
+        "wasted_quantifiers": len(wasted_quantifiers),
+        "wasted_total_cost": round(total_wasted_cost, 2),
+        "top_wasted": wasted_quantifiers[:10],
+        "low_yield": low_yield[:10],
+    }
+
+
+def _compute_chain(conflicts: list[dict], n: int = 20) -> dict:
+    """Analyze quantifier co-occurrence in conflicts (proof chains)."""
+    pair_count: Counter = Counter()
+    qi_per_conflict: list[list[str]] = []
+    depth_dist: Counter = Counter()
+
+    for c in conflicts:
+        qi_list = c.get("qi", [])
+        names = sorted(set(qi.get("q", "?") for qi in qi_list))
+        qi_per_conflict.append(names)
+        for qi in qi_list:
+            depth_dist[qi.get("d", 0)] += 1
+        for a, b in combinations(names, 2):
+            pair_count[(a, b)] += 1
+
+    solo_count: dict[str, int] = defaultdict(int)
+    for names in qi_per_conflict:
+        for q in names:
+            solo_count[q] += 1
+
+    top_pairs = pair_count.most_common(n)
+
+    # Pairs that always co-occur: pair_count == min(solo_a, solo_b), min 3
+    always_together: list[dict] = []
+    for (a, b), cnt in pair_count.items():
+        min_solo = min(solo_count.get(a, 0), solo_count.get(b, 0))
+        if min_solo > 0 and cnt == min_solo and cnt >= 3:
+            always_together.append({"a": a, "b": b, "count": cnt})
+    always_together.sort(key=lambda x: -x["count"])
+
+    chain_lengths: Counter = Counter()
+    for names in qi_per_conflict:
+        chain_lengths[len(names)] += 1
+
+    zero_qi = chain_lengths.get(0, 0)
+
+    return {
+        "total_conflicts": len(conflicts),
+        "with_qi": len(conflicts) - zero_qi,
+        "chain_length_distribution": dict(sorted(chain_lengths.items())),
+        "depth_distribution": dict(sorted(depth_dist.items())),
+        "top_pairs": [
+            {"a": a, "b": b, "count": cnt} for (a, b), cnt in top_pairs
+        ],
+        "always_together": always_together[:n],
+    }
+
+
+def _compute_verdict(qi_delta: int, conf_delta: int,
+                     result_base: str, result_other: str) -> str:
+    """Produce a human-readable verdict for a diff."""
+    if result_base != result_other:
+        if result_other in ("sat", "unsat") and result_base == "timeout":
+            return f"IMPROVED: solved ({result_other}) vs timeout"
+        if result_other == "timeout" and result_base in ("sat", "unsat"):
+            return f"REGRESSED: timeout vs solved ({result_base})"
+        if result_base in ("sat", "unsat") and result_other in ("sat", "unsat"):
+            return f"CHANGED: result {result_base} -> {result_other} (SOUNDNESS?)"
+        return f"CHANGED: {result_base} -> {result_other}"
+
+    parts = []
+    if qi_delta < 0:
+        parts.append(f"{abs(qi_delta)} fewer QI")
+    elif qi_delta > 0:
+        parts.append(f"{qi_delta} more QI")
+
+    if conf_delta < 0:
+        parts.append(f"{abs(conf_delta)} fewer conflicts")
+    elif conf_delta > 0:
+        parts.append(f"{conf_delta} more conflicts")
+
+    if not parts:
+        return "IDENTICAL: no changes detected"
+
+    if qi_delta <= 0 and conf_delta <= 0:
+        return "IMPROVED: " + ", ".join(parts)
+    elif qi_delta >= 0 and conf_delta >= 0:
+        return "REGRESSED: " + ", ".join(parts)
+    else:
+        return "MIXED: " + ", ".join(parts)
+
+
 def build_useful_set(events: list[dict]) -> set[str]:
     """Return set of quantifier names that appear in any CONFLICT qi array."""
     useful: set[str] = set()
@@ -419,12 +584,14 @@ def build_useful_set(events: list[dict]) -> set[str]:
 # Show sections -- each writes its output through the TableWriter
 # ---------------------------------------------------------------------------
 
-SHOW_SECTIONS = ["overview", "top", "conflicts", "restarts", "cost", "timeline"]
+SHOW_SECTIONS = ["overview", "top", "conflicts", "restarts", "cost", "timeline",
+                 "waste", "chain"]
 
 
 def show_overview(events: list[dict], groups: dict[str, list[dict]],
-                  w: TableWriter, path: str) -> None:
+                  w: TableWriter, path: str) -> dict:
     """Overview: event counts, QI stats, conflict summary, rewards, result."""
+    data: dict[str, Any] = {"trace": path, "events": len(events)}
     w.section("OVERVIEW")
 
     total = len(events)
@@ -439,6 +606,8 @@ def show_overview(events: list[dict], groups: dict[str, list[dict]],
     w.blank()
 
     # Event type distribution
+    data["event_counts"] = {t: len(evs)
+                            for t, evs in sorted(groups.items(), key=lambda x: -len(x[1]))}
     w.info("event_counts:")
     for t, evs in sorted(groups.items(), key=lambda x: -len(x[1])):
         w.kv_indented(t, len(evs))
@@ -448,15 +617,23 @@ def show_overview(events: list[dict], groups: dict[str, list[dict]],
     if inserts:
         costs = [e.get("cost", 0) for e in inserts]
         heats = [e.get("heat", 0) for e in inserts]
+        nonzero_heat = [h for h in heats if h > 0]
+        qi_names = Counter(e.get("q", "?") for e in inserts)
+        data["qi_inserts"] = {
+            "count": len(inserts),
+            "cost_min": min(costs), "cost_max": max(costs),
+            "cost_mean": safe_div(sum(costs), len(costs)),
+            "cost_median": sorted(costs)[len(costs) // 2],
+            "heat_nonzero": len(nonzero_heat),
+            "unique_quantifiers": len(qi_names),
+        }
         w.kv("qi_inserts", len(inserts))
         w.kv_indented("cost_min", f"{min(costs):.4f}")
         w.kv_indented("cost_max", f"{max(costs):.4f}")
         w.kv_indented("cost_mean", f"{safe_div(sum(costs), len(costs)):.4f}")
         w.kv_indented("cost_median", f"{sorted(costs)[len(costs) // 2]:.4f}")
-        nonzero_heat = [h for h in heats if h > 0]
         w.kv_indented("heat_nonzero",
                       f"{len(nonzero_heat)} ({fmt_pct(len(nonzero_heat), len(inserts))})")
-        qi_names = Counter(e.get("q", "?") for e in inserts)
         w.kv_indented("unique_quantifiers", len(qi_names))
         w.blank()
 
@@ -465,6 +642,12 @@ def show_overview(events: list[dict], groups: dict[str, list[dict]],
         sizes = [e.get("sz", 0) for e in conflicts]
         qi_counts = [e.get("qi_count", 0) for e in conflicts]
         with_qi = [c for c in conflicts if c.get("qi_count", 0) > 0]
+        data["conflicts"] = {
+            "count": len(conflicts),
+            "with_qi_antecedents": len(with_qi),
+            "avg_clause_size": round(safe_div(sum(sizes), len(sizes)), 1),
+            "avg_qi_per_conflict": round(safe_div(sum(qi_counts), len(qi_counts)), 2),
+        }
         w.kv("conflicts", len(conflicts))
         w.kv_indented("with_qi_antecedents",
                       f"{len(with_qi)} ({fmt_pct(len(with_qi), len(conflicts))})")
@@ -507,15 +690,23 @@ def show_overview(events: list[dict], groups: dict[str, list[dict]],
     # Solve result
     if solves:
         s = solves[-1]
+        solve_info: dict[str, Any] = {"result": s.get("result", "?")}
+        for k in ["conflicts", "restarts", "cache_hits", "cache_misses",
+                   "cache_size", "replay", "cascade"]:
+            if k in s:
+                solve_info[k] = s[k]
+        data["solve"] = solve_info
         w.kv("result", s.get("result", "?"))
         for k in ["conflicts", "restarts", "cache_hits", "cache_misses",
                    "cache_size", "replay", "cascade"]:
             if k in s:
                 w.kv_indented(k, fmt_num(s[k]))
 
+    return data
+
 
 def show_top(events: list[dict], groups: dict[str, list[dict]],
-             w: TableWriter, sort_by: str = "reward", n: int = 20) -> None:
+             w: TableWriter, sort_by: str = "reward", n: int = 20) -> dict:
     """Top quantifiers ranked by a chosen metric."""
     w.section("TOP QUANTIFIERS")
 
@@ -537,7 +728,7 @@ def show_top(events: list[dict], groups: dict[str, list[dict]],
     all_q = set(inst_count.keys()) | set(final_reward.keys()) | set(conflict_count.keys())
     if not all_q:
         w.info("(no quantifier data)")
-        return
+        return {"quantifiers": [], "sort_by": sort_by}
 
     rows: list[dict] = []
     for q in all_q:
@@ -575,16 +766,19 @@ def show_top(events: list[dict], groups: dict[str, list[dict]],
     if len(rows) > n:
         w.footer(f"{len(rows) - n} more quantifiers")
 
+    return {"sort_by": sort_by, "showing": len(rows[:n]),
+            "total": len(rows), "quantifiers": rows[:n]}
+
 
 def show_conflicts(events: list[dict], groups: dict[str, list[dict]],
-                   w: TableWriter, limit: int = 20) -> None:
+                   w: TableWriter, limit: int = 20) -> dict:
     """Conflict details and per-quantifier conflict frequency."""
     w.section("CONFLICTS")
 
     conflicts = groups.get("CONFLICT", [])
     if not conflicts:
         w.info("(no conflicts recorded)")
-        return
+        return {"total_conflicts": 0}
 
     w.kv("total_conflicts", len(conflicts))
     w.blank()
@@ -615,23 +809,31 @@ def show_conflicts(events: list[dict], groups: dict[str, list[dict]],
             depth_sum[q] += qi.get("d", 0)
             depth_count[q] += 1
 
+    freq_list = []
     if freq:
         widths_freq = [6, 9, -40]
         w.header_row(["FREQ", "AVG_DEPTH", "QUANTIFIER"], widths_freq)
         for q, cnt in freq.most_common(20):
             avg_d = safe_div(depth_sum[q], depth_count[q])
             w.row([cnt, f"{avg_d:.2f}", q], widths_freq)
+            freq_list.append({"q": q, "count": cnt, "avg_depth": round(avg_d, 2)})
+
+    return {
+        "total_conflicts": len(conflicts),
+        "shown": min(limit, len(conflicts)),
+        "quantifier_frequency": freq_list,
+    }
 
 
 def show_restarts(events: list[dict], groups: dict[str, list[dict]],
-                  w: TableWriter) -> None:
+                  w: TableWriter) -> dict:
     """Per-restart signal values table."""
     w.section("RESTARTS")
 
     restarts = groups.get("RESTART", [])
     if not restarts:
         w.info("(no restarts recorded)")
-        return
+        return {"restarts": []}
 
     widths = [4, 6, 7, 7, 7, 7, 5, 4, -14]
     headers = ["R", "CONF", "VEL", "BV", "CN", "RE", "STUCK", "CASC", "SKEW"]
@@ -654,16 +856,18 @@ def show_restarts(events: list[dict], groups: dict[str, list[dict]],
             skew_str,
         ], widths)
 
+    return {"count": len(restarts), "restarts": restarts}
+
 
 def show_cost(events: list[dict], groups: dict[str, list[dict]],
-              w: TableWriter) -> None:
+              w: TableWriter) -> dict:
     """Cost distribution histogram and per-quantifier average cost."""
     w.section("COST DISTRIBUTION")
 
     inserts = groups.get("QI_INSERT", [])
     if not inserts:
         w.info("(no QI_INSERT events)")
-        return
+        return {"qi_inserts": 0}
 
     costs = [e.get("cost", 0) for e in inserts]
     heats = [e.get("heat", 0) for e in inserts]
@@ -716,13 +920,24 @@ def show_cost(events: list[dict], groups: dict[str, list[dict]],
     widths_qc = [8, 7, -40]
     w.header_row(["AVG_COST", "INST", "QUANTIFIER"], widths_qc)
     ranked = sorted(qi_costs.items(), key=lambda x: -len(x[1]))
+    per_q_data = []
     for q, costs_list in ranked[:20]:
         avg = safe_div(sum(costs_list), len(costs_list))
         w.row([f"{avg:.4f}", len(costs_list), q], widths_qc)
+        per_q_data.append({"q": q, "avg_cost": round(avg, 4),
+                           "instances": len(costs_list)})
+
+    labels = [f"[{i},{i+1})" for i in range(10)] + ["[10,20)", "[20,inf)"]
+    cost_dist = [{"range": labels[i], "count": buckets[i]} for i in range(12)]
+    return {
+        "qi_inserts": len(inserts),
+        "cost_distribution": cost_dist,
+        "per_quantifier_avg_cost": per_q_data,
+    }
 
 
 def show_timeline(events: list[dict], groups: dict[str, list[dict]],
-                  w: TableWriter, q_filter: str | None = None) -> None:
+                  w: TableWriter, q_filter: str | None = None) -> dict:
     """Conflict density over time, or per-quantifier timeline with --q."""
     w.section("TIMELINE")
 
@@ -731,12 +946,14 @@ def show_timeline(events: list[dict], groups: dict[str, list[dict]],
         matched = [e for e in events if q_filter in e.get("q", "")]
         w.kv(f"events for '{q_filter}'", len(matched))
         if not matched:
-            return
+            return {"quantifier": q_filter, "total_events": 0}
         w.blank()
 
         # Event type counts
         sub_groups = by_type(matched)
+        type_counts = {}
         for t, evs in sorted(sub_groups.items()):
+            type_counts[t] = len(evs)
             w.kv_indented(t, len(evs))
         w.blank()
 
@@ -760,23 +977,34 @@ def show_timeline(events: list[dict], groups: dict[str, list[dict]],
 
         # Cost progression
         qi_inserts = [e for e in matched if e.get("t") == "QI_INSERT"]
+        cost_info: dict[str, Any] = {}
         if qi_inserts:
             w.blank()
             qi_costs = [e.get("cost", 0) for e in qi_inserts]
+            cost_info = {
+                "first_cost": qi_costs[0], "last_cost": qi_costs[-1],
+                "min_cost": min(qi_costs), "max_cost": max(qi_costs),
+            }
             w.info("cost_progression:")
             w.kv_indented("first_cost", f"{qi_costs[0]:.4f}")
             w.kv_indented("last_cost", f"{qi_costs[-1]:.4f}")
             w.kv_indented("min_cost", f"{min(qi_costs):.4f}")
             w.kv_indented("max_cost", f"{max(qi_costs):.4f}")
+
+        return {
+            "quantifier": q_filter, "total_events": len(matched),
+            "type_counts": type_counts, "cost_progression": cost_info,
+        }
     else:
         # Global timeline: conflict density
         conflicts = groups.get("CONFLICT", [])
-        restarts = groups.get("RESTART", [])
+        restarts_list = groups.get("RESTART", [])
 
         w.kv("total_conflicts", len(conflicts))
-        w.kv("total_restarts", len(restarts))
+        w.kv("total_restarts", len(restarts_list))
         w.blank()
 
+        density_data: dict[str, int] = {}
         if conflicts:
             max_c = max(e.get("c", 0) for e in conflicts)
             bucket_size = max(max_c // 20, 1)
@@ -790,11 +1018,124 @@ def show_timeline(events: list[dict], groups: dict[str, list[dict]],
             for b in sorted(density.keys()):
                 label = f"[{b * bucket_size}-{(b + 1) * bucket_size})"
                 count = density[b]
+                density_data[label] = count
                 if w.tsv:
                     w.row([label, count], widths_cd)
                 else:
                     bar = "#" * min(count, 60)
                     w.row([label, count, bar], widths_cd)
+
+        return {
+            "total_conflicts": len(conflicts),
+            "total_restarts": len(restarts_list),
+            "conflict_density": density_data,
+        }
+
+
+def show_waste(events: list[dict], groups: dict[str, list[dict]],
+               w: TableWriter, n: int = 20) -> dict:
+    """Wasted QI analysis: instances that never contributed to any conflict."""
+    w.section("WASTE ANALYSIS")
+
+    inserts = groups.get("QI_INSERT", [])
+    conflicts = groups.get("CONFLICT", [])
+
+    if not inserts:
+        w.info("(no QI_INSERT events)")
+        return {"total_qi_instances": 0}
+
+    waste = _compute_waste(inserts, conflicts)
+
+    w.kv("wasted_qi_instances",
+         f"{waste['wasted_instances']} / {waste['total_qi_instances']} "
+         f"({waste['wasted_pct']}%)")
+    w.kv("wasted_quantifiers", waste["wasted_quantifiers"])
+    w.kv("wasted_total_cost", f"{waste['wasted_total_cost']:.2f}")
+
+    if waste["top_wasted"]:
+        w.blank()
+        w.info("top_wasted_quantifiers (zero conflict participation):")
+        tbl = Table(["INST", "COST", "QUANTIFIER"], "rrl", truncate_last=True)
+        for wq in waste["top_wasted"][:n]:
+            tbl.add(wq["instances"], f"{wq['total_cost']:.2f}", wq["q"])
+        w.emit_table(tbl, indent=2)
+
+    if waste["low_yield"]:
+        w.blank()
+        w.info("low_yield_quantifiers (<1% hit rate, >= 10 instances):")
+        tbl2 = Table(["INST", "CONFLICTS", "HIT_RATE", "QUANTIFIER"],
+                     "rrrl", truncate_last=True)
+        for ly in waste["low_yield"][:n]:
+            tbl2.add(ly["instances"], ly["conflicts"],
+                     f"{ly['hit_rate']:.6f}", ly["q"])
+        w.emit_table(tbl2, indent=2)
+
+    return waste
+
+
+def show_chain(events: list[dict], groups: dict[str, list[dict]],
+               w: TableWriter, n: int = 20) -> dict:
+    """Conflict co-occurrence / proof chain analysis."""
+    w.section("CHAIN ANALYSIS")
+
+    conflicts = groups.get("CONFLICT", [])
+    if not conflicts:
+        w.info("(no CONFLICT events)")
+        return {"total_conflicts": 0}
+
+    chain = _compute_chain(conflicts, n)
+
+    w.kv("total_conflicts", chain["total_conflicts"])
+    w.kv("with_qi_antecedents", chain["with_qi"])
+    w.blank()
+
+    # Chain length distribution
+    chain_lengths = chain["chain_length_distribution"]
+    if chain_lengths:
+        max_cl = max(chain_lengths.values()) if chain_lengths else 1
+        w.info("chain_length_distribution (QI per conflict):")
+        for length_key in sorted(chain_lengths.keys()):
+            cnt = chain_lengths[length_key]
+            pct = fmt_pct(cnt, chain["total_conflicts"])
+            if not w.tsv:
+                bar = "#" * min(int(50 * cnt / max(max_cl, 1)), 60)
+                w.kv_indented(f"{length_key} QI",
+                              f"{cnt:>6} ({pct:>6})  {bar}")
+            else:
+                w.kv_indented(f"{length_key} QI", f"{cnt}\t{pct}")
+        w.blank()
+
+    # Depth distribution
+    depth_dist = chain["depth_distribution"]
+    if depth_dist:
+        w.info("qi_attribution_depth_distribution:")
+        for depth_key in sorted(depth_dist.keys()):
+            cnt = depth_dist[depth_key]
+            w.kv_indented(f"depth {depth_key}", cnt)
+        w.blank()
+
+    # Top co-occurring pairs
+    if chain["top_pairs"]:
+        shown = min(n, len(chain["top_pairs"]))
+        w.info(f"top_co_occurring_pairs (top {shown}):")
+        tbl_pairs = Table(["COUNT", "QUANTIFIER_A", "QUANTIFIER_B"], "rll")
+        for p in chain["top_pairs"][:n]:
+            tbl_pairs.add(p["count"], p["a"], p["b"])
+        w.emit_table(tbl_pairs)
+        w.blank()
+
+    # Always-together pairs
+    if chain["always_together"]:
+        total_at = len(chain["always_together"])
+        w.info(f"always_together_pairs ({total_at} total, min 3 occurrences):")
+        tbl_at = Table(["COUNT", "QUANTIFIER_A", "QUANTIFIER_B"], "rll")
+        for p in chain["always_together"][:n]:
+            tbl_at.add(p["count"], p["a"], p["b"])
+        w.emit_table(tbl_at)
+    else:
+        w.info("always_together_pairs: none found (min 3 occurrences)")
+
+    return chain
 
 
 # ---------------------------------------------------------------------------
@@ -802,36 +1143,56 @@ def show_timeline(events: list[dict], groups: dict[str, list[dict]],
 # ---------------------------------------------------------------------------
 
 def cmd_show(args) -> None:
-    w = TableWriter(fmt=args.format, quiet=args.quiet,
-                    head=args.head, tail=args.tail)
+    is_json = getattr(args, 'json', False)
+
+    if is_json:
+        # In JSON mode, use a NullWriter that discards all text output;
+        # we collect structured data from the show_* return values.
+        w = _NullWriter()
+    else:
+        w = TableWriter(fmt=args.format, quiet=args.quiet,
+                        head=args.head, tail=args.tail)
+
     trace_path = resolve_trace_path(args.trace)
     events = load_trace(trace_path)
     check_nonempty_trace(events, trace_path)
     groups = by_type(events)
 
     sections = args.section if args.section else SHOW_SECTIONS
+    json_result: dict[str, Any] = {}
 
     for sec in sections:
         if sec == "overview":
-            show_overview(events, groups, w, trace_path)
+            json_result["overview"] = show_overview(events, groups, w, trace_path)
         elif sec == "top":
-            show_top(events, groups, w,
-                     sort_by=args.by or "reward",
-                     n=args.n or 20)
+            json_result["top"] = show_top(events, groups, w,
+                                          sort_by=args.by or "reward",
+                                          n=args.n or 20)
         elif sec == "conflicts":
-            show_conflicts(events, groups, w, limit=args.limit or 20)
+            json_result["conflicts"] = show_conflicts(events, groups, w,
+                                                      limit=args.limit or 20)
         elif sec == "restarts":
-            show_restarts(events, groups, w)
+            json_result["restarts"] = show_restarts(events, groups, w)
         elif sec == "cost":
-            show_cost(events, groups, w)
+            json_result["cost"] = show_cost(events, groups, w)
         elif sec == "timeline":
-            show_timeline(events, groups, w, q_filter=args.q)
+            json_result["timeline"] = show_timeline(events, groups, w,
+                                                    q_filter=args.q)
+        elif sec == "waste":
+            json_result["waste"] = show_waste(events, groups, w,
+                                              n=args.n or 20)
+        elif sec == "chain":
+            json_result["chain"] = show_chain(events, groups, w,
+                                              n=args.n or 20)
         else:
             print(f"ERROR: unknown section '{sec}'. "
                   f"Valid: {', '.join(SHOW_SECTIONS)}", file=sys.stderr)
             sys.exit(1)
 
-    w.flush()
+    if is_json:
+        print(json.dumps(json_result, indent=2, default=str))
+    else:
+        w.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -839,8 +1200,14 @@ def cmd_show(args) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_diff(args) -> None:
-    w = TableWriter(fmt=args.format, quiet=args.quiet,
-                    head=args.head, tail=args.tail)
+    is_json = getattr(args, 'json', False)
+    if is_json:
+        w = _NullWriter()
+    else:
+        w = TableWriter(fmt=args.format, quiet=args.quiet,
+                        head=args.head, tail=args.tail)
+    n = getattr(args, 'n', 20) or 20
+
     evA = load_trace(args.base)
     evB = load_trace(args.other)
 
@@ -848,6 +1215,7 @@ def cmd_diff(args) -> None:
     gB = by_type(evB)
 
     # High-level stat comparison
+    metrics_data: list[dict] = []
     w.section("EVENT COUNT COMPARISON")
     widths_cmp = [-25, 8, 8, 10]
     w.header_row(["METRIC", "BASE", "OTHER", "DELTA"], widths_cmp)
@@ -859,14 +1227,18 @@ def cmd_diff(args) -> None:
         delta = b - a
         pct = f"{100.0 * delta / max(a, 1):+.1f}%" if a > 0 else "n/a"
         w.row([key, a, b, f"{delta:+d} {pct}"], widths_cmp)
+        metrics_data.append({"metric": key, "base": a, "other": b,
+                             "delta": delta, "pct": pct})
 
     # Compare results
     solveA = gA.get("SOLVE", [{}])[-1] if gA.get("SOLVE") else {}
     solveB = gB.get("SOLVE", [{}])[-1] if gB.get("SOLVE") else {}
+    result_base = solveA.get("result", "?")
+    result_other = solveB.get("result", "?")
 
     w.blank()
-    w.kv("result_base", solveA.get("result", "?"))
-    w.kv("result_other", solveB.get("result", "?"))
+    w.kv("result_base", result_base)
+    w.kv("result_other", result_other)
 
     # Per-quantifier instance diffs
     w.section("QUANTIFIER INSTANCE DIFFS")
@@ -881,14 +1253,15 @@ def cmd_diff(args) -> None:
             diffs.append((q, a, b, b - a))
     diffs.sort(key=lambda x: -abs(x[3]))
 
-    w.kv("changed_quantifiers", len(diffs))
+    w.kv("changed_quantifiers",
+         f"{len(diffs)} total, showing top {min(n, len(diffs))}")
     if diffs:
         widths_qi = [8, 7, 7, -40]
         w.header_row(["DELTA", "BASE", "OTHER", "QUANTIFIER"], widths_qi)
-        for q, a, b, d in diffs[:20]:
+        for q, a, b, d in diffs[:n]:
             w.row([f"{d:+d}", a, b, q], widths_qi)
-        if len(diffs) > 20:
-            w.footer(f"{len(diffs) - 20} more")
+        if len(diffs) > n:
+            w.footer(f"{len(diffs) - n} more")
     else:
         w.info("(identical)")
 
@@ -909,14 +1282,42 @@ def cmd_diff(args) -> None:
             rew_diffs.append((q, a, b, b - a))
     rew_diffs.sort(key=lambda x: -abs(x[3]))
 
-    w.kv("changed_rewards", len(rew_diffs))
+    w.kv("changed_rewards",
+         f"{len(rew_diffs)} total, showing top {min(n, len(rew_diffs))}")
     if rew_diffs:
         widths_rew = [8, 8, 8, -40]
         w.header_row(["DELTA", "BASE", "OTHER", "QUANTIFIER"], widths_rew)
-        for q, a, b, d in rew_diffs[:15]:
+        for q, a, b, d in rew_diffs[:n]:
             w.row([f"{d:+.4f}", f"{a:.4f}", f"{b:.4f}", q], widths_rew)
+        if len(rew_diffs) > n:
+            w.footer(f"{len(rew_diffs) - n} more")
     else:
         w.info("(identical)")
+
+    # Verdict
+    qi_delta = len(gB.get("QI_INSERT", [])) - len(gA.get("QI_INSERT", []))
+    conf_delta = len(gB.get("CONFLICT", [])) - len(gA.get("CONFLICT", []))
+    verdict = _compute_verdict(qi_delta, conf_delta, result_base, result_other)
+
+    w.blank()
+    w._emit(f"VERDICT: {verdict}")
+
+    if is_json:
+        diffs_data = [{"q": q, "base": a, "other": b, "delta": d}
+                      for q, a, b, d in diffs[:n]]
+        rew_diffs_data = [{"q": q, "base": a, "other": b, "delta": d}
+                          for q, a, b, d in rew_diffs[:n]]
+        print(json.dumps({
+            "metrics": metrics_data,
+            "result_base": result_base,
+            "result_other": result_other,
+            "qi_instance_diffs": diffs_data,
+            "qi_instance_diffs_total": len(diffs),
+            "reward_diffs": rew_diffs_data,
+            "reward_diffs_total": len(rew_diffs),
+            "verdict": verdict,
+        }, indent=2, default=str))
+        return
 
     w.flush()
 
@@ -926,8 +1327,12 @@ def cmd_diff(args) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_diagnose(args) -> None:
-    w = TableWriter(fmt=args.format, quiet=args.quiet,
-                    head=args.head, tail=args.tail)
+    is_json = getattr(args, 'json', False)
+    if is_json:
+        w = _NullWriter()
+    else:
+        w = TableWriter(fmt=args.format, quiet=args.quiet,
+                        head=args.head, tail=args.tail)
     evBase = load_trace(args.base)
     evReg = load_trace(args.regressed)
 
@@ -1037,6 +1442,27 @@ def cmd_diagnose(args) -> None:
         for q, a, b, d in changes[:15]:
             w.row([f"{d:+d}", a, b, q], widths_ch)
 
+    if is_json:
+        resBase = solveBase.get("result", "?")
+        resReg = solveReg.get("result", "?")
+        appeared_sorted = sorted(appeared, key=lambda x: -instReg[x])
+        disappeared_sorted = sorted(disappeared, key=lambda x: -instBase[x])
+        changes_data = [{"q": q, "base": a, "regressed": b, "delta": b - a}
+                        for q, a, b, _ in changes[:15]]
+        print(json.dumps({
+            "base_result": resBase,
+            "regressed_result": resReg,
+            "base_conflicts": confBase,
+            "regressed_conflicts": confReg,
+            "base_qi_inserts": qiBase,
+            "regressed_qi_inserts": qiReg,
+            "first_divergence_index": first_div,
+            "new_quantifiers": list(appeared_sorted[:20]),
+            "missing_quantifiers": list(disappeared_sorted[:20]),
+            "biggest_changes": changes_data,
+        }, indent=2, default=str))
+        return
+
     w.flush()
 
 
@@ -1079,6 +1505,15 @@ def cmd_filter(args) -> None:
         events = [e for e in events if e.get("c", 0) <= args.before_conflict]
 
     limit = args.limit or 50
+
+    if getattr(args, 'json', False):
+        print(json.dumps({
+            "matched": len(events),
+            "shown": min(limit, len(events)),
+            "events": events[:limit],
+        }, indent=2, default=str))
+        return
+
     w.kv("matched", len(events))
     for e in events[:limit]:
         w._emit(json.dumps(e))
@@ -1306,10 +1741,14 @@ examples:
   z3trace.py show trace.jsonl --section overview top    # specific sections
   z3trace.py show trace.jsonl --section top --by inst --n 30
   z3trace.py show trace.jsonl --section timeline --q "my_lemma"
-  z3trace.py show trace.jsonl --format tsv --quiet      # machine-readable
+  z3trace.py show trace.jsonl --section waste chain     # waste + chain analysis
+  z3trace.py show trace.jsonl --format tsv --quiet      # machine-readable TSV
+  z3trace.py --json show trace.jsonl                    # full JSON output
+  z3trace.py --json diff base.jsonl other.jsonl         # JSON diff
   z3trace.py --head 20 show trace.jsonl                 # first 20 lines only
   z3trace.py --tail 10 show trace.jsonl                 # last 10 lines only
-  z3trace.py diff base.jsonl other.jsonl
+  z3trace.py diff base.jsonl other.jsonl                # compare traces
+  z3trace.py diff base.jsonl other.jsonl --n 30         # show top 30 changes
   z3trace.py diagnose base.jsonl regressed.jsonl
   z3trace.py filter trace.jsonl --type QI_INSERT --q "lemma" --min-cost 5
   z3trace.py filter --expensive                         # auto-detect, cost>=10
@@ -1327,6 +1766,8 @@ sections for 'show':
   restarts   Per-restart signal values (vel, bv, cn, re, stuck, cascade, skew)
   cost       Cost histogram, heat stats, per-quantifier average cost
   timeline   Conflict density over time (or per-quantifier with --q)
+  waste      Wasted QI analysis (instances never contributing to conflicts)
+  chain      Conflict co-occurrence / proof chain analysis
 """
 
 
@@ -1346,6 +1787,8 @@ def main() -> None:
                         help="Show only the first N lines of output")
     parser.add_argument("--tail", type=int, default=None,
                         help="Show only the last N lines of output")
+    parser.add_argument("--json", action="store_true",
+                        help="Output as a single JSON object (machine-readable)")
 
     sub = parser.add_subparsers(dest="cmd")
 
@@ -1384,6 +1827,8 @@ def main() -> None:
     )
     p.add_argument("base", help="Baseline trace file")
     p.add_argument("other", help="Other trace file to compare")
+    p.add_argument("--n", type=int, default=20,
+                   help="Show top N most changed quantifiers (default: 20)")
 
     # -- diagnose -----------------------------------------------------------
     p = sub.add_parser(
