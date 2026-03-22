@@ -544,6 +544,10 @@ namespace smt {
         m_imp->m_qi_queue.inc_global_qi_conflicts();
     }
 
+    void quantifier_manager::mark_binding_useful(uint64_t h) {
+        m_imp->m_qi_queue.mark_binding_useful(h);
+    }
+
     void quantifier_manager::relevant_eh(enode * n) {
         m_imp->relevant_eh(n);
     }

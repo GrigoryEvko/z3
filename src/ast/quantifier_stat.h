@@ -49,9 +49,9 @@ namespace q {
 
         // Ring buffer of recent binding structure hashes (E2.3).
         // Used by attribute_qi_conflict to mark useful patterns in the
-        // Bloom filter.  16 entries gives ~16 recent instantiations of
-        // lookback per quantifier.
-        static constexpr unsigned BINDING_RING_SIZE = 16;
+        // Bloom filter.  4 entries keeps overhead to 36 bytes per
+        // quantifier while providing recent binding lookback.
+        static constexpr unsigned BINDING_RING_SIZE = 4;
         uint64_t m_binding_hash_ring[BINDING_RING_SIZE];
         unsigned m_binding_hash_ring_pos;
 

@@ -4747,6 +4747,13 @@ namespace smt {
             if (stat) {
                 unsigned d = seen_depth[i] < 10 ? seen_depth[i] : 10;
                 stat->inc_num_conflicts_weighted(decay_table[d]);
+                // E2.3: Mark recent binding hashes from this quantifier
+                // as useful in the Bloom filter.  The ring buffer holds
+                // the last 16 binding structure hashes; any of them may
+                // have contributed to the conflict.
+                stat->for_each_recent_binding_hash([this](uint64_t h) {
+                    m_qmanager->mark_binding_useful(h);
+                });
             }
         }
     }

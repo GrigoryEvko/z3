@@ -237,6 +237,7 @@ namespace smt {
     void qi_queue::insert(fingerprint * f, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
         quantifier * q         = static_cast<quantifier*>(f->get_data());
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
+        float const base_cost  = cost;  // snapshot for inflation cap
         // Relevancy-guided QI gating: penalize bindings with low soft-relevancy.
         // After warmup (500 instances), bindings in irrelevant parts of the
         // search space get their cost inflated, steering QI effort toward
@@ -248,8 +249,12 @@ namespace smt {
             double factor = (1.0 - rel_w) + rel_w / binding_rel;
             cost = static_cast<float>(cost * factor);
         }
-        // E4.2: Depth penalty — penalize bindings with deep AST terms.
-        // Deep terms indicate long instantiation chains that may diverge.
+        // E4: E-graph metrics tracking (informational).
+        // Depth penalty and connectivity discount are disabled because
+        // they perturb proof search on borderline F* ModifiesGen queries
+        // (pushing rlimit-marginal queries past their resource limit).
+        // The EMAs are still computed for diagnostic tracing and future
+        // use with gated parameters.
         if (m_params.m_qi_feedback) {
             unsigned num_bindings = f->get_num_args();
             unsigned max_depth = 0;
@@ -257,18 +262,14 @@ namespace smt {
                 unsigned d = f->get_arg(i)->get_expr()->get_depth();
                 if (d > max_depth) max_depth = d;
             }
-            if (max_depth >= 6) {
-                cost += static_cast<float>(std::log2(static_cast<double>(max_depth - 4)));
+            if (max_depth >= 10) {
                 m_egraph_metrics.m_deep_instance_count++;
             }
-            // Update binding depth EMA (alpha = 0.05)
             constexpr float depth_alpha = 0.05f;
             m_egraph_metrics.m_avg_binding_depth_ema =
                 (1.0f - depth_alpha) * m_egraph_metrics.m_avg_binding_depth_ema +
                 depth_alpha * static_cast<float>(max_depth);
 
-            // E4.3: Connectivity discount/penalty — reward bindings from
-            // diverse equivalence classes (more cross-cutting information).
             if (num_bindings >= 2) {
                 enode * roots[8];
                 unsigned n_roots = std::min(num_bindings, 8u);
@@ -282,12 +283,6 @@ namespace smt {
                     if (!dup) roots[distinct++] = r;
                 }
                 float connectivity = static_cast<float>(distinct) / static_cast<float>(n_roots);
-                if (connectivity >= 0.9f) {
-                    cost *= 0.9f;   // high diversity — discount
-                } else if (connectivity < 0.5f) {
-                    cost *= 1.1f;   // low diversity — penalty
-                }
-                // Update connectivity EMA (alpha = 0.05)
                 constexpr float conn_alpha = 0.05f;
                 m_egraph_metrics.m_avg_connectivity_ema =
                     (1.0f - conn_alpha) * m_egraph_metrics.m_avg_connectivity_ema +
@@ -298,13 +293,25 @@ namespace smt {
         // E2.4: Binding-level Bloom filter boost.
         // If the binding's structural hash matches a pattern that
         // previously appeared in a conflict antecedent chain, apply
-        // a 20% cost discount.  Boost-only: unknown patterns are
-        // never penalized.
-        if (m_params.m_qi_feedback && !m_binding_filter.is_empty()) {
+        // a 10% cost discount.  Boost-only: unknown patterns are
+        // never penalized.  Requires warmup (1000 instances) so
+        // the filter has meaningful data before influencing decisions.
+        if (m_params.m_qi_feedback && !m_binding_filter.is_empty() &&
+            m_stats.m_num_instances > 1000) {
             uint64_t bh = qi_binding_structure_hash(q, f->get_num_args(), f->get_args());
             if (m_binding_filter.probably_useful(bh)) {
-                cost *= 0.8f;
+                cost *= 0.90f;
             }
+        }
+
+        // Global inflation cap: E1 relevancy + E4 connectivity + E4 depth
+        // can compound.  Clamp so combined modifiers never inflate beyond
+        // 10x the base cost returned by get_cost().  Discounts (< base)
+        // are never clamped.
+        if (m_params.m_qi_feedback && base_cost > 0.0f) {
+            float max_cost = base_cost * 10.0f;
+            if (cost > max_cost)
+                cost = max_cost;
         }
 
         TRACE(qi_queue_detail,
@@ -368,22 +375,11 @@ namespace smt {
                   << " effective_threshold=" << effective_threshold << "\n";);
         }
 
-        // E4.4: E-graph growth and merge ratio throttle (uses EMAs from
-        // previous batches). High growth rate means QI is expanding the
-        // E-graph too fast — tighten threshold. Low merge ratio means
-        // instances aren't unifying terms — tighten. High merge ratio
-        // means productive merging — loosen.
-        if (m_params.m_qi_feedback && total_inst >= 1000) {
-            if (m_egraph_metrics.m_growth_rate_ema > 0.05f) {
-                effective_threshold *= 0.8;
-            }
-            float mr = m_egraph_metrics.m_qi_merge_ratio_ema;
-            if (mr > 0.0f && mr < 0.1f) {
-                effective_threshold *= 0.9;
-            } else if (mr > 2.0f) {
-                effective_threshold *= 1.2;
-            }
-        }
+        // E4.4: E-graph growth and merge ratio tracking (informational only).
+        // The threshold modulation is disabled because even mild 5%
+        // adjustments caused regressions on borderline F* ModifiesGen
+        // queries.  The EMAs are still computed (post-batch, below) for
+        // diagnostic tracing and potential future use.
 
         unsigned since_last_check = 0;
         for (entry & curr : m_new_entries) {
@@ -688,6 +684,7 @@ namespace smt {
         m_delayed_entries.reset();
         m_instances.reset();
         m_scopes.reset();
+        m_binding_filter.init();
     }
 
     void qi_queue::init_search_eh() {
