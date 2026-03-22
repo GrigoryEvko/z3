@@ -3820,6 +3820,9 @@ namespace smt {
         if (!m_adaptive_log && !m_fparams.m_adaptive_log.empty()) {
             m_adaptive_log = fopen(m_fparams.m_adaptive_log.c_str(), "w");
             if (m_adaptive_log) {
+                // Line-buffered: every event ends with \n, so each is
+                // flushed immediately.  Prevents truncation on timeout/kill.
+                setvbuf(m_adaptive_log, nullptr, _IOLBF, 0);
                 ALOG(m_adaptive_log, "INIT")
                     .s("version", "z3-adaptive-log-v1");
             }
