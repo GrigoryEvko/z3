@@ -423,6 +423,10 @@ namespace smt {
         st.update("minimized lits", m_stats.m_num_minimized_lits);
         st.update("num checks", m_stats.m_num_checks);
         st.update("mk bool var", m_stats.m_num_mk_bool_var ? m_stats.m_num_mk_bool_var - 1 : 0);
+        st.update("proof-cache-size", m_proof_cache.size());
+        st.update("proof-cache-hits", m_proof_cache_hits);
+        st.update("proof-cache-misses", m_proof_cache_misses);
+        st.update("proof-cache-warm-starts", m_proof_cache_warm_starts);
         m_qmanager->collect_statistics(st);
         m_asserted_formulas.collect_statistics(st);
         for (theory* th : m_theory_set) {
