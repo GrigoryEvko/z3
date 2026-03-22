@@ -3698,6 +3698,7 @@ namespace smt {
         m_num_conflicts_since_lemma_gc = 0;
         m_th_imp_decay_counter         = 0;
         m_soft_rel_decay_counter       = 0;
+        reset_curvature_noise();
         m_num_restarts                 = 0;
         m_restart_threshold            = m_fparams.m_restart_initial;
         m_restart_outer_threshold      = m_fparams.m_restart_initial;

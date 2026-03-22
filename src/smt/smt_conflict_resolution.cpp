@@ -335,6 +335,12 @@ namespace smt {
                     th->conflict_resolution_eh(to_app(n), var);
             }
 
+            // Curvature noise: accumulate activity by QI vs non-QI source
+            if (m_ctx.literal_qi_source(antecedent))
+                m_ctx.accumulate_curvature_qi(m_ctx.get_activity(var));
+            else
+                m_ctx.accumulate_curvature_nonqi(m_ctx.get_activity(var));
+
             if (get_manager().has_trace_stream()) {
                 get_manager().trace_stream() << "[resolve-lit] " << m_conflict_lvl - lvl << " ";
                 m_ctx.display_literal(get_manager().trace_stream(), ~antecedent) << "\n";

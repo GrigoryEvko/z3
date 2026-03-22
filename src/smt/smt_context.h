@@ -235,6 +235,11 @@ namespace smt {
         unsigned                    m_th_imp_decay_counter { 0 }; //!< counts conflicts for periodic importance decay
         svector<double>             m_soft_relevancy;   //!< per-bool_var conflict participation EMA (soft relevancy)
         unsigned                    m_soft_rel_decay_counter { 0 }; //!< counts conflicts for periodic soft relevancy decay
+        // Curvature noise tracking (A3/A4): QI vs non-QI activity accumulation
+        double                      m_curv_sum_qi     { 0.0 };  //!< sum of activity for QI-sourced antecedents
+        unsigned                    m_curv_count_qi   { 0 };    //!< count of QI-sourced antecedents
+        double                      m_curv_sum_nonqi  { 0.0 };  //!< sum of activity for non-QI antecedents
+        unsigned                    m_curv_count_nonqi{ 0 };    //!< count of non-QI antecedents
         clause_vector               m_aux_clauses;
         clause_vector               m_lemmas;
         vector<clause_vector>       m_clauses_to_reinit;
@@ -550,6 +555,31 @@ namespace smt {
         }
 
         double get_soft_relevancy(expr * e) const;
+
+        // Curvature noise: accumulate activity for QI vs non-QI antecedents
+        void accumulate_curvature_qi(double activity) {
+            m_curv_sum_qi += activity;
+            m_curv_count_qi++;
+        }
+        void accumulate_curvature_nonqi(double activity) {
+            m_curv_sum_nonqi += activity;
+            m_curv_count_nonqi++;
+        }
+        // Returns ratio of avg QI activity to avg non-QI activity.
+        // High ratio means QI variables dominate conflict curvature.
+        double compute_curvature_noise() const {
+            if (m_curv_count_qi == 0 || m_curv_count_nonqi == 0)
+                return 1.0;
+            double avg_qi    = m_curv_sum_qi / m_curv_count_qi;
+            double avg_nonqi = m_curv_sum_nonqi / m_curv_count_nonqi;
+            return avg_qi / (avg_nonqi > 1e-10 ? avg_nonqi : 1e-10);
+        }
+        void reset_curvature_noise() {
+            m_curv_sum_qi      = 0.0;
+            m_curv_count_qi    = 0;
+            m_curv_sum_nonqi   = 0.0;
+            m_curv_count_nonqi = 0;
+        }
 
         bool is_assumption(bool_var v) const {
             return get_bdata(v).m_assumption;

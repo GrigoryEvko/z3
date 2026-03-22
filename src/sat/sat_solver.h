@@ -168,6 +168,7 @@ namespace sat {
         svector<double>         m_activity;
         double                  m_activity_inc;
         svector<double>         m_polarity_belief;  // per-variable polarity belief in [-1,1], 0=neutral
+        double                  m_belief_update_ema; // EMA of squared belief deltas — tracks belief volatility
         svector<uint64_t>       m_last_conflict;
         svector<uint64_t>       m_last_propagation;
         svector<uint64_t>       m_participated;
@@ -567,6 +568,7 @@ namespace sat {
         void set_par(parallel* p, unsigned id);
         bool canceled() { return !m_rlimit.inc(); }
         config const& get_config() const { return m_config; }
+        double get_belief_variance() const { return m_belief_update_ema; }
         void set_drat(bool d) { m_config.m_drat = d; }
         drat& get_drat() { return m_drat; }
         drat* get_drat_ptr() { return &m_drat;  }

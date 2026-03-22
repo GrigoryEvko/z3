@@ -115,6 +115,7 @@ namespace sat {
         m_conflict_clause_size    = 0;
         m_conflict_decision_level = 0;
         m_conflict_bump_scale     = 1.0;
+        m_belief_update_ema       = 0.0;
         m_best_phase_size         = 0;
         m_target_assigned         = 0;
         m_conflicts_since_gc      = 0;
@@ -4121,9 +4122,12 @@ namespace sat {
                 m_config.m_branching_heuristic == BH_COMBINED) {
                 double ps = (value(var) == l_true) ? -1.0 : 1.0;
                 double& belief = m_polarity_belief[var];
+                double old_belief = belief;
                 belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
                 if (belief > 1.0) belief = 1.0;
                 else if (belief < -1.0) belief = -1.0;
+                double delta = belief - old_belief;
+                m_belief_update_ema = 0.99 * m_belief_update_ema + 0.01 * delta * delta;
             }
             // CaDiCaL-style: focused mode bumps ONLY the VMTF queue (recency);
             // stable mode bumps ONLY VSIDS/CHB scores.  Bumping both corrupts
@@ -5309,9 +5313,12 @@ namespace sat {
                     m_config.m_branching_heuristic == BH_COMBINED) {
                     double ps = (value(bv) == l_true) ? -1.0 : 1.0;
                     double& belief = m_polarity_belief[bv];
+                    double old_belief = belief;
                     belief = 0.95 * belief + 0.05 * ps * m_conflict_bump_scale;
                     if (belief > 1.0) belief = 1.0;
                     else if (belief < -1.0) belief = -1.0;
+                    double delta = belief - old_belief;
+                    m_belief_update_ema = 0.99 * m_belief_update_ema + 0.01 * delta * delta;
                 }
                 // Combined: overwrite activity with importance * (0.5 + confidence)
                 if (m_config.m_branching_heuristic == BH_COMBINED) {
