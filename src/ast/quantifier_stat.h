@@ -167,25 +167,22 @@ namespace q {
         void dec_match_budget() { if (m_match_budget > 0) m_match_budget--; }
         /**
          * Recompute match budget based on posterior utility.
-         * Productive quantifiers (conflicts > 0) get generous budget.
-         * Self-loop quantifiers with zero conflicts get aggressive decay.
-         * Other unproductive quantifiers get gentle decay starting at 50K inserts.
+         * Productive quantifiers (conflicts > 0): unlimited.
+         * Self-loop quantifiers with zero conflicts: decaying budget.
+         * Non-self-loop quantifiers: unlimited (they don't cause matching loops).
          */
         void refresh_match_budget() {
-            unsigned ni = m_inserts_total;
-            unsigned nc = m_num_conflicts;
-            if (nc > 0) {
+            if (!m_is_self_loop || m_num_conflicts > 0) {
                 m_match_budget = 100000;
-            } else if (m_is_self_loop && ni > 5000) {
-                // Matching loop with zero utility: aggressive decay
+                return;
+            }
+            // Self-loop quantifier with zero conflict utility
+            unsigned ni = m_inserts_total;
+            if (ni < 5000) {
+                m_match_budget = 100000; // warmup: generous
+            } else {
                 double decay = 1.0 + std::log2(static_cast<double>(ni) / 5000.0);
                 m_match_budget = static_cast<unsigned>(10000.0 / decay);
-            } else if (ni < 50000) {
-                m_match_budget = 100000;
-            } else {
-                // Non-self-loop, zero conflicts, many inserts: gentle decay
-                double decay = 1.0 + std::log2(static_cast<double>(ni) / 50000.0);
-                m_match_budget = static_cast<unsigned>(50000.0 / decay);
             }
         }
 
