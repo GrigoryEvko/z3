@@ -101,6 +101,10 @@ namespace smt {
 
         void inc_global_qi_conflicts();
         void mark_binding_useful(uint64_t h);
+        void record_binding_failure(uint64_t h);
+        void record_binding_success(uint64_t h);
+        void on_conflict_failure_decay();
+        void attribute_qi_failures_on_restart();
 
         ptr_vector<quantifier>::const_iterator begin_quantifiers() const;
         ptr_vector<quantifier>::const_iterator end_quantifiers() const;

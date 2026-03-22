@@ -76,6 +76,7 @@ namespace smt {
         init_parser_vars();
         m_vals.resize(15, 0.0f);
         m_binding_filter.init();
+        m_failure_filter.reset();
     }
 
     void qi_queue::setup() {
@@ -234,6 +235,54 @@ namespace smt {
         return avg < 0.1 ? 0.1 : avg;
     }
 
+    /**
+     * E7.2: Compute heat score for a binding vector.
+     * Sums func_decl heat of each binding root's func_decl and its
+     * children's func_decls. Also adds cached per-quantifier body heat,
+     * refreshed every 64 conflicts.
+     */
+    float qi_queue::compute_binding_heat(quantifier * q, unsigned num_bindings, enode * const * bindings) {
+        double heat = 0.0;
+        for (unsigned i = 0; i < num_bindings; ++i) {
+            enode * e = bindings[i]->get_root();
+            // Root's func_decl heat
+            heat += m_context.get_func_decl_heat(e->get_decl());
+            // One level of children
+            unsigned nargs = e->get_num_args();
+            for (unsigned j = 0; j < nargs && j < 4; ++j) {
+                heat += m_context.get_func_decl_heat(e->get_arg(j)->get_root()->get_decl());
+            }
+        }
+        // Add cached body heat (refreshed every 64 conflicts)
+        q::quantifier_stat * stat = m_qm.get_stat(q);
+        if (stat) {
+            unsigned cur_conflicts = m_stats.m_num_qi_conflicts;
+            if (cur_conflicts >= stat->get_body_heat_conflict() + 64 ||
+                stat->get_body_heat() == 0.0) {
+                // Walk quantifier body func_decls to compute body heat
+                double bh = 0.0;
+                expr * body = q->get_expr();
+                ptr_buffer<expr, 64> todo;
+                todo.push_back(body);
+                unsigned visited = 0;
+                while (!todo.empty() && visited < 128) {
+                    expr * e = todo.back();
+                    todo.pop_back();
+                    visited++;
+                    if (!is_app(e)) continue;
+                    app * a = to_app(e);
+                    bh += m_context.get_func_decl_heat(a->get_decl());
+                    unsigned na = a->get_num_args();
+                    for (unsigned k = 0; k < na; ++k)
+                        todo.push_back(a->get_arg(k));
+                }
+                stat->set_body_heat(bh, cur_conflicts);
+            }
+            heat += stat->get_body_heat();
+        }
+        return static_cast<float>(heat);
+    }
+
     void qi_queue::insert(fingerprint * f, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
         quantifier * q         = static_cast<quantifier*>(f->get_data());
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
@@ -321,8 +370,13 @@ namespace smt {
                   tout << "#" << f->get_arg(i)->get_expr_id() << " d:" << f->get_arg(i)->get_expr()->get_depth() << " ";
               }
               tout << "\n";);
+        // E7.2: Compute heat score from binding enodes and quantifier body
+        float heat = 0.0f;
+        if (m_params.m_qi_feedback) {
+            heat = compute_binding_heat(q, f->get_num_args(), f->get_args());
+        }
         TRACE(new_entries_bug, tout << "[qi:insert]\n";);
-        m_new_entries.push_back(entry(f, cost, generation));
+        m_new_entries.push_back(entry(f, cost, heat, generation));
     }
 
     void qi_queue::instantiate() {
@@ -381,6 +435,18 @@ namespace smt {
         // queries.  The EMAs are still computed (post-batch, below) for
         // diagnostic tracing and potential future use.
 
+        // E7.3: Conflict-driven QI ordering — sort batch by heat-adjusted cost.
+        // Entries with higher heat (more conflict-relevant func_decls) get
+        // lower effective priority, so they are processed first.
+        if (m_params.m_qi_feedback && m_new_entries.size() > 1) {
+            std::stable_sort(m_new_entries.begin(), m_new_entries.end(),
+                [](entry const & a, entry const & b) {
+                    float pa = a.m_cost / (1.0f + a.m_heat_score);
+                    float pb = b.m_cost / (1.0f + b.m_heat_score);
+                    return pa < pb;
+                });
+        }
+
         unsigned since_last_check = 0;
         for (entry & curr : m_new_entries) {
             if (m_context.get_cancel_flag()) {
@@ -393,6 +459,20 @@ namespace smt {
             }
             fingerprint * f    = curr.m_qb;
             quantifier * qa    = static_cast<quantifier*>(f->get_data());
+
+            // E5.2: Negative knowledge suppression.
+            // If the binding's structure hash has accumulated enough failure
+            // evidence in the counting Bloom filter, skip this entry.
+            // Requires warmup (1000 instances) and qi.feedback gate.
+            if (m_params.m_qi_feedback &&
+                m_stats.m_num_instances > 1000) {
+                uint64_t bh = qi_binding_structure_hash(qa, f->get_num_args(), f->get_args());
+                if (m_failure_filter.should_suppress(bh)) {
+                    TRACE(qi_queue, tout << "E5: suppressing failed binding pattern for " << qa->get_qid() << "\n";);
+                    m_delayed_entries.push_back(curr);
+                    continue;
+                }
+            }
 
             if (curr.m_cost <= effective_threshold) {
                 instantiate(curr);
@@ -685,12 +765,14 @@ namespace smt {
         m_instances.reset();
         m_scopes.reset();
         m_binding_filter.init();
+        m_failure_filter.reset();
     }
 
     void qi_queue::init_search_eh() {
         m_subst.reset();
         m_new_entries.reset();
         m_egraph_metrics.reset();
+        m_failure_filter.reset();
     }
 
     bool qi_queue::final_check_eh() {

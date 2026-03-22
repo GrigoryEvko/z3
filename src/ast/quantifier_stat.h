@@ -46,6 +46,8 @@ namespace q {
         unsigned m_num_conflicts_curr_search; //!< conflicts in current search
         unsigned m_instances_total;     //!< total instances ever created (never reset)
         double   m_reward;              //!< EMA of conflict participation rate (instances_in_conflict / total_instances)
+        double   m_body_heat;          //!< cached sum of func_decl heat over quantifier body (E7)
+        unsigned m_body_heat_conflict; //!< conflict count at last body heat refresh
 
         // Ring buffer of recent binding structure hashes (E2.3).
         // Used by attribute_qi_conflict to mark useful patterns in the
@@ -149,6 +151,13 @@ namespace q {
         unsigned get_instances_total() const { return m_instances_total; }
         double get_reward() const { return m_reward; }
         void set_reward(double r) { m_reward = r; }
+
+        double get_body_heat() const { return m_body_heat; }
+        void set_body_heat(double h, unsigned conflict_stamp) {
+            m_body_heat = h;
+            m_body_heat_conflict = conflict_stamp;
+        }
+        unsigned get_body_heat_conflict() const { return m_body_heat_conflict; }
 
         void update_max_generation(unsigned g) {
             if (m_max_generation < g)

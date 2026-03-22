@@ -3749,6 +3749,8 @@ namespace smt {
         m_num_conflicts_since_lemma_gc = 0;
         m_th_imp_decay_counter         = 0;
         m_soft_rel_decay_counter       = 0;
+        m_fd_heat.reset();
+        m_fd_heat_inc                  = 1.0;
         reset_curvature_noise();
         m_num_restarts                 = 0;
         m_restart_threshold            = m_fparams.m_restart_initial;
@@ -4190,8 +4192,12 @@ namespace smt {
                     th->restart_eh();
 
             TRACE(mbqi_bug_detail, tout << "before instantiating quantifiers...\n";);
-            if (!inconsistent()) 
+            if (!inconsistent())
                 m_qmanager->restart_eh();
+            // E5.3: Record failure evidence for quantifiers that produced
+            // instances but never contributed to conflicts in this search.
+            if (!inconsistent() && m_qmanager->has_quantifiers())
+                m_qmanager->attribute_qi_failures_on_restart();
             if (inconsistent()) {
                 VERIFY(!resolve_conflict());
                 status = l_false;
@@ -4499,6 +4505,11 @@ namespace smt {
                 decay_soft_relevancy();
             }
 
+            // E7: Bump func_decl heat for function symbols in conflict lemma.
+            // Decay once per conflict (multiplicative increment growth).
+            bump_func_decl_heat(num_lits, lits);
+            decay_func_decl_heat();
+
             // When num_lits == 1, then the default behavior is to go
             // to base-level. If the problem has quantifiers, it may be
             // too expensive to do that, since all instances will need to
@@ -4751,11 +4762,16 @@ namespace smt {
                 // as useful in the Bloom filter.  The ring buffer holds
                 // the last 16 binding structure hashes; any of them may
                 // have contributed to the conflict.
+                // E5.3: Also decrement failure counters (record_success)
+                // so useful patterns are not suppressed.
                 stat->for_each_recent_binding_hash([this](uint64_t h) {
                     m_qmanager->mark_binding_useful(h);
+                    m_qmanager->record_binding_success(h);
                 });
             }
         }
+        // E5.3: Periodic decay of failure filter counters.
+        m_qmanager->on_conflict_failure_decay();
     }
 
     void context::bump_theory_importance(unsigned num_lits, literal const * lits) {
@@ -4796,6 +4812,53 @@ namespace smt {
         if (v != null_bool_var)
             return get_soft_relevancy(v);
         return 0.0;
+    }
+
+    /**
+     * E7: Bump func_decl heat for function symbols appearing in conflict lemma literals.
+     * For each literal, bump the func_decl of the atom (if it is an application)
+     * and one level of argument func_decls. This creates a VSIDS-like activity
+     * signal at the function symbol level, complementing the variable-level activity.
+     */
+    void context::bump_func_decl_heat(unsigned num_lits, literal const * lits) {
+        for (unsigned i = 0; i < num_lits; ++i) {
+            bool_var v = lits[i].var();
+            if (v >= m_bool_var2expr.size()) continue;
+            expr * e = m_bool_var2expr[v];
+            if (!e || !is_app(e)) continue;
+            app * a = to_app(e);
+            func_decl * fd = a->get_decl();
+            // Bump the top-level func_decl
+            unsigned id = fd->get_small_id();
+            m_fd_heat.reserve(id + 1, 0.0);
+            m_fd_heat[id] += m_fd_heat_inc;
+            // One level of argument func_decls
+            unsigned nargs = a->get_num_args();
+            for (unsigned j = 0; j < nargs; ++j) {
+                expr * arg = a->get_arg(j);
+                if (is_app(arg)) {
+                    func_decl * afd = to_app(arg)->get_decl();
+                    unsigned aid = afd->get_small_id();
+                    m_fd_heat.reserve(aid + 1, 0.0);
+                    m_fd_heat[aid] += m_fd_heat_inc;
+                }
+            }
+        }
+        // Rescale if increment grows too large
+        if (m_fd_heat_inc > 1e100)
+            rescale_func_decl_heat();
+    }
+
+    void context::decay_func_decl_heat() {
+        // Multiply increment by 1/0.95 so older bumps decay relative to newer ones
+        m_fd_heat_inc *= (1.0 / 0.95);
+    }
+
+    void context::rescale_func_decl_heat() {
+        unsigned sz = m_fd_heat.size();
+        for (unsigned i = 0; i < sz; ++i)
+            m_fd_heat[i] *= 1e-100;
+        m_fd_heat_inc *= 1e-100;
     }
 
     context::theory_skew context::compute_importance_skew() const {

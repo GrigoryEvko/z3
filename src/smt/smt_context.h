@@ -359,6 +359,9 @@ namespace smt {
         unsigned                    m_th_imp_decay_counter { 0 }; //!< counts conflicts for periodic importance decay
         svector<double>             m_soft_relevancy;   //!< per-bool_var conflict participation EMA (soft relevancy)
         unsigned                    m_soft_rel_decay_counter { 0 }; //!< counts conflicts for periodic soft relevancy decay
+        // E7: func_decl heat map — VSIDS-style activity for function symbols in conflict lemmas
+        svector<double>             m_fd_heat;          //!< per func_decl heat score, indexed by get_small_id()
+        double                      m_fd_heat_inc { 1.0 }; //!< additive increment, multiplied by 1/0.95 on each decay
         // Curvature noise tracking (A3/A4): QI vs non-QI activity accumulation
         double                      m_curv_sum_qi     { 0.0 };  //!< sum of activity for QI-sourced antecedents
         unsigned                    m_curv_count_qi   { 0 };    //!< count of QI-sourced antecedents
@@ -679,6 +682,12 @@ namespace smt {
         }
 
         double get_soft_relevancy(expr * e) const;
+
+        // E7: func_decl heat accessor — returns VSIDS-style activity score for a function symbol
+        double get_func_decl_heat(func_decl const * d) const {
+            unsigned id = d->get_small_id();
+            return id < m_fd_heat.size() ? m_fd_heat[id] : 0.0;
+        }
 
         // Curvature noise: accumulate activity for QI vs non-QI antecedents
         void accumulate_curvature_qi(double activity) {
@@ -1633,6 +1642,11 @@ namespace smt {
         void bump_soft_relevancy(unsigned num_lits, literal const * lits);
 
         void decay_soft_relevancy();
+
+        // E7: func_decl heat — VSIDS-style activity for function symbols in conflict lemmas
+        void bump_func_decl_heat(unsigned num_lits, literal const * lits);
+        void decay_func_decl_heat();
+        void rescale_func_decl_heat();
 
         void add_scores(unsigned n, literal const *lits);
 

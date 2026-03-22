@@ -548,6 +548,34 @@ namespace smt {
         m_imp->m_qi_queue.mark_binding_useful(h);
     }
 
+    void quantifier_manager::record_binding_failure(uint64_t h) {
+        m_imp->m_qi_queue.record_binding_failure(h);
+    }
+
+    void quantifier_manager::record_binding_success(uint64_t h) {
+        m_imp->m_qi_queue.record_binding_success(h);
+    }
+
+    void quantifier_manager::on_conflict_failure_decay() {
+        m_imp->m_qi_queue.on_conflict_failure_decay();
+    }
+
+    void quantifier_manager::attribute_qi_failures_on_restart() {
+        // E5.3: At each restart, quantifiers that produced instances
+        // in the current search but never contributed to a conflict
+        // have their recent binding hashes recorded as failures.
+        for (quantifier * q : m_imp->m_quantifiers) {
+            q::quantifier_stat * stat = get_stat(q);
+            if (!stat) continue;
+            if (stat->get_num_instances_curr_search() > 0 &&
+                stat->get_num_conflicts_curr_search() == 0) {
+                stat->for_each_recent_binding_hash([this](uint64_t h) {
+                    m_imp->m_qi_queue.record_binding_failure(h);
+                });
+            }
+        }
+    }
+
     void quantifier_manager::relevant_eh(enode * n) {
         m_imp->relevant_eh(n);
     }

@@ -29,6 +29,8 @@ Revision History:
 #include "ast/cost_evaluator.h"
 #include "util/statistics.h"
 #include "tactic/user_propagator_base.h"
+#include "smt/negative_knowledge.h"
+#include <algorithm>
 #include <cstring>
 
 namespace smt {
@@ -125,6 +127,7 @@ namespace smt {
         qi_params &                   m_params;
         qi_queue_stats                m_stats;
         qi_bloom_filter               m_binding_filter;
+        binding_failure_filter        m_failure_filter;
         egraph_qi_metrics             m_egraph_metrics;
         checker                       m_checker;
         expr_ref                      m_cost_function;
@@ -138,9 +141,10 @@ namespace smt {
         struct entry {
             fingerprint * m_qb;
             float         m_cost;
+            float         m_heat_score;   //!< E7: sum of func_decl heat for binding enodes
             unsigned      m_generation:31;
             unsigned      m_instantiated:1;
-            entry(fingerprint * f, float c, unsigned g):m_qb(f), m_cost(c), m_generation(g), m_instantiated(false) {}
+            entry(fingerprint * f, float c, float h, unsigned g):m_qb(f), m_cost(c), m_heat_score(h), m_generation(g), m_instantiated(false) {}
         };
         svector<entry>                m_new_entries;
         svector<entry>                m_delayed_entries;
@@ -162,6 +166,7 @@ namespace smt {
         void get_min_max_costs(float & min, float & max) const;
         void display_instance_profile(fingerprint * f, quantifier * q, unsigned num_bindings, enode * const * bindings, unsigned proof_id, unsigned generation);
         double compute_binding_relevancy(unsigned num_bindings, enode * const * bindings);
+        float compute_binding_heat(quantifier * q, unsigned num_bindings, enode * const * bindings);
 
     public:
         qi_queue(quantifier_manager & qm, context & ctx, qi_params & params);
@@ -185,6 +190,9 @@ namespace smt {
         }
         void inc_global_qi_conflicts() { m_stats.m_num_qi_conflicts++; }
         void mark_binding_useful(uint64_t h) { m_binding_filter.mark_useful(h); }
+        void record_binding_failure(uint64_t h) { m_failure_filter.record_failure(h); }
+        void record_binding_success(uint64_t h) { m_failure_filter.record_success(h); }
+        void on_conflict_failure_decay() { m_failure_filter.on_conflict(); }
     };
 };
 
