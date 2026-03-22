@@ -236,13 +236,32 @@ namespace smt {
     }
 
     unsigned qi_queue::get_new_gen(quantifier * q, unsigned generation, float cost) {
-        // max_top_generation and min_top_generation are not available for computing inc_gen
         set_values(q, nullptr, generation, 0, 0, cost);
         float r = m_evaluator(m_new_gen_function, m_vals.size(), m_vals.data());
         if (r < 0) r = 0;
-        if (q->get_weight() > 0 || r > 0)
-            return static_cast<unsigned>(r);
-        return std::max(generation + 1, static_cast<unsigned>(r));
+        unsigned new_gen = static_cast<unsigned>(r);
+        // Break generation fixed points that cause matching loops.
+        //
+        // Root cause: cost = weight + generation.  When weight < 1
+        // (e.g. 0.8), cost truncates to the same generation:
+        //   gen=1 → cost=1.8 → new_gen=1 → stuck forever
+        //
+        // Fix: force strict monotonicity (new_gen > generation) once
+        // the quantifier has accumulated enough instances to indicate
+        // a potential loop.  The 50K threshold ensures useful quantifiers
+        // in normal solving are never affected.
+        if (new_gen <= generation) {
+            if (q->get_weight() == 0 || new_gen == 0) {
+                // Original Z3 guard: weight-0 always advances.
+                new_gen = generation + 1;
+            } else {
+                q::quantifier_stat * stat = m_qm.get_stat(q);
+                if (!stat || stat->get_num_instances() > 50000) {
+                    new_gen = generation + 1;
+                }
+            }
+        }
+        return new_gen;
     }
 
     double qi_queue::compute_binding_relevancy(unsigned num_bindings, enode * const * bindings) {
