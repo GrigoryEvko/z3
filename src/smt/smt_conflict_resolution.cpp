@@ -319,14 +319,16 @@ namespace smt {
         
         if (!m_ctx.is_marked(var) && lvl > m_ctx.get_base_level()) {
             m_ctx.set_mark(var);
-            // Activity bump with theory importance bonus (P5.4) and
-            // relevancy weighting (P5.6).  Theory importance adds a small
-            // extra bump for variables involved in theory conflicts.
-            // Relevancy maps [0,1] to [1.0, 1.5] so the base bump (no
-            // relevancy signal yet) equals the original inc=1.0.
-            double th_imp = m_ctx.get_theory_importance(var);
-            double rel = m_ctx.get_soft_relevancy(var);
-            m_ctx.inc_bvar_activity(var, (1.0 + th_imp) * (1.0 + 0.5 * rel));
+            // Activity bump. When auto_tune or qi_feedback is active, weight
+            // by theory importance (P5.4) and soft relevancy (P5.6).
+            // Otherwise, use the original constant bump of 1.0.
+            if (m_params.m_auto_tune || m_params.m_qi_feedback) {
+                double th_imp = m_ctx.get_theory_importance(var);
+                double rel = m_ctx.get_soft_relevancy(var);
+                m_ctx.inc_bvar_activity(var, (1.0 + th_imp) * (1.0 + 0.5 * rel));
+            } else {
+                m_ctx.inc_bvar_activity(var);
+            }
             expr * n = m_ctx.bool_var2expr(var);
             if (is_app(n)) {
                 family_id fid = to_app(n)->get_family_id();
@@ -335,11 +337,14 @@ namespace smt {
                     th->conflict_resolution_eh(to_app(n), var);
             }
 
-            // Curvature noise: accumulate activity by QI vs non-QI source
-            if (m_ctx.literal_qi_source(antecedent))
-                m_ctx.accumulate_curvature_qi(m_ctx.get_activity(var));
-            else
-                m_ctx.accumulate_curvature_nonqi(m_ctx.get_activity(var));
+            // Curvature noise: accumulate activity by QI vs non-QI source.
+            // Only needed when auto_tune consumes curvature in meta_update.
+            if (m_params.m_auto_tune) {
+                if (m_ctx.literal_qi_source(antecedent))
+                    m_ctx.accumulate_curvature_qi(m_ctx.get_activity(var));
+                else
+                    m_ctx.accumulate_curvature_nonqi(m_ctx.get_activity(var));
+            }
 
             if (get_manager().has_trace_stream()) {
                 get_manager().trace_stream() << "[resolve-lit] " << m_conflict_lvl - lvl << " ";
@@ -539,8 +544,9 @@ namespace smt {
                 TRACE(conflict_smt2, m_ctx.display_clause_smt2(tout, *cls););
                 if (cls->is_lemma())
                     cls->inc_clause_activity();
-                // Check if this clause has a quantifier literal (QI source)
-                {
+                // Check if this clause has a quantifier literal (QI source).
+                // Only needed when qi.feedback is enabled for conflict attribution.
+                if (m_params.m_qi_feedback) {
                     quantifier * q = m_ctx.qi_source_quantifier(cls);
                     if (q) {
                         m_qi_contributing.push_back({q, m_resolve_depth});
@@ -575,9 +581,8 @@ namespace smt {
                 TRACE(conflict_smt2, m_ctx.display_literals_smt2(tout, consequent, ~js.get_literal()) << "\n";);
                 SASSERT(consequent.var() != js.get_literal().var());
                 // Check both literals in the binary clause for QI source.
-                // The CLAUSE case checks all literals via qi_source_quantifier;
-                // for BIN_CLAUSE we must check both the antecedent and consequent.
-                {
+                // Only needed when qi.feedback is enabled for conflict attribution.
+                if (m_params.m_qi_feedback) {
                     quantifier * q = m_ctx.literal_qi_source(js.get_literal());
                     if (!q) q = m_ctx.literal_qi_source(consequent);
                     if (q) {

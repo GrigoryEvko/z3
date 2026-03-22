@@ -3661,14 +3661,15 @@ namespace smt {
 
         try {
             internalize_assertions();
-            compute_assertion_hash();
+            if (m_fparams.m_qi_feedback)
+                compute_assertion_hash();
             check_reprofile();
         } catch (oom_exception&) {
             return l_undef;
         }
 
         // E14: Load persistent cache on first check if configured
-        if (!m_fparams.m_cache_file.empty() && !m_persistent_cache_loaded) {
+        if (m_fparams.m_qi_feedback && !m_fparams.m_cache_file.empty() && !m_persistent_cache_loaded) {
             persistent_cache::load(m_fparams.m_cache_file, m_proof_cache, m_failure_cache);
             m_persistent_cache_loaded = true;
             TRACE(proof_strategy,
@@ -3745,7 +3746,8 @@ namespace smt {
             expr_ref_vector asms(m, num_assumptions, assumptions);
             try {
                 internalize_assertions();
-                compute_assertion_hash();
+                if (m_fparams.m_qi_feedback)
+                    compute_assertion_hash();
                 check_reprofile();
                 add_theory_assumptions(asms);
                 TRACE(unsat_core_bug, tout << asms << '\n';);
@@ -3773,7 +3775,8 @@ namespace smt {
             expr_ref_vector asms(cube);
             try {
                 internalize_assertions();
-                compute_assertion_hash();
+                if (m_fparams.m_qi_feedback)
+                    compute_assertion_hash();
                 check_reprofile();
                 add_theory_assumptions(asms);
                 // introducing proxies: if (!validate_assumptions(asms)) return l_undef;
@@ -4585,42 +4588,49 @@ namespace smt {
                 m_avg_backjump_ratio = BJ_ALPHA * ratio + (1.0 - BJ_ALPHA) * m_avg_backjump_ratio;
             }
 
+            // --- Adaptive heuristic bookkeeping (gated by qi_feedback / auto_tune) ---
+            // All scoring below feeds adaptive features that are disabled by default.
+            // Ungated execution wastes rlimit on every conflict, causing regressions
+            // on rlimit-bounded F* queries.
+
             // Attribute this conflict to contributing quantifier instantiations.
             // Must be done before pop_scope_core since justifications are invalidated.
-            attribute_qi_conflict(num_lits, lits);
+            if (m_fparams.m_qi_feedback)
+                attribute_qi_conflict(num_lits, lits);
 
-            // Bump theory importance for theory atoms in theory-originated conflicts.
-            // Must be done before pop_scope_core since m_bdata is needed.
-            if (m_conflict.get_kind() == b_justification::JUSTIFICATION)
-                bump_theory_importance(num_lits, lits);
+            if (m_fparams.m_auto_tune) {
+                // Bump theory importance for theory atoms in theory-originated conflicts.
+                // Must be done before pop_scope_core since m_bdata is needed.
+                if (m_conflict.get_kind() == b_justification::JUSTIFICATION)
+                    bump_theory_importance(num_lits, lits);
 
-            // Periodic decay of all theory importance scores.
-            if (++m_th_imp_decay_counter >= 1000) {
-                m_th_imp_decay_counter = 0;
-                decay_theory_importance();
+                // Periodic decay of all theory importance scores.
+                if (++m_th_imp_decay_counter >= 1000) {
+                    m_th_imp_decay_counter = 0;
+                    decay_theory_importance();
+                }
+
+                // E13.2: detect bridge conflicts (multi-theory lemmas) and boost activity.
+                // Must be done before pop_scope_core since m_bdata is needed.
+                detect_bridge_conflict(num_lits, lits);
             }
 
-            // E13.2: detect bridge conflicts (multi-theory lemmas) and boost activity.
-            // Must be done before pop_scope_core since m_bdata is needed.
-            detect_bridge_conflict(num_lits, lits);
+            if (m_fparams.m_qi_feedback) {
+                // Bump soft relevancy for all literals in the conflict lemma.
+                bump_soft_relevancy(num_lits, lits);
 
-            // Bump soft relevancy for all literals in the conflict lemma.
-            bump_soft_relevancy(num_lits, lits);
+                // Periodic decay of all soft relevancy scores.
+                if (++m_soft_rel_decay_counter >= 1000) {
+                    m_soft_rel_decay_counter = 0;
+                    decay_soft_relevancy();
+                }
 
-            // Periodic decay of all soft relevancy scores.
-            if (++m_soft_rel_decay_counter >= 1000) {
-                m_soft_rel_decay_counter = 0;
-                decay_soft_relevancy();
-            }
-
-            // E7: Bump func_decl heat for function symbols in conflict lemma.
-            // Only active when QI contributed to this conflict (qi_list non-empty).
-            // This piggybacks on the attribute_qi_conflict path that already
-            // identified contributing quantifiers, avoiding overhead on purely
-            // propositional conflicts.
-            if (!m_conflict_resolution->get_qi_contributing().empty()) {
-                bump_func_decl_heat(num_lits, lits);
-                decay_func_decl_heat();
+                // E7: Bump func_decl heat for function symbols in conflict lemma.
+                // Only active when QI contributed to this conflict (qi_list non-empty).
+                if (!m_conflict_resolution->get_qi_contributing().empty()) {
+                    bump_func_decl_heat(num_lits, lits);
+                    decay_func_decl_heat();
+                }
             }
 
             // When num_lits == 1, then the default behavior is to go
@@ -5729,6 +5739,8 @@ namespace smt {
      * than a raw pointer hash, enabling cross-query fuzzy matching.
      */
     void context::capture_proof_strategy() {
+        if (!m_fparams.m_qi_feedback)
+            return;
         if (m_assertion_hash == 0)
             return;
         if (!m_qmanager || m_qmanager->num_quantifiers() == 0)
@@ -5849,6 +5861,8 @@ namespace smt {
     void context::apply_proof_strategy() {
         m_applied_strategy_hash = 0;  // E4: reset per-solve tracking
 
+        if (!m_fparams.m_qi_feedback)
+            return;
         if (m_assertion_hash == 0)
             return;
         if (!m_qmanager || m_qmanager->num_quantifiers() == 0)
