@@ -499,6 +499,7 @@ namespace smt {
         // Reset QI contributing quantifiers unconditionally so stale data
         // from a previous conflict never leaks if resolve() returns false.
         m_qi_contributing.reset();
+        m_resolve_depth = 0;
 
         if (!initialize_resolve(conflict, not_l, js, consequent)) {
             return false;
@@ -540,7 +541,7 @@ namespace smt {
                 // Check if this clause has a quantifier literal (QI source)
                 {
                     quantifier * q = m_ctx.qi_source_quantifier(cls);
-                    if (q) m_qi_contributing.push_back(q);
+                    if (q) m_qi_contributing.push_back({q, m_resolve_depth});
                 }
                 unsigned num_lits = cls->get_num_literals();
                 unsigned i        = 0;
@@ -575,7 +576,7 @@ namespace smt {
                 {
                     quantifier * q = m_ctx.literal_qi_source(js.get_literal());
                     if (!q) q = m_ctx.literal_qi_source(consequent);
-                    if (q) m_qi_contributing.push_back(q);
+                    if (q) m_qi_contributing.push_back({q, m_resolve_depth});
                 }
                 process_antecedent(js.get_literal(), num_marks);
                 break;
@@ -612,6 +613,7 @@ namespace smt {
             idx--;
             num_marks--;
             m_ctx.unset_mark(c_var);
+            m_resolve_depth++;
         }
         while (num_marks > 0);
 

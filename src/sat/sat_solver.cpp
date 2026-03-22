@@ -115,6 +115,8 @@ namespace sat {
         m_conflict_clause_size    = 0;
         m_conflict_decision_level = 0;
         m_conflict_bump_scale     = 1.0;
+        m_bump_scale_fast         = 0.0;
+        m_bump_scale_slow         = 0.0;
         m_belief_update_ema       = 0.0;
         m_best_phase_size         = 0;
         m_target_assigned         = 0;
@@ -3812,8 +3814,9 @@ namespace sat {
             double muon_scale = 1.0 / std::sqrt(std::max(static_cast<double>(m_conflict_clause_size), 1.0));
             m_conflict_bump_scale = glue_scale * muon_scale;
         }
-        // Gradient-norm tracking removed: was computed but never read for any
-        // decision.  Two EMA updates per conflict with no consumer.
+        // E3: fast/slow EMAs of bump scale for gradient trend detection.
+        m_bump_scale_fast = 0.03 * m_conflict_bump_scale + 0.97 * m_bump_scale_fast;
+        m_bump_scale_slow = 0.0001 * m_conflict_bump_scale + 0.9999 * m_bump_scale_slow;
         m_fast_glue_avg.update(glue);
         m_slow_glue_avg.update(glue);
         m_phase_glue_sum += glue;

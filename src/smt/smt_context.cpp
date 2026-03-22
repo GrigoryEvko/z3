@@ -3763,6 +3763,11 @@ namespace smt {
         m_param_cooldown.reset();
         m_belief_variance              = 0.0;
         m_consecutive_stuck            = 0;
+        // Restore relevancy if G4 retry changed it (prevents permanent mutation across check-sat calls)
+        if (m_relevancy_retried) {
+            m_fparams.m_relevancy_lvl = m_saved_relevancy_lvl;
+            m_relevancy_lvl = m_saved_relevancy_lvl;
+        }
         m_relevancy_retried            = false;
         m_fallback_cascade.reset();
         m_luby_idx                     = 1;
@@ -4112,12 +4117,16 @@ namespace smt {
             case quantifier_manager::SAT:
                 return false;
             case quantifier_manager::UNKNOWN:
-                // G4: retry with relevancy=0 for short queries before giving up
-                if (m_fparams.m_auto_tune && m_num_conflicts < 1000 && relevancy_lvl() > 0 && !m_relevancy_retried) {
+                // G4: retry with relevancy=0 for short queries before giving up.
+                // Save original relevancy so it's restored for subsequent check-sat calls
+                // in incremental mode (push/pop). Without restore, permanent relevancy=0
+                // causes QI explosion on later queries (regression on OrdSet-57, ModifiesGen-185).
+                if (m_fparams.m_auto_tune && m_num_conflicts < 1000 && relevancy_lvl() > 0 && !m_relevancy_retried && m_scope_lvl == 0) {
                     m_relevancy_retried = true;
+                    m_saved_relevancy_lvl = m_fparams.m_relevancy_lvl;
                     m_fparams.m_relevancy_lvl = 0;
                     m_relevancy_lvl = 0;
-                    IF_VERBOSE(2, verbose_stream() << "(smt.g4 relevancy retry: disabling relevancy, restarting search)\n";);
+                    IF_VERBOSE(2, verbose_stream() << "(smt.g4 relevancy retry: temporarily disabling relevancy)\n";);
                     break;
                 }
                 IF_VERBOSE(2, verbose_stream() << "(smt.giveup quantifiers)\n";);
@@ -4145,7 +4154,24 @@ namespace smt {
             m_restart_conflict_count = m_num_conflicts;
         }
         inc_limits();
-        if (status == l_true || !m_fparams.m_restart_adaptive || m_agility < m_fparams.m_restart_agility_threshold) {
+        // E3: curvature-informed restart gate — override agility when auto-tuning.
+        // Suppress restart when solver is converging (high velocity, low variance).
+        // Force restart when solver is diverging (low velocity or high variance).
+        bool do_restart;
+        if (status == l_true || !m_fparams.m_restart_adaptive) {
+            do_restart = true;
+        } else if (m_fparams.m_auto_tune) {
+            double cv_trend = compute_conflict_velocity_trend();
+            if (cv_trend > 0.7 && m_belief_variance < 0.02)
+                do_restart = false;  // converging: suppress restart
+            else if (cv_trend < 0.3 || m_belief_variance > 0.15)
+                do_restart = true;   // diverging: force restart
+            else
+                do_restart = m_agility < m_fparams.m_restart_agility_threshold;
+        } else {
+            do_restart = m_agility < m_fparams.m_restart_agility_threshold;
+        }
+        if (do_restart) {
             SASSERT(!inconsistent());
             log_stats();
             // execute the restart
@@ -4684,24 +4710,44 @@ namespace smt {
             return;
         // Use the quantifier list collected during conflict resolution.
         // The conflict_resolution object records every quantifier whose
-        // clause appeared in the antecedent chain.
-        ptr_vector<quantifier> const & qi_list = m_conflict_resolution->get_qi_contributing();
+        // clause appeared in the antecedent chain, tagged with resolve depth.
+        auto const & qi_list = m_conflict_resolution->get_qi_contributing();
         if (qi_list.empty())
             return;
         // Bump global QI conflict counter (once per conflict, not per quantifier).
         m_qmanager->inc_global_qi_conflicts();
-        // Deduplicate: a quantifier may appear multiple times if several
-        // of its instances participated in the same conflict.
-        ptr_vector<quantifier> seen;
-        for (quantifier * q : qi_list) {
-            bool dup = false;
-            for (quantifier * s : seen)
-                if (s == q) { dup = true; break; }
-            if (dup) continue;
-            seen.push_back(q);
-            q::quantifier_stat * stat = m_qmanager->get_stat(q);
-            if (stat)
-                stat->inc_num_conflicts();
+        // Exponential decay table: weight = 0.9^depth, precomputed for depth 0..10.
+        static constexpr double decay_table[11] = {
+            1.0, 0.9, 0.81, 0.729, 0.656, 0.590,
+            0.531, 0.478, 0.430, 0.387, 0.349
+        };
+        // Deduplicate by quantifier, keeping the minimum depth (closest
+        // to conflict = highest credit).
+        ptr_vector<quantifier> seen_q;
+        svector<unsigned>      seen_depth;
+        for (auto const & cr : qi_list) {
+            quantifier * q = cr.m_q;
+            unsigned     d = cr.m_depth;
+            bool found = false;
+            for (unsigned i = 0; i < seen_q.size(); ++i) {
+                if (seen_q[i] == q) {
+                    if (d < seen_depth[i])
+                        seen_depth[i] = d;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                seen_q.push_back(q);
+                seen_depth.push_back(d);
+            }
+        }
+        for (unsigned i = 0; i < seen_q.size(); ++i) {
+            q::quantifier_stat * stat = m_qmanager->get_stat(seen_q[i]);
+            if (stat) {
+                unsigned d = seen_depth[i] < 10 ? seen_depth[i] : 10;
+                stat->inc_num_conflicts_weighted(decay_table[d]);
+            }
         }
     }
 

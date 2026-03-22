@@ -569,6 +569,7 @@ namespace sat {
         bool canceled() { return !m_rlimit.inc(); }
         config const& get_config() const { return m_config; }
         double get_belief_variance() const { return m_belief_update_ema; }
+        double get_gradient_trend() const { return m_bump_scale_slow > 1e-10 ? m_bump_scale_fast / m_bump_scale_slow : 1.0; }
         void set_drat(bool d) { m_config.m_drat = d; }
         drat& get_drat() { return m_drat; }
         drat* get_drat_ptr() { return &m_drat;  }
@@ -872,6 +873,8 @@ namespace sat {
         unsigned       m_conflict_clause_size;    // size of current conflict's learned clause
         unsigned       m_conflict_decision_level; // decision level where current conflict occurred
         double         m_conflict_bump_scale;     // combined LBD + Muon per-conflict bump scale
+        double         m_bump_scale_fast;         // fast EMA of m_conflict_bump_scale (alpha=0.03)
+        double         m_bump_scale_slow;         // slow EMA of m_conflict_bump_scale (alpha=0.0001)
         unsigned       m_max_marked_trail; // max trail pos of any conflict-level mark (for forward-mark fix)
         literal_vector m_lemma;
         literal_vector m_ext_antecedents;

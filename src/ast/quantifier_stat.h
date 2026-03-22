@@ -117,13 +117,20 @@ namespace q {
         bool had_unary_instance() const { return m_had_unary_instance; }
 
         void inc_num_conflicts() {
+            inc_num_conflicts_weighted(1.0);
+        }
+
+        /**
+         * Increment conflict count with a depth-weighted EMA alpha.
+         * weight < 1 reduces the learning rate for quantifiers that
+         * appeared far from the conflict in the antecedent chain.
+         */
+        void inc_num_conflicts_weighted(double weight) {
             m_num_conflicts++;
             m_num_conflicts_curr_search++;
-            // Update reward EMA: sample = cumulative conflict rate.
-            // This tracks how frequently this quantifier's instances appear
-            // in conflict antecedent chains relative to total instances.
             double sample = static_cast<double>(m_num_conflicts) / (m_instances_total > 0 ? m_instances_total : 1u);
-            m_reward = 0.95 * m_reward + 0.05 * sample;
+            double alpha  = 0.05 * weight;
+            m_reward = (1.0 - alpha) * m_reward + alpha * sample;
             if (m_reward < 0.01) m_reward = 0.01;
         }
         unsigned get_num_conflicts() const { return m_num_conflicts; }

@@ -110,7 +110,12 @@ namespace smt {
 
         // QI conflict attribution: quantifiers whose clauses appeared
         // in the antecedent chain of this conflict. Populated during resolve().
-        ptr_vector<quantifier>         m_qi_contributing;
+        struct qi_credit {
+            quantifier * m_q;
+            unsigned     m_depth;
+        };
+        svector<qi_credit>             m_qi_contributing;
+        unsigned                       m_resolve_depth;
 
     public:
         void setup() {
@@ -252,7 +257,7 @@ namespace smt {
             return m_lemma_proof;
         }
 
-        ptr_vector<quantifier> const & get_qi_contributing() const {
+        svector<qi_credit> const & get_qi_contributing() const {
             return m_qi_contributing;
         }
 
