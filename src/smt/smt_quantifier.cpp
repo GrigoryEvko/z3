@@ -27,6 +27,7 @@ Revision History:
 #include "smt/smt_quick_checker.h"
 #include "smt/mam.h"
 #include "smt/qi_queue.h"
+#include "smt/adaptive_log.h"
 #include "util/obj_hashtable.h"
 
 namespace smt {
@@ -137,6 +138,11 @@ namespace smt {
         unsigned                               m_num_instances = 0;
         unsigned                               m_qc_skip_count = 0;
         unsigned                               m_qc_skip_threshold = 0;
+
+        // MAM matching / fingerprint dedup counters for adaptive trace
+        unsigned                               m_mam_match_total = 0;
+        unsigned                               m_fp_hit_total = 0;
+        unsigned                               m_fp_miss_total = 0;
 
         // E12: QI dependency graph — 1-ply successor lookup.
         // trigger_map: func_decl -> quantifiers triggered by it.
@@ -489,7 +495,11 @@ namespace smt {
 
             get_stat(q)->update_max_generation(max_generation);
             fingerprint * f = m_context.add_fingerprint(q, q->get_id(), num_bindings, bindings, def);
+
+            // MAM/fingerprint pipeline counters for adaptive trace
+            ++m_mam_match_total;
             if (f) {
+                ++m_fp_miss_total;  // new fingerprint = miss (not seen before)
                 if (pat && pat->get_num_args() == 1)
                     get_stat(q)->set_had_unary_instance();
                 if (is_trace_enabled(TraceTag::causality)) {
@@ -501,8 +511,19 @@ namespace smt {
                 m_qi_queue.insert(f, pat, max_generation, min_top_generation, max_top_generation); // TODO
                 m_num_instances++;
             }
+            else {
+                ++m_fp_hit_total;   // duplicate fingerprint = hit (already seen)
+            }
 
-            CTRACE(bindings, f != nullptr, 
+            // Periodic MAM pipeline summary
+            if ((m_mam_match_total % 50000) == 0) {
+                ALOG(m_context.get_adaptive_log(), "MAM")
+                    .u("matches", m_mam_match_total)
+                    .u("fp_hit", m_fp_hit_total)
+                    .u("fp_miss", m_fp_miss_total);
+            }
+
+            CTRACE(bindings, f != nullptr,
                   tout << expr_ref(q, m()) << "\n";
                   for (unsigned i = 0; i < num_bindings; ++i) {
                       tout << expr_ref(bindings[i]->get_expr(), m()) << " [r " << bindings[i]->get_root()->get_owner_id() << "] ";

@@ -334,6 +334,7 @@ namespace smt {
                 if (nc == 0 && ni > N0) {
                     double surprisal = 2.0 * std::log2(static_cast<double>(ni) / N0);
                     if (surprisal > m_params.m_qi_lazy_threshold) {
+                        m_stats.m_num_fast_rejected++;
                         return;  // cost would exceed lazy threshold — skip entirely
                     }
                 }
@@ -508,6 +509,8 @@ namespace smt {
         }
 
         unsigned since_last_check = 0;
+        unsigned n_eager = 0, n_delayed = 0;
+        unsigned batch_total = m_new_entries.size();
         for (entry & curr : m_new_entries) {
             if (m_context.get_cancel_flag()) {
                 break;
@@ -531,22 +534,26 @@ namespace smt {
 
             if (curr.m_cost <= effective_threshold) {
                 instantiate(curr);
+                ++n_eager;
             }
             else if (m_params.m_qi_promote_unsat && m_checker.is_unsat(qa->get_expr(), f->get_num_args(), f->get_args())) {
                 // do not delay instances that produce a conflict.
                 // Skip is_sat check — if is_unsat returned true, the instance is definitely not satisfied.
                 TRACE(qi_unsat, tout << "promoting instance that produces a conflict\n" << mk_pp(qa, m) << "\n";);
                 instantiate(curr, /*skip_sat_check=*/true);
+                ++n_eager;  // promoted unsat counts as eager
             }
             else if (m_checker.all_terms_exist(qa->get_expr(), f->get_num_args(), f->get_args())) {
                 // All subterms already in E-graph — instance creates no new
                 // nodes, only propagations. Process immediately.
                 TRACE(qi_queue, tout << "promoting instance: all terms exist\n" << mk_pp(qa, m) << "\n";);
                 instantiate(curr);
+                ++n_eager;  // promoted all-terms-exist counts as eager
             }
             else {
                 TRACE(qi_queue, tout << "delaying quantifier instantiation... " << f << "\n" << mk_pp(qa, m) << "\ncost: " << curr.m_cost << "\n";);
                 m_delayed_entries.push_back(curr);
+                ++n_delayed;
             }
 
             // Periodically check if we didn't run out of time/memory.
@@ -556,6 +563,16 @@ namespace smt {
                 }
                 since_last_check = 0;
             }
+        }
+
+        // Adaptive log: QI_BATCH summary for the instantiation batch
+        if (batch_total > 0) {
+            ALOG(m_context.get_adaptive_log(), "QI_BATCH")
+                .u("total", batch_total)
+                .u("eager", n_eager)
+                .u("delayed", n_delayed)
+                .u("delayed_q", static_cast<unsigned>(m_delayed_entries.size()))
+                .u("fast_rej", m_stats.m_num_fast_rejected);
         }
         // E4.4: Post-batch E-graph growth and merge ratio tracking.
         if (m_params.m_qi_feedback && enodes_before > 0) {
@@ -938,6 +955,7 @@ namespace smt {
         st.update("quant instantiations", m_stats.m_num_instances);
         st.update("lazy quant instantiations", m_stats.m_num_lazy_instances);
         st.update("qi conflicts", m_stats.m_num_qi_conflicts);
+        st.update("qi fast rejects", m_stats.m_num_fast_rejected);
         st.update("missed quant instantiations", m_delayed_entries.size());
         float min, max;
         get_min_max_costs(min, max);

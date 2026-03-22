@@ -98,6 +98,7 @@ namespace smt {
     struct qi_queue_stats {
         unsigned m_num_instances, m_num_lazy_instances;
         unsigned m_num_qi_conflicts;  // global count of conflicts with QI participation
+        unsigned m_num_fast_rejected; // insert() surprisal early-exit rejects
         void reset() { memset(this, 0, sizeof(qi_queue_stats)); }
         qi_queue_stats() { reset(); }
     };
