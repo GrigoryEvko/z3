@@ -325,14 +325,6 @@ namespace smt {
 
         unsigned                    m_final_check_idx = 0; // circular counter used for implementing fairness
 
-        // E13.1: per-theory conflict counter and final_check reordering
-        svector<unsigned>           m_th_conflict_count;    //!< per theory_set index conflict count
-        unsigned_vector             m_thid_to_set_idx;      //!< theory_id (family_id) -> m_theory_set index
-        unsigned_vector             m_final_check_order;    //!< permutation of m_theory_set indices, sorted by conflict count
-
-        // E13.2: bridge conflict detection (multi-theory lemmas)
-        unsigned                    m_bridge_conflict_count { 0 }; //!< count of conflicts spanning 2+ theories
-
         bool                        m_is_auxiliary = false; // used to prevent unwanted information from being logged.
         class parallel*             m_par = nullptr;
         unsigned                    m_par_index = 0;
@@ -345,50 +337,6 @@ namespace smt {
         svector<double> m_lit_scores[2];
 
         uint64_t                    m_assertion_hash = 0;
-
-        // D1: Incremental re-profiling — delta detection
-        uint64_t                    m_prev_assertion_hash = 0;
-        bool                        m_profile_dirty = false;
-
-        // D2: Current query category from last profiling run
-        query_category              m_current_category = query_category::MIXED;
-
-        // D3: Lightweight incremental counters — O(1) "profile likely changed?" hint
-        unsigned                    m_incr_bv_count    = 0;
-        unsigned                    m_incr_quant_count = 0;
-
-        // D4: Scope-aware counter management for push/pop
-        struct scope_delta {
-            unsigned delta_bv    = 0;
-            unsigned delta_quant = 0;
-        };
-        svector<scope_delta>        m_counter_scopes;
-
-        // Proof strategy cache: assertion_hash -> proof strategy (top-K quantifiers by reward)
-        std::unordered_map<uint64_t, proof_strategy> m_proof_cache;
-        unsigned                    m_proof_cache_hits        = 0;
-        unsigned                    m_proof_cache_misses      = 0;
-        unsigned                    m_proof_cache_warm_starts = 0;
-
-        // E4: tracks which cached strategy was applied this solve, for confidence update
-        uint64_t                    m_applied_strategy_hash   = 0;
-        unsigned                    m_proof_cache_generation  = 0;
-
-        // E8.2: Accumulated proof chain across all conflicts in this solve.
-        // Each entry is (quantifier_signature, chain_position) deduped by first occurrence.
-        svector<conflict_resolution::qi_chain_entry> m_accumulated_proof_chain;
-
-        // E8.4/E8.5: Proof replay state
-        bool                        m_replay_active           = false;
-        unsigned                    m_replay_conflict_budget  = 0;
-
-        // E5: failure recording — hashes that repeatedly fail skip warm-start
-        static constexpr unsigned   MAX_FAILURE_CACHE         = 128;
-        std::unordered_map<uint64_t, unsigned> m_failure_cache;
-
-        // E14: persistent cross-session learning
-        bool                        m_persistent_cache_loaded = false;
-        bool                        m_persistent_cache_dirty  = false;
 
         // -----------------------------------
         //
@@ -2365,8 +2313,67 @@ namespace smt {
         quantifier * get_macro_quantifier(func_decl * f) const { return m_asserted_formulas.get_macro_quantifier(f); }
         void insert_macro(func_decl * f, quantifier * m, proof * pr, expr_dependency * dep) { m_asserted_formulas.insert_macro(f, m, pr, dep); }
 
-        // TEMPORARY: layout diagnostic — remove after analysis
-        static void dump_layout();
+    protected:
+        // -----------------------------------
+        //
+        // Cold auto-tune / adaptive fields (accessed at restart / proof time, NOT on BCP hot path).
+        // Placed at the end of the class to avoid pushing hot boolean-engine fields
+        // (m_assignment, m_bdata, m_activity, m_qhead, m_assigned_literals) to higher cache lines.
+        //
+        // -----------------------------------
+
+        // E13.1: per-theory conflict counter and final_check reordering
+        svector<unsigned>           m_th_conflict_count;    //!< per theory_set index conflict count
+        unsigned_vector             m_thid_to_set_idx;      //!< theory_id (family_id) -> m_theory_set index
+        unsigned_vector             m_final_check_order;    //!< permutation of m_theory_set indices, sorted by conflict count
+
+        // E13.2: bridge conflict detection (multi-theory lemmas)
+        unsigned                    m_bridge_conflict_count { 0 }; //!< count of conflicts spanning 2+ theories
+
+        // D1: Incremental re-profiling — delta detection
+        uint64_t                    m_prev_assertion_hash = 0;
+        bool                        m_profile_dirty = false;
+
+        // D2: Current query category from last profiling run
+        query_category              m_current_category = query_category::MIXED;
+
+        // D3: Lightweight incremental counters — O(1) "profile likely changed?" hint
+        unsigned                    m_incr_bv_count    = 0;
+        unsigned                    m_incr_quant_count = 0;
+
+        // D4: Scope-aware counter management for push/pop
+        struct scope_delta {
+            unsigned delta_bv    = 0;
+            unsigned delta_quant = 0;
+        };
+        svector<scope_delta>        m_counter_scopes;
+
+        // Proof strategy cache: assertion_hash -> proof strategy (top-K quantifiers by reward)
+        std::unordered_map<uint64_t, proof_strategy> m_proof_cache;
+        unsigned                    m_proof_cache_hits        = 0;
+        unsigned                    m_proof_cache_misses      = 0;
+        unsigned                    m_proof_cache_warm_starts = 0;
+
+        // E4: tracks which cached strategy was applied this solve, for confidence update
+        uint64_t                    m_applied_strategy_hash   = 0;
+        unsigned                    m_proof_cache_generation  = 0;
+
+        // E8.2: Accumulated proof chain across all conflicts in this solve.
+        // Each entry is (quantifier_signature, chain_position) deduped by first occurrence.
+        svector<conflict_resolution::qi_chain_entry> m_accumulated_proof_chain;
+
+        // E8.4/E8.5: Proof replay state
+        bool                        m_replay_active           = false;
+        unsigned                    m_replay_conflict_budget  = 0;
+
+        // E5: failure recording — hashes that repeatedly fail skip warm-start
+        static constexpr unsigned   MAX_FAILURE_CACHE         = 128;
+        std::unordered_map<uint64_t, unsigned> m_failure_cache;
+
+        // E14: persistent cross-session learning
+        bool                        m_persistent_cache_loaded = false;
+        bool                        m_persistent_cache_dirty  = false;
+
     };
 
     struct pp_lit {
