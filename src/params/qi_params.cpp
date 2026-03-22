@@ -47,8 +47,10 @@ void qi_params::updt_params(params_ref const & _p) {
     if (p.auto_solve()) {
         m_qi_feedback = true;
         m_auto_tune = true;
-        if (m_qi_relevancy_weight == 0.0)
-            m_qi_relevancy_weight = 0.5;
+        // NOTE: do NOT set m_qi_relevancy_weight here.
+        // Relevancy gating (E1) is broken for F* queries because soft_relevancy
+        // returns 0 for non-boolean terms, causing 5.5× cost inflation that
+        // chokes QI completely. Keep relevancy_weight at its explicit setting.
     }
 }
 
