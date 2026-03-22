@@ -4506,9 +4506,14 @@ namespace smt {
             }
 
             // E7: Bump func_decl heat for function symbols in conflict lemma.
-            // Decay once per conflict (multiplicative increment growth).
-            bump_func_decl_heat(num_lits, lits);
-            decay_func_decl_heat();
+            // Only active when QI contributed to this conflict (qi_list non-empty).
+            // This piggybacks on the attribute_qi_conflict path that already
+            // identified contributing quantifiers, avoiding overhead on purely
+            // propositional conflicts.
+            if (!m_conflict_resolution->get_qi_contributing().empty()) {
+                bump_func_decl_heat(num_lits, lits);
+                decay_func_decl_heat();
+            }
 
             // When num_lits == 1, then the default behavior is to go
             // to base-level. If the problem has quantifiers, it may be
@@ -4816,35 +4821,29 @@ namespace smt {
 
     /**
      * E7: Bump func_decl heat for function symbols appearing in conflict lemma literals.
-     * For each literal, bump the func_decl of the atom (if it is an application)
-     * and one level of argument func_decls. This creates a VSIDS-like activity
-     * signal at the function symbol level, complementing the variable-level activity.
+     * For each literal, bump the top-level func_decl of the atom (if it is an application).
+     * Arg-level bumping is deferred to compute_binding_heat for O(1) per-conflict cost.
      */
     void context::bump_func_decl_heat(unsigned num_lits, literal const * lits) {
+        // Single pass: find max small_id, then bump
+        unsigned max_id = 0;
         for (unsigned i = 0; i < num_lits; ++i) {
             bool_var v = lits[i].var();
             if (v >= m_bool_var2expr.size()) continue;
             expr * e = m_bool_var2expr[v];
             if (!e || !is_app(e)) continue;
-            app * a = to_app(e);
-            func_decl * fd = a->get_decl();
-            // Bump the top-level func_decl
-            unsigned id = fd->get_small_id();
-            m_fd_heat.reserve(id + 1, 0.0);
-            m_fd_heat[id] += m_fd_heat_inc;
-            // One level of argument func_decls
-            unsigned nargs = a->get_num_args();
-            for (unsigned j = 0; j < nargs; ++j) {
-                expr * arg = a->get_arg(j);
-                if (is_app(arg)) {
-                    func_decl * afd = to_app(arg)->get_decl();
-                    unsigned aid = afd->get_small_id();
-                    m_fd_heat.reserve(aid + 1, 0.0);
-                    m_fd_heat[aid] += m_fd_heat_inc;
-                }
-            }
+            unsigned id = to_app(e)->get_decl()->get_small_id();
+            if (id > max_id) max_id = id;
         }
-        // Rescale if increment grows too large
+        if (max_id >= m_fd_heat.size())
+            m_fd_heat.resize(max_id + 1, 0.0);
+        for (unsigned i = 0; i < num_lits; ++i) {
+            bool_var v = lits[i].var();
+            if (v >= m_bool_var2expr.size()) continue;
+            expr * e = m_bool_var2expr[v];
+            if (!e || !is_app(e)) continue;
+            m_fd_heat[to_app(e)->get_decl()->get_small_id()] += m_fd_heat_inc;
+        }
         if (m_fd_heat_inc > 1e100)
             rescale_func_decl_heat();
     }

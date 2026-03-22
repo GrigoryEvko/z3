@@ -370,9 +370,11 @@ namespace smt {
                   tout << "#" << f->get_arg(i)->get_expr_id() << " d:" << f->get_arg(i)->get_expr()->get_depth() << " ";
               }
               tout << "\n";);
-        // E7.2: Compute heat score from binding enodes and quantifier body
+        // E7.2: Compute heat score from binding enodes and quantifier body.
+        // Only compute after warmup (500 QI conflicts) so the heat map
+        // has meaningful data. Before that, all scores would be zero.
         float heat = 0.0f;
-        if (m_params.m_qi_feedback) {
+        if (m_params.m_qi_feedback && m_stats.m_num_qi_conflicts > 500) {
             heat = compute_binding_heat(q, f->get_num_args(), f->get_args());
         }
         TRACE(new_entries_bug, tout << "[qi:insert]\n";);
@@ -438,13 +440,22 @@ namespace smt {
         // E7.3: Conflict-driven QI ordering — sort batch by heat-adjusted cost.
         // Entries with higher heat (more conflict-relevant func_decls) get
         // lower effective priority, so they are processed first.
-        if (m_params.m_qi_feedback && m_new_entries.size() > 1) {
-            std::stable_sort(m_new_entries.begin(), m_new_entries.end(),
-                [](entry const & a, entry const & b) {
-                    float pa = a.m_cost / (1.0f + a.m_heat_score);
-                    float pb = b.m_cost / (1.0f + b.m_heat_score);
-                    return pa < pb;
-                });
+        // Gated by warmup: requires 500+ QI conflicts so heat scores are meaningful.
+        // Skip if batch is small (no benefit) or heat map is empty.
+        if (m_params.m_qi_feedback && m_new_entries.size() > 4 &&
+            m_stats.m_num_qi_conflicts > 500) {
+            bool has_heat = false;
+            for (auto const & e : m_new_entries) {
+                if (e.m_heat_score > 0.0f) { has_heat = true; break; }
+            }
+            if (has_heat) {
+                std::stable_sort(m_new_entries.begin(), m_new_entries.end(),
+                    [](entry const & a, entry const & b) {
+                        float pa = a.m_cost / (1.0f + a.m_heat_score);
+                        float pb = b.m_cost / (1.0f + b.m_heat_score);
+                        return pa < pb;
+                    });
+            }
         }
 
         unsigned since_last_check = 0;
@@ -460,19 +471,14 @@ namespace smt {
             fingerprint * f    = curr.m_qb;
             quantifier * qa    = static_cast<quantifier*>(f->get_data());
 
-            // E5.2: Negative knowledge suppression.
-            // If the binding's structure hash has accumulated enough failure
-            // evidence in the counting Bloom filter, skip this entry.
-            // Requires warmup (1000 instances) and qi.feedback gate.
-            if (m_params.m_qi_feedback &&
-                m_stats.m_num_instances > 1000) {
-                uint64_t bh = qi_binding_structure_hash(qa, f->get_num_args(), f->get_args());
-                if (m_failure_filter.should_suppress(bh)) {
-                    TRACE(qi_queue, tout << "E5: suppressing failed binding pattern for " << qa->get_qid() << "\n";);
-                    m_delayed_entries.push_back(curr);
-                    continue;
-                }
-            }
+            // E5.2: Negative knowledge suppression — DISABLED.
+            // Suppressing bindings changes instantiation order, which can
+            // trigger a segfault in checker::is_relevant (null uint_set in
+            // relevancy propagator) on certain queries (e.g. Seq.Properties-44).
+            // The E5.3 feedback loop (failure attribution, success recording,
+            // decay) remains active for data collection.
+            // TODO: investigate the is_relevant crash root cause before
+            // re-enabling suppression.
 
             if (curr.m_cost <= effective_threshold) {
                 instantiate(curr);

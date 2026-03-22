@@ -34,7 +34,7 @@ namespace smt {
         // Packed as uint64_t words: 16 nibbles per word.
         static constexpr unsigned NUM_SLOTS      = 16384;
         static constexpr unsigned NUM_WORDS      = NUM_SLOTS / 16;  // 1024 words
-        static constexpr unsigned SUPPRESS_THRESH = 8;  // min counter to suppress
+        static constexpr unsigned SUPPRESS_THRESH = 12; // min counter to suppress (raised from 8 to reduce false positives)
         static constexpr unsigned DECAY_INTERVAL  = 10000;  // conflicts between decays
 
         // k=3 multiplicative hash constants (golden ratio derivatives).
