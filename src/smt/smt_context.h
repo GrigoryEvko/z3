@@ -1339,6 +1339,7 @@ namespace smt {
 
         // G4: relevancy retry for short queries returning unknown
         bool               m_relevancy_retried   { false };
+        unsigned           m_saved_relevancy_lvl { 2 };     //!< saved before G4 retry, restored in init_search
 
         // Fallback cascade (C1-C5)
         fallback_cascade   m_fallback_cascade;             //!< escalation state for stuck solver

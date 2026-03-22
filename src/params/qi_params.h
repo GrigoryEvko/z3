@@ -44,7 +44,7 @@ struct qi_params {
     bool               m_qi_conservative_final_check = false;
     double             m_qi_trigger_selectivity = 0.0;
     bool               m_qi_feedback = true;
-    double             m_qi_relevancy_weight = 0.5;
+    double             m_qi_relevancy_weight = 0.0;
     bool               m_auto_tune = false;
     bool               m_qe_lite = false;
 

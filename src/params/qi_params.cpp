@@ -44,6 +44,8 @@ void qi_params::updt_params(params_ref const & _p) {
     if (p.auto_solve()) {
         m_qi_feedback = true;
         m_auto_tune = true;
+        if (m_qi_relevancy_weight == 0.0)
+            m_qi_relevancy_weight = 0.5;
     }
 }
 
