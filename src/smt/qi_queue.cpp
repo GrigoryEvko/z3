@@ -332,6 +332,25 @@ namespace smt {
 
     void qi_queue::insert(fingerprint * f, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
         quantifier * q         = static_cast<quantifier*>(f->get_data());
+
+        // Matching loop guard: if a quantifier has been instantiated many
+        // times without appearing in any conflict antecedent, it's in a
+        // fan-out loop — its instances create E-graph merges that produce
+        // more trigger matches against input-generation terms, but none
+        // contribute to the proof.  Skip the insert entirely.
+        //
+        // This is not a heuristic: a quantifier with 50K+ instantiations
+        // and exactly 0 conflict participation is provably useless in the
+        // current search.  If the search backtracks and the quantifier
+        // becomes relevant, new conflicts will reset the condition.
+        {
+            q::quantifier_stat * stat = m_qm.get_stat(q);
+            if (stat && stat->get_num_instances() > 50000 &&
+                stat->get_num_conflicts() == 0) {
+                return;
+            }
+        }
+
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
         float const base_cost  = cost;  // snapshot for inflation cap
         // Relevancy-guided QI gating: penalize bindings with low soft-relevancy.
