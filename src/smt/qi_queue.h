@@ -81,6 +81,7 @@ namespace smt {
         void instantiate(entry & ent, bool skip_sat_check = false);
         void get_min_max_costs(float & min, float & max) const;
         void display_instance_profile(fingerprint * f, quantifier * q, unsigned num_bindings, enode * const * bindings, unsigned proof_id, unsigned generation);
+        double compute_binding_relevancy(unsigned num_bindings, enode * const * bindings);
 
     public:
         qi_queue(quantifier_manager & qm, context & ctx, qi_params & params);

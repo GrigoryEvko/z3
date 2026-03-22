@@ -182,9 +182,38 @@ namespace smt {
         return std::max(generation + 1, static_cast<unsigned>(r));
     }
 
+    double qi_queue::compute_binding_relevancy(unsigned num_bindings, enode * const * bindings) {
+        if (num_bindings == 0) return 0.1;
+        double sum = 0.0;
+        for (unsigned i = 0; i < num_bindings; ++i) {
+            enode * e = bindings[i];
+            double r = m_context.get_soft_relevancy(e->get_expr());
+            // Also check the equivalence class root
+            enode * root = e->get_root();
+            if (root != e) {
+                double rr = m_context.get_soft_relevancy(root->get_expr());
+                if (rr > r) r = rr;
+            }
+            sum += r;
+        }
+        double avg = sum / num_bindings;
+        return avg < 0.1 ? 0.1 : avg;
+    }
+
     void qi_queue::insert(fingerprint * f, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
         quantifier * q         = static_cast<quantifier*>(f->get_data());
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
+        // Relevancy-guided QI gating: penalize bindings with low soft-relevancy.
+        // After warmup (500 instances), bindings in irrelevant parts of the
+        // search space get their cost inflated, steering QI effort toward
+        // the active proof frontier.
+        double rel_w = m_params.m_qi_relevancy_weight;
+        if (m_params.m_qi_feedback && rel_w > 0.0 &&
+            m_stats.m_num_instances > 500) {
+            double binding_rel = compute_binding_relevancy(f->get_num_args(), f->get_args());
+            double factor = (1.0 - rel_w) + rel_w / binding_rel;
+            cost = static_cast<float>(cost * factor);
+        }
         TRACE(qi_queue_detail,
               tout << "new instance of " << q->get_qid() << ", weight " << q->get_weight()
               << ", generation: " << generation << ", scope_level: " << m_context.get_scope_level() << ", cost: " << cost << "\n";
