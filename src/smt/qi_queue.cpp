@@ -892,20 +892,27 @@ namespace smt {
                 entry & e       = m_delayed_entries[i];
                 TRACE(qi_queue, tout << e.m_qb << ", cost: " << e.m_cost << " min-cost: " << min_cost << ", instantiated: " << e.m_instantiated << "\n";);
                 if (!e.m_instantiated && e.m_cost <= min_cost) {
-                    // Recheck surprisal: the entry's stored cost is from insert time.
-                    // The insert count may have grown since then, making the entry
-                    // effectively too expensive to instantiate.
+                    // Per-quantifier surprisal gate: if the quantifier's current
+                    // surprisal exceeds the eager threshold, its delayed entries
+                    // should NOT be processed — regardless of stored cost or
+                    // global streak.  This is metatheoretically correct: if new
+                    // instances from this quantifier would be delayed by the
+                    // cost function, processing old delayed entries is equally
+                    // wasteful.  The eager threshold is the natural cutoff:
+                    // it's the cost at which entries stop being instantiated
+                    // eagerly, i.e., the point where the solver judges
+                    // instantiation to be speculative.
                     {
                         quantifier * qa = static_cast<quantifier*>(e.m_qb->get_data());
                         q::quantifier_stat * stat = m_qm.get_stat(qa);
                         if (stat) {
                             unsigned ni = stat->get_inserts_total();
                             unsigned nc = stat->get_num_conflicts();
-                            if (nc == 0 && ni > 5000) {
-                                // Self-loop quantifiers use 2.5x coefficient (matches get_cost)
+                            constexpr unsigned N0 = 5000;
+                            if (nc == 0 && ni > N0) {
                                 double coeff = stat->is_self_loop() ? 2.5 : 2.0;
-                                double surprisal = coeff * std::log2(static_cast<double>(ni) / 5000.0);
-                                if (e.m_cost + surprisal > effective_lazy * 2.0) {
+                                double surprisal = coeff * std::log2(static_cast<double>(ni) / N0);
+                                if (surprisal > m_eager_cost_threshold) {
                                     continue;
                                 }
                             }
@@ -927,20 +934,18 @@ namespace smt {
             entry & e       = m_delayed_entries[i];
             TRACE(qi_queue, tout << e.m_qb << ", cost: " << e.m_cost << ", instantiated: " << e.m_instantiated << "\n";);
             if (!e.m_instantiated && e.m_cost <= effective_lazy)  {
-                // Recheck surprisal: the entry's stored cost is from insert time.
-                // The insert count may have grown since then, making the entry
-                // effectively too expensive to instantiate.
+                // Per-quantifier surprisal gate (same logic as conservative path).
                 {
                     quantifier * qa = static_cast<quantifier*>(e.m_qb->get_data());
                     q::quantifier_stat * stat = m_qm.get_stat(qa);
                     if (stat) {
                         unsigned ni = stat->get_inserts_total();
                         unsigned nc = stat->get_num_conflicts();
-                        if (nc == 0 && ni > 5000) {
-                            // Self-loop quantifiers use 2.5x coefficient (matches get_cost)
+                        constexpr unsigned N0 = 5000;
+                        if (nc == 0 && ni > N0) {
                             double coeff = stat->is_self_loop() ? 2.5 : 2.0;
-                            double surprisal = coeff * std::log2(static_cast<double>(ni) / 5000.0);
-                            if (e.m_cost + surprisal > effective_lazy * 2.0) {
+                            double surprisal = coeff * std::log2(static_cast<double>(ni) / N0);
+                            if (surprisal > m_eager_cost_threshold) {
                                 continue;
                             }
                         }
