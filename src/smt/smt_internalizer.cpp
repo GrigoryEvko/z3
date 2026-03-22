@@ -231,8 +231,11 @@ namespace smt {
         TRACE(incompleteness_bug, tout << "[internalize-assertion]: #" << n->get_id() << "\n";);
 
         // D3: Lightweight incremental feature counters for re-profiling hints.
+        // D4: Also track per-scope deltas for correct push/pop accounting.
         if (is_quantifier(n)) {
             ++m_incr_quant_count;
+            if (!m_counter_scopes.empty())
+                ++m_counter_scopes.back().delta_quant;
         }
         if (is_app(n)) {
             family_id bvfid = m.mk_family_id(symbol("bv"));
@@ -241,6 +244,8 @@ namespace smt {
                 sort * s = a->get_arg(i)->get_sort();
                 if (s->get_family_id() == bvfid) {
                     ++m_incr_bv_count;
+                    if (!m_counter_scopes.empty())
+                        ++m_counter_scopes.back().delta_bv;
                     break;
                 }
             }
