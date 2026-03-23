@@ -70,6 +70,10 @@ void landscape_map::init_search() {
     // NOTE: Tier 0 stress/coverage/regions/bloom, Tier 1/2 data all persist
     // across check-sat calls for cross-search spatial awareness.
 
+    // Polarity safety counters — reset per search
+    m_safety_true.reset();
+    m_safety_false.reset();
+
     // Tier 3: Solver dynamics — reset per search
     m_dynamics.reset();
     m_last_decided_polarity.reset();
@@ -111,6 +115,10 @@ void landscape_map::reset() {
     m_last_decision_trail_pos = 0;
     m_last_decision_var       = UINT32_MAX;
     m_last_decision_polarity  = false;
+
+    // Polarity safety counters
+    m_safety_true.reset();
+    m_safety_false.reset();
 
     // Tier 1c: QI patterns
     delete[] m_qi_patterns;
@@ -752,6 +760,61 @@ double landscape_map::get_impact_score(unsigned var) const {
                              static_cast<double>(vp.avg_fanout_false));
     double occ = static_cast<double>(vp.clause_occurrence) / 255.0;
     return fanout * (0.5 + 0.5 * occ);
+}
+
+// -----------------------------------------------------------------------
+// Saving-literal polarity safety
+// -----------------------------------------------------------------------
+
+void landscape_map::compute_polarity_safety() {
+    if (!m_clause_profiles) return;
+    // Ensure vectors are sized
+    unsigned var_cap = m_var_profiles_cap;
+    if (var_cap == 0) return;
+    if (m_safety_true.size() < var_cap) {
+        m_safety_true.resize(var_cap, 0);
+        m_safety_false.resize(var_cap, 0);
+    }
+    // Clear counters
+    memset(m_safety_true.data(), 0, m_safety_true.size() * sizeof(uint16_t));
+    memset(m_safety_false.data(), 0, m_safety_false.size() * sizeof(uint16_t));
+    // Scan all clause profiles for reliable saving literals
+    for (unsigned i = 0; i < m_clause_profiles_cap; ++i) {
+        clause_profile const& cp = m_clause_profiles[i];
+        // Only count clauses with a reasonably reliable saving literal
+        // (m_saving_fraction > 128 means >50% of the time this literal saves)
+        if (cp.m_saving_fraction > 128 && cp.m_propagation_count > 0) {
+            unsigned lit_idx = cp.m_saving_literal;
+            unsigned var = lit_idx >> 1;
+            if (var < var_cap) {
+                // In Z3, literal index: even = positive, odd = negative
+                bool is_pos = (lit_idx & 1) == 0;
+                if (is_pos) {
+                    if (m_safety_true[var] < UINT16_MAX)
+                        m_safety_true[var]++;
+                } else {
+                    if (m_safety_false[var] < UINT16_MAX)
+                        m_safety_false[var]++;
+                }
+            }
+        }
+    }
+}
+
+int landscape_map::polarity_safety(unsigned var, unsigned margin) const {
+    if (var >= m_safety_true.size()) return 0;
+    int diff = static_cast<int>(m_safety_true[var])
+             - static_cast<int>(m_safety_false[var]);
+    if (diff > static_cast<int>(margin)) return 1;   // true is safer
+    if (diff < -static_cast<int>(margin)) return -1;  // false is safer
+    return 0;
+}
+
+unsigned landscape_map::get_var_fanout(unsigned var) const {
+    if (!m_var_profiles || var >= m_var_profiles_cap) return 0;
+    var_profile const& vp = m_var_profiles[var];
+    return std::max(static_cast<unsigned>(vp.avg_fanout_true),
+                    static_cast<unsigned>(vp.avg_fanout_false));
 }
 
 // -----------------------------------------------------------------------

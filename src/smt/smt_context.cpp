@@ -1806,6 +1806,15 @@ namespace smt {
         bool_var_data & d = m_bdata[var];
         if (d.try_true_first())
             return true;
+
+        // Landscape-guided polarity: use saving-literal data when signal is strong.
+        // Only fires after 1000+ conflicts (periodic scan must have run at least once).
+        if (m_fparams.m_auto_tune && m_num_conflicts > 1000) {
+            int safety = m_landscape.polarity_safety(var);
+            if (safety > 0) return true;   // true protects more clauses
+            if (safety < 0) return false;  // false protects more clauses
+        }
+
         switch (m_fparams.m_phase_selection) {
         case PS_THEORY:
             if (m_phase_cache_on && d.m_phase_available) {
@@ -4445,6 +4454,28 @@ namespace smt {
                     }
                     m_landscape.set_last_decision_var(UINT32_MAX);
                 }
+
+                // Impact-based branching: boost activity of high-fanout variables.
+                // Gives a small (10% of m_bvar_inc * log2(fanout)) nudge to variables
+                // whose decisions cause many propagations, helping the solver branch
+                // on high-impact variables sooner.
+                if (m_fparams.m_auto_tune && m_landscape.has_var_profiles() &&
+                    m_num_conflicts > 1000) {
+                    bool need_rescale = false;
+                    for (unsigned v = 0; v < num_vars; ++v) {
+                        unsigned fanout = m_landscape.get_var_fanout(v);
+                        if (fanout > 10) {
+                            double boost = std::log2(static_cast<double>(fanout))
+                                         * m_bvar_inc * 0.1;
+                            m_activity[v] += boost;
+                            if (m_activity[v] > ACTIVITY_LIMIT)
+                                need_rescale = true;
+                            m_case_split_queue->activity_increased_eh(v);
+                        }
+                    }
+                    if (need_rescale)
+                        rescale_bool_var_activity();
+                }
             }
 
             if (m_scope_lvl > curr_lvl) {
@@ -4945,6 +4976,9 @@ namespace smt {
                             m_landscape.on_clause_propagation(ci, (*cls)[true_lit_pos].index());
                         }
                     }
+                    // Recompute per-variable polarity safety counters from saving-literal data.
+                    if (m_fparams.m_auto_tune)
+                        m_landscape.compute_polarity_safety();
                 }
             }
 

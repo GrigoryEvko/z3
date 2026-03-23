@@ -186,6 +186,26 @@ public:
     double   get_polarity_safety_score(unsigned var, bool is_true) const;
     double   get_impact_score(unsigned var) const;
 
+    // ---------------------------------------------------------------
+    // Saving-literal polarity safety: how many clauses prefer this
+    // variable's TRUE vs FALSE literal as their saving literal.
+    // Recomputed every periodic_clause_scan (1000 conflicts).
+    // ---------------------------------------------------------------
+
+    // Recompute polarity safety counters from clause profile saving literals.
+    // Call this right after the periodic clause scan completes.
+    void     compute_polarity_safety();
+
+    // Returns: +1 if true is safer, -1 if false is safer, 0 if no strong signal.
+    // The margin parameter controls the required difference (default 2).
+    int      polarity_safety(unsigned var, unsigned margin = 2) const;
+
+    // Returns the max of avg_fanout_true and avg_fanout_false for a variable.
+    unsigned get_var_fanout(unsigned var) const;
+
+    // Returns true if var profiles are allocated and populated.
+    bool     has_var_profiles() const { return m_var_profiles != nullptr; }
+
     // Fanout tracking state (called from context)
     void     save_trail_pos(unsigned trail_size) { m_last_decision_trail_pos = trail_size; }
     unsigned get_last_trail_pos() const { return m_last_decision_trail_pos; }
@@ -483,6 +503,10 @@ private:
     unsigned          m_last_decision_trail_pos = 0;
     unsigned          m_last_decision_var       = UINT32_MAX;
     bool              m_last_decision_polarity  = false;
+
+    // -- Polarity safety counters (recomputed each periodic clause scan) --
+    svector<uint16_t> m_safety_true;   // per-var: clauses where TRUE literal is saver
+    svector<uint16_t> m_safety_false;  // per-var: clauses where FALSE literal is saver
 
     // -- Tier 1c: QI pattern maps (lazy) --
     quantifier_pattern_map* m_qi_patterns     = nullptr;
