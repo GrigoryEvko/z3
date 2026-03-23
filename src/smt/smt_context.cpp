@@ -316,6 +316,14 @@ namespace smt {
             m_landscape.dynamics_on_phase_flip(actual_polarity != d.m_phase);
         }
 
+        // E3: Propagation-phase alignment — sample every 64th propagation.
+        // Check if BCP-forced polarity matches the solver's phase cache.
+        if (!decision && d.m_phase_available && m_fparams.m_auto_tune &&
+            (m_stats.m_num_propagations & 63) == 0) {
+            bool aligned = (!l.sign()) == d.m_phase;
+            m_landscape.dynamics_on_prop_alignment(aligned);
+        }
+
         d.m_phase_available        = true;
         d.m_phase                  = !l.sign();
         TRACE(assign_core, tout << (decision?"decision: ":"propagating: ") << l << " ";
@@ -4801,6 +4809,34 @@ namespace smt {
                 double ratio = static_cast<double>(conflict_lvl - new_lvl) / static_cast<double>(conflict_lvl);
                 static constexpr double BJ_ALPHA = 0.05;
                 m_avg_backjump_ratio = BJ_ALPHA * ratio + (1.0 - BJ_ALPHA) * m_avg_backjump_ratio;
+            }
+
+            // --- Efficiency signals (E1-E4) for landscape map ---
+            // Lightweight per-conflict measurements, gated by auto_tune.
+            if (m_fparams.m_auto_tune) {
+                // E1: Wasted work — decisions undone on this conflict
+                m_landscape.dynamics_on_wasted_work(conflict_lvl, new_lvl);
+
+                // E2: Learned clause velocity — scan antecedent clauses of the
+                // learned literals. For each literal in the conflict clause,
+                // check if its reason clause is a lemma (learned) or input.
+                for (unsigned i = 1; i < num_lits; ++i) {
+                    bool_var v = lits[i].var();
+                    b_justification js = get_bdata(v).justification();
+                    if (js.get_kind() == b_justification::CLAUSE) {
+                        clause * c = js.get_clause();
+                        m_landscape.dynamics_on_antecedent_clause(c && c->is_lemma());
+                    }
+                }
+
+                // E4: Conflict clause novelty — 64-bit Bloom signature comparison
+                {
+                    unsigned var_buf[64];
+                    unsigned n = num_lits < 64 ? num_lits : 64;
+                    for (unsigned i = 0; i < n; ++i)
+                        var_buf[i] = lits[i].var();
+                    m_landscape.dynamics_on_conflict_novelty(n, var_buf);
+                }
             }
 
             // --- Adaptive heuristic bookkeeping (gated by qi_feedback / auto_tune) ---

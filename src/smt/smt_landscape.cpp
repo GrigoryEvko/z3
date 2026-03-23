@@ -1521,6 +1521,76 @@ void landscape_map::dynamics_update_agility(float agility) {
 }
 
 // -----------------------------------------------------------------------
+// Efficiency signals (E1-E4)
+// -----------------------------------------------------------------------
+
+// E1: Wasted work rate — EMA of decisions undone per conflict.
+void landscape_map::dynamics_on_wasted_work(unsigned conflict_level, unsigned backjump_level) {
+    float waste = (conflict_level > backjump_level)
+                ? static_cast<float>(conflict_level - backjump_level)
+                : 0.0f;
+    constexpr float ALPHA = 0.02f;  // slow EMA — individual conflicts are noisy
+    m_dynamics.wasted_work_rate = (1.0f - ALPHA) * m_dynamics.wasted_work_rate + ALPHA * waste;
+}
+
+// E2: Learned clause velocity — fraction of conflict antecedents that are learned.
+// Called once per antecedent clause during the FUIP walk or post-conflict scan.
+void landscape_map::dynamics_on_antecedent_clause(bool is_learned) {
+    m_dynamics.velocity_total_num++;
+    if (is_learned)
+        m_dynamics.velocity_learned_num++;
+    // Update EMA every 250 antecedents (batch to reduce float ops)
+    if (m_dynamics.velocity_total_num >= 250) {
+        float ratio = static_cast<float>(m_dynamics.velocity_learned_num)
+                    / static_cast<float>(m_dynamics.velocity_total_num);
+        constexpr float ALPHA = 0.05f;
+        m_dynamics.learned_clause_velocity =
+            (1.0f - ALPHA) * m_dynamics.learned_clause_velocity + ALPHA * ratio;
+        m_dynamics.velocity_learned_num = 0;
+        m_dynamics.velocity_total_num   = 0;
+    }
+}
+
+// E3: Propagation-phase alignment — fraction of propagated literals matching phase cache.
+// Called on sampled propagations (every 64th).
+void landscape_map::dynamics_on_prop_alignment(bool matched) {
+    m_dynamics.alignment_total_count++;
+    if (matched)
+        m_dynamics.alignment_match_count++;
+    // Update EMA every 256 samples
+    if (m_dynamics.alignment_total_count >= 256) {
+        float ratio = static_cast<float>(m_dynamics.alignment_match_count)
+                    / static_cast<float>(m_dynamics.alignment_total_count);
+        constexpr float ALPHA = 0.02f;  // slow — alignment changes gradually
+        m_dynamics.prop_phase_alignment =
+            (1.0f - ALPHA) * m_dynamics.prop_phase_alignment + ALPHA * ratio;
+        m_dynamics.alignment_match_count = 0;
+        m_dynamics.alignment_total_count = 0;
+    }
+}
+
+// E4: Conflict clause novelty — Jaccard novelty between consecutive conflict signatures.
+// Uses a cheap 64-bit Bloom signature: each variable sets bit (var & 63).
+void landscape_map::dynamics_on_conflict_novelty(unsigned num_lits, unsigned const* lit_vars) {
+    uint64_t sig = 0;
+    for (unsigned i = 0; i < num_lits; ++i)
+        sig |= (1ULL << (lit_vars[i] & 63));
+    if (m_dynamics.prev_conflict_sig != 0) {
+        uint64_t both   = sig & m_dynamics.prev_conflict_sig;
+        uint64_t either = sig | m_dynamics.prev_conflict_sig;
+        unsigned overlap_bits = static_cast<unsigned>(__builtin_popcountll(both));
+        unsigned total_bits   = static_cast<unsigned>(__builtin_popcountll(either));
+        float novelty = (total_bits > 0)
+                       ? 1.0f - static_cast<float>(overlap_bits) / static_cast<float>(total_bits)
+                       : 1.0f;
+        constexpr float ALPHA = 0.1f;  // moderate — changes at restart timescale
+        m_dynamics.conflict_novelty =
+            (1.0f - ALPHA) * m_dynamics.conflict_novelty + ALPHA * novelty;
+    }
+    m_dynamics.prev_conflict_sig = sig;
+}
+
+// -----------------------------------------------------------------------
 // Aggregate snapshot (extended)
 // -----------------------------------------------------------------------
 
@@ -1789,7 +1859,12 @@ void landscape_map::dump_to_alog(FILE* alog, unsigned num_conflicts, unsigned nu
         .d("trail_stab", static_cast<double>(m_dynamics.trail_stability))
         .d("th_lemma_rate", static_cast<double>(m_dynamics.theory_lemma_rate))
         .d("qi_egraph_gr", static_cast<double>(m_dynamics.qi_egraph_growth))
-        .d("agility_val", static_cast<double>(m_dynamics.agility));
+        .d("agility_val", static_cast<double>(m_dynamics.agility))
+        // Efficiency signals (E1-E4)
+        .d("wasted_work", static_cast<double>(m_dynamics.wasted_work_rate))
+        .d("clause_velocity", static_cast<double>(m_dynamics.learned_clause_velocity))
+        .d("prop_align", static_cast<double>(m_dynamics.prop_phase_alignment))
+        .d("conflict_novelty", static_cast<double>(m_dynamics.conflict_novelty));
 }
 
 } // namespace smt

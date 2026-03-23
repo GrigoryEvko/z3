@@ -1012,6 +1012,12 @@ namespace sat {
         m_assignment[(~l).index()] = l_false;
         bool_var v = l.var();
         m_justification[v]         = j;
+        // E3: Propagation-phase alignment — sample every 64th propagation.
+        // Must read old m_phase[v] BEFORE the update below.
+        if (!j.is_none() && !m_is_probing && (m_trail.size() & 63) == 0) {
+            bool aligned = (!l.sign()) == m_phase[v];
+            m_landscape.dynamics_on_prop_alignment(aligned);
+        }
         if (!m_is_probing)
             m_phase[v]             = !l.sign();
         m_assigned_since_gc[v]     = true;
@@ -4109,6 +4115,30 @@ namespace sat {
                 m_conflict_lvl, m_trail.size(),
                 num_vars(), num_lits,
                 glue, m_conflict_lvl, backjump_lvl, th_conflict);
+
+            // Efficiency signals (E1, E2, E4)
+            // E1: Wasted work — decisions undone per conflict
+            m_landscape.dynamics_on_wasted_work(m_conflict_lvl, backjump_lvl);
+
+            // E2: Learned clause velocity — fraction of antecedent clauses that are learned.
+            // Scan reason clauses of learned-clause literals (already iterated above).
+            for (unsigned i = 1; i < num_lits; ++i) {
+                bool_var v = m_lemma[i].var();
+                justification js = m_justification[v];
+                if (js.is_clause()) {
+                    clause& c = get_clause(js);
+                    m_landscape.dynamics_on_antecedent_clause(c.is_learned());
+                }
+            }
+
+            // E4: Conflict clause novelty — 64-bit Bloom signature comparison
+            {
+                unsigned novelty_buf[64];
+                unsigned n = num_lits < 64 ? num_lits : 64;
+                for (unsigned i = 0; i < n; ++i)
+                    novelty_buf[i] = m_lemma[i].var();
+                m_landscape.dynamics_on_conflict_novelty(n, novelty_buf);
+            }
         }
 
         // Muon-style per-conflict normalization: LBD weight * clause-size normalization.

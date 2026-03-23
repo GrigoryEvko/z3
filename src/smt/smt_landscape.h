@@ -380,6 +380,20 @@ public:
         uint32_t total_clauses;          // total clauses
 
         // ---------------------------------------------------------------
+        // Efficiency signals (E1-E4)
+        // Measure HOW WELL the solver works, not just WHAT it does.
+        // ---------------------------------------------------------------
+        float    wasted_work_rate;       // E1: EMA of (conflict_lvl - backjump_lvl)
+        float    learned_clause_velocity;// E2: fraction of conflict antecedents that are learned
+        float    prop_phase_alignment;   // E3: fraction of propagations matching phase cache
+        float    conflict_novelty;       // E4: Jaccard novelty between consecutive conflict sigs
+        uint64_t prev_conflict_sig;      // E4: 64-bit variable signature of previous conflict
+        unsigned velocity_learned_num;   // E2: learned antecedents in current interval
+        unsigned velocity_total_num;     // E2: total antecedents in current interval
+        unsigned alignment_match_count;  // E3: sampled propagations matching phase cache
+        unsigned alignment_total_count;  // E3: total sampled propagations
+
+        // ---------------------------------------------------------------
         // Causal response signals (for SPSA gradient estimation)
         // Group A: Direct causal pairs with tunable parameters
         // ---------------------------------------------------------------
@@ -414,7 +428,7 @@ public:
 
         void reset() { memset(this, 0, sizeof(*this)); }
     };
-    static_assert(sizeof(solver_dynamics) <= 384, "solver_dynamics should be compact");
+    static_assert(sizeof(solver_dynamics) <= 448, "solver_dynamics should be compact");
 
     // Dynamics public accessors
     solver_dynamics const& dynamics() const { return m_dynamics; }
@@ -465,6 +479,16 @@ public:
     void     dynamics_update_qi_egraph_growth(float growth_rate_ema);
     // C4: agility — snapshot from solver
     void     dynamics_update_agility(float agility);
+
+    // Efficiency signals (E1-E4): measure solver productivity
+    // E1: wasted work — decisions undone per conflict (call after backjump level known)
+    void     dynamics_on_wasted_work(unsigned conflict_level, unsigned backjump_level);
+    // E2: learned clause velocity — call for each antecedent clause during FUIP walk
+    void     dynamics_on_antecedent_clause(bool is_learned);
+    // E3: propagation-phase alignment — call on sampled propagations
+    void     dynamics_on_prop_alignment(bool matched);
+    // E4: conflict clause novelty — call with learned clause literals after conflict
+    void     dynamics_on_conflict_novelty(unsigned num_lits, unsigned const* lit_vars);
 
     // ===================================================================
     // Aggregate snapshot (extended)
