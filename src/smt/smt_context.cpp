@@ -308,6 +308,14 @@ namespace smt {
                 m_belief_variance = 0.99 * m_belief_variance + 0.01 * delta;
             }
         }
+        // A3: Phase flip detection for SPSA causal signal.
+        // On decisions, compare the chosen polarity with the saved phase cache.
+        // A flip means the solver decided differently from its cached belief.
+        if (decision && d.m_phase_available) {
+            bool actual_polarity = !l.sign();  // true = positive
+            m_landscape.dynamics_on_phase_flip(actual_polarity != d.m_phase);
+        }
+
         d.m_phase_available        = true;
         d.m_phase                  = !l.sign();
         TRACE(assign_core, tout << (decision?"decision: ":"propagating: ") << l << " ";
@@ -4341,6 +4349,34 @@ namespace smt {
             m_stats.m_num_restarts++;
             m_num_restarts++;
             m_restart_count++;
+            // A2: Dynamics restart interval (was missing in SMT path).
+            m_landscape.dynamics_on_restart(m_num_conflicts_since_restart);
+
+            // A4: Activity Gini at restart.
+            m_landscape.dynamics_compute_activity_gini(
+                m_activity.data(), get_num_bool_vars());
+
+            // C1: Trail stability — fraction of vars that kept same polarity.
+            {
+                unsigned nv = get_num_bool_vars();
+                unsigned step = (nv > 4096) ? (nv / 4096) : 1;
+                unsigned same = 0, total = 0;
+                for (unsigned v = 0; v < nv; v += step) {
+                    bool_var_data const& bd = get_bdata(v);
+                    if (!bd.m_phase_available) continue;
+                    auto& lp = m_landscape.last_decided_polarity();
+                    if (v < lp.size() && lp[v] != 0) {
+                        bool prev_pol = (lp[v] == 2); // 2=true, 1=false
+                        if (prev_pol == bd.m_phase) same++;
+                        total++;
+                    }
+                }
+                if (total > 0) {
+                    float stab = static_cast<float>(same) / static_cast<float>(total);
+                    m_landscape.dynamics_update_trail_stability(stab);
+                }
+            }
+
             // B11: invoke meta-update orchestrator when auto-tuning is enabled.
             if (m_fparams.m_auto_tune)
                 meta_update_on_restart();
@@ -4687,8 +4723,27 @@ namespace smt {
                 .u("clauses", m_stats.m_num_mk_clause)
                 .u("restarts", m_num_restarts);
         }
-        if (m_adaptive_log && m_num_conflicts > 0 && m_num_conflicts % 250 == 0) {
-            m_landscape.dump_to_alog(m_adaptive_log, m_num_conflicts, get_num_bool_vars());
+        if (m_num_conflicts > 0 && m_num_conflicts % 250 == 0) {
+            // Causal signal batch update at LANDSCAPE dump cadence.
+            // A1 (qi_instance_rate), A3 (phase_flip_rate), B1 (fp_hit_rate),
+            // B2 (new_variable_rate), B4 (stress_gini_trend), C2 (theory_lemma_rate).
+            unsigned qi_ins = m_qmanager ? m_qmanager->get_qi_velocity_inserts() : 0;
+            unsigned fp_h = m_qmanager ? m_qmanager->get_fp_hit_total() : 0;
+            unsigned fp_m = m_qmanager ? m_qmanager->get_fp_miss_total() : 0;
+            double stress_gini = m_landscape.stress_concentration();
+            m_landscape.dynamics_update_rates(qi_ins, m_stats.m_num_decisions,
+                                              m_landscape.dynamics().theory_lemma_count,
+                                              stress_gini);
+            // B1: fingerprint hit rate
+            m_landscape.dynamics_update_fp_hit_rate(fp_h, fp_m);
+            // C3: QI E-graph growth (read from existing egraph_metrics)
+            float eg_growth = m_qmanager ? m_qmanager->get_egraph_growth_rate_ema() : 0.0f;
+            m_landscape.dynamics_update_qi_egraph_growth(eg_growth);
+            // C4: agility snapshot
+            m_landscape.dynamics_update_agility(static_cast<float>(m_agility));
+
+            if (m_adaptive_log)
+                m_landscape.dump_to_alog(m_adaptive_log, m_num_conflicts, get_num_bool_vars());
         }
         m_num_conflicts_since_lemma_gc ++;
 

@@ -120,6 +120,15 @@ namespace smt {
          */
         float get_chain_score(quantifier * q) const;
 
+        // Fingerprint dedup counters (for SPSA causal signal B1).
+        unsigned get_fp_hit_total() const;
+        unsigned get_fp_miss_total() const;
+
+        // QI velocity insert counter (for SPSA causal signal A1).
+        unsigned get_qi_velocity_inserts() const;
+
+        // E-graph growth rate EMA (for SPSA causal signal C3).
+        float get_egraph_growth_rate_ema() const;
     };
 
     class quantifier_manager_plugin {

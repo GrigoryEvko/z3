@@ -169,7 +169,11 @@ void landscape_map::on_conflict_antecedent(unsigned lit_idx) {
     ensure_literal(lit_idx);
     unsigned old = m_lit_stress[lit_idx];
     unsigned bumped = old - (old >> 4) + 16;
-    m_lit_stress[lit_idx] = static_cast<uint8_t>(bumped > 255 ? 255 : bumped);
+    uint8_t new_val = static_cast<uint8_t>(bumped > 255 ? 255 : bumped);
+    // B3: Incremental high_stress_count tracking — detect threshold crossing.
+    if (old <= 128 && new_val > 128)
+        m_dynamics.high_stress_count++;
+    m_lit_stress[lit_idx] = new_val;
 }
 
 void landscape_map::decay_stress() {
@@ -177,7 +181,11 @@ void landscape_map::decay_stress() {
     uint8_t* p = m_lit_stress.data();
     for (unsigned i = 0; i < sz; ++i) {
         unsigned v = p[i];
-        p[i] = static_cast<uint8_t>(v - (v >> 7));
+        uint8_t nv = static_cast<uint8_t>(v - (v >> 7));
+        // B3: Detect downward threshold crossing at 128.
+        if (v > 128 && nv <= 128 && m_dynamics.high_stress_count > 0)
+            m_dynamics.high_stress_count--;
+        p[i] = nv;
     }
 }
 
@@ -244,14 +252,18 @@ void landscape_map::on_decision(unsigned var, bool is_true, unsigned scope_lvl,
     // Legacy uint16 coverage counters
     if (is_true) {
         uint16_t old = m_decisions_true[var];
-        if (old == 0 && m_decisions_false[var] == 0)
+        if (old == 0 && m_decisions_false[var] == 0) {
             m_vars_explored++;
+            m_dynamics.first_time_decisions++;  // B2: first-time decision
+        }
         if (old < 65535)
             m_decisions_true[var] = old + 1;
     } else {
         uint16_t old = m_decisions_false[var];
-        if (old == 0 && m_decisions_true[var] == 0)
+        if (old == 0 && m_decisions_true[var] == 0) {
             m_vars_explored++;
+            m_dynamics.first_time_decisions++;  // B2: first-time decision
+        }
         if (old < 65535)
             m_decisions_false[var] = old + 1;
     }
@@ -1317,6 +1329,10 @@ void landscape_map::dynamics_on_restart(unsigned conflicts_since_restart) {
     m_dynamics.avg_restart_interval =
         (1.0f - ALPHA) * m_dynamics.avg_restart_interval + ALPHA * static_cast<float>(conflicts_since_restart);
 
+    // A2: Actual restart interval with fast EMA (alpha=0.2) for SPSA responsiveness.
+    m_dynamics.actual_restart_interval =
+        0.8f * m_dynamics.actual_restart_interval + 0.2f * static_cast<float>(conflicts_since_restart);
+
     // 18: Finalize theory prop density for this restart interval.
     if (m_dynamics.props_this_round > 0) {
         float density = static_cast<float>(m_dynamics.theory_props_this_round) /
@@ -1336,6 +1352,172 @@ void landscape_map::dynamics_update_binary_ratio(unsigned binary, unsigned total
         m_dynamics.binary_clause_ratio = static_cast<float>(binary) / static_cast<float>(total);
     else
         m_dynamics.binary_clause_ratio = 0.0f;
+}
+
+// -----------------------------------------------------------------------
+// Causal response signals (for SPSA gradient estimation)
+// -----------------------------------------------------------------------
+
+// A3: Phase flip detection.  Called on each decision.
+void landscape_map::dynamics_on_phase_flip(bool flipped) {
+    m_dynamics.decisions_this_interval++;
+    if (flipped)
+        m_dynamics.phase_flip_count++;
+}
+
+// A4: Activity Gini coefficient.  Histogram-based O(N) with sampling.
+void landscape_map::dynamics_compute_activity_gini(double const* activity, unsigned num_vars) {
+    if (num_vars < 2) return;
+    // Bucket activities into 256 bins (log scale).
+    // Find max first, then bin relative to max.
+    double max_act = 0.0;
+    unsigned step = 1;
+    if (num_vars > 8192) step = num_vars / 8192;
+    for (unsigned v = 0; v < num_vars; v += step) {
+        if (activity[v] > max_act) max_act = activity[v];
+    }
+    if (max_act < 1e-12) {
+        m_dynamics.activity_concentration = 0.0f;
+        return;
+    }
+    unsigned hist[256];
+    memset(hist, 0, sizeof(hist));
+    double inv_max = 255.0 / max_act;
+    unsigned n_sampled = 0;
+    for (unsigned v = 0; v < num_vars; v += step) {
+        unsigned bin = static_cast<unsigned>(activity[v] * inv_max);
+        if (bin > 255) bin = 255;
+        hist[bin]++;
+        n_sampled++;
+    }
+    // Compute Gini from sorted histogram (bins already in order).
+    uint64_t total = 0, weighted = 0;
+    unsigned rank = 0;
+    for (unsigned b = 0; b < 256; ++b) {
+        unsigned cnt = hist[b];
+        if (cnt == 0) continue;
+        for (unsigned j = 0; j < cnt; ++j) {
+            rank++;
+            total += b;
+            weighted += static_cast<uint64_t>(rank) * b;
+        }
+    }
+    if (total == 0) {
+        m_dynamics.activity_concentration = 0.0f;
+        return;
+    }
+    double gini = (2.0 * weighted) / (rank * static_cast<double>(total)) - (rank + 1.0) / rank;
+    if (gini < 0.0) gini = 0.0;
+    if (gini > 1.0) gini = 1.0;
+    // EMA alpha=0.1
+    m_dynamics.activity_concentration =
+        0.9f * m_dynamics.activity_concentration + 0.1f * static_cast<float>(gini);
+}
+
+// B1: Fingerprint hit rate.  Called at LANDSCAPE dump with absolute counters.
+void landscape_map::dynamics_update_fp_hit_rate(unsigned fp_hits, unsigned fp_misses) {
+    unsigned delta_hits = fp_hits - m_dynamics.prev_fp_hits;
+    unsigned delta_misses = fp_misses - m_dynamics.prev_fp_misses;
+    unsigned total = delta_hits + delta_misses;
+    if (total > 0) {
+        float rate = static_cast<float>(delta_hits) / static_cast<float>(total);
+        // EMA alpha=0.05
+        m_dynamics.fp_hit_rate = 0.95f * m_dynamics.fp_hit_rate + 0.05f * rate;
+    }
+    m_dynamics.prev_fp_hits = fp_hits;
+    m_dynamics.prev_fp_misses = fp_misses;
+}
+
+// B2: First-time variable decision.
+void landscape_map::dynamics_on_first_decision() {
+    m_dynamics.first_time_decisions++;
+}
+
+// B3: High stress count — incremental crossing detection.
+void landscape_map::dynamics_stress_crossed_up() {
+    m_dynamics.high_stress_count++;
+}
+
+void landscape_map::dynamics_stress_crossed_down() {
+    if (m_dynamics.high_stress_count > 0)
+        m_dynamics.high_stress_count--;
+}
+
+// C1: Trail stability.
+void landscape_map::dynamics_update_trail_stability(float stability) {
+    // EMA alpha=0.1
+    m_dynamics.trail_stability = 0.9f * m_dynamics.trail_stability + 0.1f * stability;
+}
+
+// C2: Theory lemma counter.
+void landscape_map::dynamics_on_theory_lemma() {
+    m_dynamics.theory_lemma_count++;
+}
+
+// Batch update for rate signals at LANDSCAPE dump time.
+void landscape_map::dynamics_update_rates(unsigned qi_inserts, unsigned decisions,
+                                           unsigned theory_lemmas, double stress_gini) {
+    // A1: QI instance rate = delta_inserts / max(delta_decisions, 1) * 1000
+    unsigned delta_qi = qi_inserts - m_dynamics.prev_qi_inserts;
+    unsigned delta_dec = decisions - m_dynamics.prev_decisions;
+    if (delta_dec > 0) {
+        float rate = static_cast<float>(delta_qi) / static_cast<float>(delta_dec) * 1000.0f;
+        // EMA alpha=0.1
+        m_dynamics.qi_instance_rate = 0.9f * m_dynamics.qi_instance_rate + 0.1f * rate;
+    }
+
+    // A3: Phase flip rate = phase_flip_count / decisions_this_interval
+    if (m_dynamics.decisions_this_interval > 0) {
+        float rate = static_cast<float>(m_dynamics.phase_flip_count) /
+                     static_cast<float>(m_dynamics.decisions_this_interval);
+        // EMA alpha=0.05
+        m_dynamics.phase_flip_rate = 0.95f * m_dynamics.phase_flip_rate + 0.05f * rate;
+    }
+
+    // B2: New variable rate = first_time_decisions / decisions_this_interval
+    if (m_dynamics.decisions_this_interval > 0) {
+        float rate = static_cast<float>(m_dynamics.first_time_decisions) /
+                     static_cast<float>(m_dynamics.decisions_this_interval);
+        // EMA alpha=0.1
+        m_dynamics.new_variable_rate = 0.9f * m_dynamics.new_variable_rate + 0.1f * rate;
+    }
+
+    // B4: Stress Gini trend = (gini_now - gini_prev) / interval
+    float gini_now = static_cast<float>(stress_gini);
+    if (m_dynamics.prev_stress_gini > 0.0f || gini_now > 0.0f) {
+        float delta = gini_now - m_dynamics.prev_stress_gini;
+        // EMA alpha=0.1
+        m_dynamics.stress_gini_trend = 0.9f * m_dynamics.stress_gini_trend + 0.1f * delta;
+    }
+    m_dynamics.prev_stress_gini = gini_now;
+
+    // C2: Theory lemma rate = delta_lemmas / max(delta_decisions, 1) * 1000
+    unsigned delta_th = theory_lemmas - m_dynamics.prev_theory_lemmas;
+    if (delta_dec > 0) {
+        float rate = static_cast<float>(delta_th) / static_cast<float>(delta_dec) * 1000.0f;
+        // EMA alpha=0.1
+        m_dynamics.theory_lemma_rate = 0.9f * m_dynamics.theory_lemma_rate + 0.1f * rate;
+    }
+
+    // Update snapshots
+    m_dynamics.prev_qi_inserts = qi_inserts;
+    m_dynamics.prev_decisions = decisions;
+    m_dynamics.prev_theory_lemmas = theory_lemmas;
+
+    // Reset per-interval counters
+    m_dynamics.phase_flip_count = 0;
+    m_dynamics.decisions_this_interval = 0;
+    m_dynamics.first_time_decisions = 0;
+}
+
+// C3: QI E-graph growth — just forward from existing egraph_metrics.
+void landscape_map::dynamics_update_qi_egraph_growth(float growth_rate_ema) {
+    m_dynamics.qi_egraph_growth = growth_rate_ema;
+}
+
+// C4: Agility — snapshot from solver.
+void landscape_map::dynamics_update_agility(float agility) {
+    m_dynamics.agility = agility;
 }
 
 // -----------------------------------------------------------------------
@@ -1594,7 +1776,20 @@ void landscape_map::dump_to_alog(FILE* alog, unsigned num_conflicts, unsigned nu
         .d("theory_prop_density", static_cast<double>(m_dynamics.theory_prop_density))
         // Dynamics: problem structure (19-20)
         .d("binary_ratio", static_cast<double>(m_dynamics.binary_clause_ratio))
-        .d("burstiness", static_cast<double>(m_dynamics.conflict_burstiness));
+        .d("burstiness", static_cast<double>(m_dynamics.conflict_burstiness))
+        // Causal response signals (A1-A4, B1-B4, C1-C4)
+        .d("qi_inst_rate", static_cast<double>(m_dynamics.qi_instance_rate))
+        .d("restart_int", static_cast<double>(m_dynamics.actual_restart_interval))
+        .d("phase_flip", static_cast<double>(m_dynamics.phase_flip_rate))
+        .d("activity_gini", static_cast<double>(m_dynamics.activity_concentration))
+        .d("fp_hit", static_cast<double>(m_dynamics.fp_hit_rate))
+        .d("new_var_rate", static_cast<double>(m_dynamics.new_variable_rate))
+        .u("high_stress_n", m_dynamics.high_stress_count)
+        .d("gini_trend", static_cast<double>(m_dynamics.stress_gini_trend))
+        .d("trail_stab", static_cast<double>(m_dynamics.trail_stability))
+        .d("th_lemma_rate", static_cast<double>(m_dynamics.theory_lemma_rate))
+        .d("qi_egraph_gr", static_cast<double>(m_dynamics.qi_egraph_growth))
+        .d("agility_val", static_cast<double>(m_dynamics.agility));
 }
 
 } // namespace smt

@@ -207,6 +207,9 @@ namespace smt {
         void record_binding_failure(uint64_t h) { m_failure_filter.record_failure(h); }
         void record_binding_success(uint64_t h) { m_failure_filter.record_success(h); }
         void on_conflict_failure_decay() { m_failure_filter.on_conflict(); }
+        // SPSA causal signal accessors
+        unsigned get_qi_velocity_inserts() const { return m_qi_velocity_inserts; }
+        float    get_egraph_growth_rate_ema() const { return m_egraph_metrics.m_growth_rate_ema; }
     };
 };
 

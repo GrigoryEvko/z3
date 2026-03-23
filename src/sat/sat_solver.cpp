@@ -2395,6 +2395,8 @@ namespace sat {
         m_landscape.on_decision(next_lit.var(), is_pos, scope_lvl(), m_trail.size());
         // Dynamics: propagation chain length + reversal detection
         m_landscape.dynamics_on_decision(m_trail.size());
+        // A3: Phase flip detection — compare chosen polarity with phase cache.
+        m_landscape.dynamics_on_phase_flip(is_pos != m_phase[next]);
         {
             // Reversal: check if polarity flipped vs last decision on this var
             bool_var bv = next_lit.var();
@@ -3498,6 +3500,28 @@ namespace sat {
             }
             // Dynamics: restart interval (datapoint 15) + theory prop density (18)
             m_landscape.dynamics_on_restart(m_conflicts_since_restart);
+
+            // A4: Activity Gini — compute from VSIDS activity array.
+            m_landscape.dynamics_compute_activity_gini(m_activity.data(), num_vars());
+
+            // C1: Trail stability — fraction of vars that maintained assignment polarity.
+            {
+                unsigned nv = num_vars();
+                unsigned step = (nv > 4096) ? (nv / 4096) : 1;
+                unsigned same = 0, total = 0;
+                auto& lp = m_landscape.last_decided_polarity();
+                for (unsigned v = 0; v < nv; v += step) {
+                    if (v >= lp.size()) break;
+                    if (lp[v] == 0) continue;  // never decided
+                    bool prev_pol = (lp[v] == 2);
+                    if (prev_pol == m_phase[v]) same++;
+                    total++;
+                }
+                if (total > 0) {
+                    float stab = static_cast<float>(same) / static_cast<float>(total);
+                    m_landscape.dynamics_update_trail_stability(stab);
+                }
+            }
         }
 
         pop_reinit(restart_level(to_base));
@@ -3694,8 +3718,19 @@ namespace sat {
                 .d("slow_glue", static_cast<double>(m_slow_glue_avg));
         }
         // Landscape: dump every 250 conflicts.
-        if (m_adaptive_log && m_conflicts_since_init > 0 && m_conflicts_since_init % 250 == 0) {
-            m_landscape.dump_to_alog(m_adaptive_log, m_conflicts_since_init, num_vars());
+        if (m_conflicts_since_init > 0 && m_conflicts_since_init % 250 == 0) {
+            // Causal signal batch update at LANDSCAPE dump cadence.
+            // SAT solver: QI signals (A1, B1, C2-theory, C3) are always 0.
+            double stress_gini = m_landscape.stress_concentration();
+            m_landscape.dynamics_update_rates(
+                0,                           // qi_inserts (no QI in SAT solver)
+                m_stats.m_decision,           // decisions
+                m_landscape.dynamics().theory_lemma_count,  // theory lemmas
+                stress_gini);
+            // C4: SAT solver has no agility metric; leave at 0.
+
+            if (m_adaptive_log)
+                m_landscape.dump_to_alog(m_adaptive_log, m_conflicts_since_init, num_vars());
         }
         // Landscape: periodic stress decay every 1000 conflicts.
         if (m_conflicts_since_init > 0 && m_conflicts_since_init % 1000 == 0) {

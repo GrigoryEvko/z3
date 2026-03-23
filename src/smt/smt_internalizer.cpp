@@ -1605,6 +1605,8 @@ namespace smt {
         if (m.proofs_enabled()) {
             js = mk_justification(theory_axiom_justification(tid, *this, num_lits, lits, num_params, params));
         }
+        // C2: Count theory lemmas for SPSA causal signal.
+        m_landscape.dynamics_on_theory_lemma();
         mk_clause(num_lits, lits, js, k);
     }
     

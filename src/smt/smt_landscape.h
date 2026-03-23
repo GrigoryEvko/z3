@@ -379,9 +379,42 @@ public:
         uint32_t binary_clauses;         // count of binary clauses
         uint32_t total_clauses;          // total clauses
 
+        // ---------------------------------------------------------------
+        // Causal response signals (for SPSA gradient estimation)
+        // Group A: Direct causal pairs with tunable parameters
+        // ---------------------------------------------------------------
+        float    qi_instance_rate;       // A1: QI instances per 1000 decisions
+        float    actual_restart_interval;// A2: EMA of conflicts between restarts (fast alpha=0.2)
+        float    phase_flip_rate;        // A3: fraction of decisions where polarity != phase cache
+        float    activity_concentration; // A4: Gini of VSIDS activity distribution
+
+        // Group B: Replacement signals (fix phantom/broken metrics)
+        float    fp_hit_rate;            // B1: fingerprint dedup hit rate EMA
+        float    new_variable_rate;      // B2: first-time decisions / total decisions per interval
+        uint32_t high_stress_count;      // B3: count of literals with stress > 128
+        float    stress_gini_trend;      // B4: rate of change of stress Gini
+
+        // Group C: Theory and model signals
+        float    trail_stability;        // C1: assignment survival rate across restarts
+        float    theory_lemma_rate;      // C2: theory lemmas per 1000 decisions
+        float    qi_egraph_growth;       // C3: EMA of enodes created per QI instance
+        float    agility;                // C4: Z3 agility metric (polarity flip EMA)
+
+        // Helper delta counters (reset at each LANDSCAPE dump / restart)
+        uint32_t prev_qi_inserts;        // A1: qi_velocity_inserts snapshot
+        uint32_t prev_decisions;         // A1/B2/C2: decisions snapshot
+        uint32_t prev_fp_hits;           // B1: fp_hit_total snapshot
+        uint32_t prev_fp_misses;         // B1: fp_miss_total snapshot
+        uint32_t prev_theory_lemmas;     // C2: theory lemma count snapshot
+        float    prev_stress_gini;       // B4: stress Gini at last dump
+        uint32_t phase_flip_count;       // A3: phase flips this interval (reset each dump)
+        uint32_t decisions_this_interval;// A3: decisions this interval (reset each dump)
+        uint32_t first_time_decisions;   // B2: first-time var decisions this interval
+        uint32_t theory_lemma_count;     // C2: running theory lemma counter
+
         void reset() { memset(this, 0, sizeof(*this)); }
     };
-    static_assert(sizeof(solver_dynamics) <= 192, "solver_dynamics should be compact");
+    static_assert(sizeof(solver_dynamics) <= 384, "solver_dynamics should be compact");
 
     // Dynamics public accessors
     solver_dynamics const& dynamics() const { return m_dynamics; }
@@ -408,6 +441,30 @@ public:
     void     dynamics_on_restart(unsigned conflicts_since_restart);
     void     dynamics_on_reversal();
     void     dynamics_update_binary_ratio(unsigned binary, unsigned total);
+
+    // Causal signal hooks (SPSA gradient estimation)
+    // A3: phase flip detection — call on each decision with actual vs cached polarity
+    void     dynamics_on_phase_flip(bool flipped);
+    // A4: activity Gini — compute from activity array at restart time
+    void     dynamics_compute_activity_gini(double const* activity, unsigned num_vars);
+    // B1: fingerprint hit rate — call at LANDSCAPE dump with current fp counters
+    void     dynamics_update_fp_hit_rate(unsigned fp_hits, unsigned fp_misses);
+    // B2: new variable detection — call on decision if variable is first-time
+    void     dynamics_on_first_decision();
+    // B3: high stress count — incremental maintenance
+    void     dynamics_stress_crossed_up();   // stress crossed 128 from below
+    void     dynamics_stress_crossed_down(); // stress crossed 128 from above
+    // C1: trail stability — call at restart with # vars that kept polarity
+    void     dynamics_update_trail_stability(float stability);
+    // C2: theory lemma counter — call on each theory lemma creation
+    void     dynamics_on_theory_lemma();
+    // Batch update for rate signals at LANDSCAPE dump time
+    void     dynamics_update_rates(unsigned qi_inserts, unsigned decisions,
+                                   unsigned theory_lemmas, double stress_gini);
+    // C3: qi egraph growth — call with existing egraph_metrics growth_rate_ema
+    void     dynamics_update_qi_egraph_growth(float growth_rate_ema);
+    // C4: agility — snapshot from solver
+    void     dynamics_update_agility(float agility);
 
     // ===================================================================
     // Aggregate snapshot (extended)
