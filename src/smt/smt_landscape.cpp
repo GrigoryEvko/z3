@@ -61,6 +61,9 @@ void landscape_map::init_search() {
     m_last_decision_trail_pos = 0;
     m_last_decision_var       = UINT32_MAX;
     m_last_decision_polarity  = false;
+    // Reset top-K fanout cache
+    m_top_fanout_count = 0;
+    memset(m_top_fanout_vars, 0, sizeof(m_top_fanout_vars));
     // Conflict history position resets (ring buffer wraps, data persists)
     m_conflict_history_pos   = 0;
     m_conflict_history_count = 0;
@@ -694,6 +697,31 @@ void landscape_map::on_decision_fanout(unsigned var, unsigned fanout) {
         unsigned sample = fanout > UINT16_MAX ? UINT16_MAX : fanout;
         vp.avg_fanout_false = static_cast<uint16_t>(
             old - (old >> 4) + (sample >> 4));
+    }
+
+    // Maintain top-K high-fanout variable cache.
+    // Insert var into the cache if its fanout exceeds the minimum in the cache.
+    unsigned max_fo = std::max(vp.avg_fanout_true, vp.avg_fanout_false);
+    if (max_fo > 10) {
+        // Check if already in cache
+        for (unsigned i = 0; i < m_top_fanout_count; ++i) {
+            if (m_top_fanout_vars[i] == var) return; // already tracked
+        }
+        if (m_top_fanout_count < TOP_FANOUT_K) {
+            // Cache not full — just append
+            m_top_fanout_vars[m_top_fanout_count++] = var;
+        } else {
+            // Cache full — evict the lowest-fanout entry
+            unsigned min_idx = 0;
+            unsigned min_fo = UINT_MAX;
+            for (unsigned i = 0; i < TOP_FANOUT_K; ++i) {
+                unsigned fo_i = get_var_fanout(m_top_fanout_vars[i]);
+                if (fo_i < min_fo) { min_fo = fo_i; min_idx = i; }
+            }
+            if (max_fo > min_fo) {
+                m_top_fanout_vars[min_idx] = var;
+            }
+        }
     }
 }
 

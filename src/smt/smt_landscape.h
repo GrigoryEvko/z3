@@ -206,6 +206,14 @@ public:
     // Returns true if var profiles are allocated and populated.
     bool     has_var_profiles() const { return m_var_profiles != nullptr; }
 
+    // Top-K high-fanout variable cache (rebuilt on each on_decision_fanout call).
+    // Avoids iterating all variables on every restart.
+    static constexpr unsigned TOP_FANOUT_K = 32;
+    void     get_top_fanout_vars(unsigned const*& vars, unsigned& count) const {
+        vars = m_top_fanout_vars;
+        count = m_top_fanout_count;
+    }
+
     // Fanout tracking state (called from context)
     void     save_trail_pos(unsigned trail_size) { m_last_decision_trail_pos = trail_size; }
     unsigned get_last_trail_pos() const { return m_last_decision_trail_pos; }
@@ -503,6 +511,10 @@ private:
     unsigned          m_last_decision_trail_pos = 0;
     unsigned          m_last_decision_var       = UINT32_MAX;
     bool              m_last_decision_polarity  = false;
+
+    // -- Top-K fanout cache (rebuilt on each on_decision_fanout call) --
+    unsigned          m_top_fanout_vars[TOP_FANOUT_K] = {};
+    unsigned          m_top_fanout_count = 0;
 
     // -- Polarity safety counters (recomputed each periodic clause scan) --
     svector<uint16_t> m_safety_true;   // per-var: clauses where TRUE literal is saver

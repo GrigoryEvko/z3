@@ -324,24 +324,22 @@ namespace smt {
         if (m.has_trace_stream())
             trace_assign(l, j, decision);
 
-        if (decision) {
-            m_landscape.on_decision(l.var(), !l.sign(), m_scope_lvl,
-                                    m_assigned_literals.size());
-            // Dynamics: propagation chain length + reversal detection
-            m_landscape.dynamics_on_decision(m_assigned_literals.size());
-            {
-                // Reversal: check if polarity flipped vs last decision on this var
-                bool_var bv = l.var();
-                auto& lp = m_landscape.last_decided_polarity();
-                if (bv >= lp.size())
-                    lp.resize(bv + 1, 0);
-                uint8_t prev = lp[bv];
-                uint8_t cur = l.sign() ? 1 : 2; // 1=negative(false), 2=positive(true)
-                if (prev != 0 && prev != cur)
-                    m_landscape.dynamics_on_reversal();
-                lp[bv] = cur;
-                m_landscape.dynamics().reversal_window++;
+        if (decision && m_fparams.m_auto_tune) {
+            // Lightweight fanout tracking: measure propagation fanout of the
+            // PREVIOUS decision (trail growth since that decision was made).
+            // Only update on non-trivial fanout (>0) to avoid cache misses.
+            unsigned trail_size = m_assigned_literals.size();
+            unsigned last_var = m_landscape.get_last_decision_var();
+            if (last_var != UINT32_MAX) {
+                unsigned trail_prev = m_landscape.get_last_trail_pos();
+                if (trail_size > trail_prev + 1) {
+                    unsigned fanout = trail_size - trail_prev - 1;
+                    m_landscape.on_decision_fanout(last_var, fanout);
+                }
             }
+            m_landscape.save_trail_pos(trail_size);
+            m_landscape.set_last_decision_var(l.var());
+            m_landscape.set_last_decision_polarity(!l.sign());
         }
 
         m_case_split_queue->assign_lit_eh(l);
@@ -1698,24 +1696,14 @@ namespace smt {
             unsigned qhead = m_qhead;
             {
                 scoped_suspend_rlimit _suspend_cancel(m.limit(), at_base_level());
-                // Phase timing: BCP
-                m_landscape.dynamics_phase_begin();
-                unsigned trail_before_bcp = m_assigned_literals.size();
                 if (!bcp())
                     return false;
-                m_landscape.dynamics_phase_end_bcp();
-                // Dynamics: count BCP propagations (trail growth during BCP)
-                unsigned bcp_props = m_assigned_literals.size() - trail_before_bcp;
-                m_landscape.dynamics().props_this_round += bcp_props;
                 if (!propagate_th_case_split(qhead))
                     return false;
                 SASSERT(!inconsistent());
                 propagate_relevancy(qhead);
                 if (inconsistent())
                     return false;
-                // Phase timing: Theory propagation
-                m_landscape.dynamics_phase_begin();
-                unsigned trail_before_th = m_assigned_literals.size();
                 if (!propagate_atoms())
                     return false;
                 if (!propagate_eqs())
@@ -1726,17 +1714,9 @@ namespace smt {
                     return false;
                 if (!propagate_theories())
                     return false;
-                m_landscape.dynamics_phase_end_theory();
-                // Dynamics: count theory propagations (trail growth during theory)
-                unsigned th_props = m_assigned_literals.size() - trail_before_th;
-                m_landscape.dynamics().theory_props_this_round += th_props;
             }
             if (!get_cancel_flag()) {
-//                scoped_suspend_rlimit _suspend_cancel(m.limit(), at_base_level());
-                // Phase timing: QI
-                m_landscape.dynamics_phase_begin();
                 m_qmanager->propagate();
-                m_landscape.dynamics_phase_end_qi();
             }
             if (inconsistent())
                 return false;
@@ -2835,11 +2815,9 @@ namespace smt {
             }
         }
         IF_VERBOSE(2, verbose_stream() << " :num-deleted-clauses " << num_del_cls << ")" << std::endl;);
-        // Dynamics: GC survival rate (datapoints 12-13)
-        {
+        if (m_fparams.m_auto_tune) {
             unsigned candidates = end_at - start_del_at;
             unsigned survived = candidates - num_del_cls;
-            // Approximate "used" as clauses with non-zero activity (kept by nth_element)
             m_landscape.dynamics_on_gc(survived, candidates, survived);
         }
     }
@@ -2892,8 +2870,7 @@ namespace smt {
         SASSERT(j <= sz);
         m_lemmas.shrink(j);
         IF_VERBOSE(2, verbose_stream() << " :num-deleted-clauses " << num_del_cls << ")" << std::endl;);
-        // Dynamics: GC survival rate (datapoints 12-13)
-        {
+        if (m_fparams.m_auto_tune) {
             unsigned candidates = sz - start_at;
             unsigned survived = j - start_at;
             m_landscape.dynamics_on_gc(survived, candidates, survived);
@@ -3952,64 +3929,18 @@ namespace smt {
         m_phase_default                = false;
         m_case_split_queue             ->init_search_eh();
         m_landscape                    .init_search();
-        // Deep landscape: lazily allocate Tier 1/2 structures sized to actual problem.
-        {
+        // Landscape guidance: allocate only structures consumed by active guidance.
+        // var_profiles: needed by on_decision_fanout (fanout boost).
+        // clause_profiles: needed by on_clause_propagation (polarity safety).
+        // Conflict graph, clause_ptr_map, QI patterns, clause occurrences,
+        // binary ratio — all purely observational, skipped for performance.
+        if (m_fparams.m_auto_tune) {
             unsigned nv = get_num_bool_vars();
             unsigned nc = m_aux_clauses.size();
-            if (nv > 0) {
+            if (nv > 0)
                 m_landscape.ensure_var_profiles(nv);
-                m_landscape.ensure_conflict_graph(nv);
-            }
-            if (nc > 0) {
+            if (nc > 0)
                 m_landscape.ensure_clause_profiles(nc);
-                // Build clause pointer → index reverse map for on_clause_antecedent.
-                m_landscape.ensure_clause_ptr_map(nc);
-                for (unsigned ci = 0; ci < nc; ++ci) {
-                    clause* cls = m_aux_clauses[ci];
-                    if (cls)
-                        m_landscape.register_clause_ptr(ci, reinterpret_cast<uintptr_t>(cls));
-                }
-            }
-            // Tier 1c: allocate QI pattern maps if quantifiers present.
-            if (m_qmanager && m_qmanager->num_quantifiers() > 0)
-                m_landscape.ensure_qi_patterns(m_qmanager->num_quantifiers());
-            // Tier 1b: compute clause_occurrence counts from input clauses.
-            if (nv > 0 && nc > 0) {
-                struct occ_ctx { context* c; };
-                occ_ctx octx{this};
-                m_landscape.compute_clause_occurrences(
-                    nv, nc,
-                    [](unsigned ci, void* ctx) -> unsigned {
-                        auto* oc = static_cast<occ_ctx*>(ctx);
-                        if (ci >= oc->c->m_aux_clauses.size()) return 0;
-                        clause* cls = oc->c->m_aux_clauses[ci];
-                        return cls ? cls->get_num_literals() : 0;
-                    },
-                    [](unsigned ci, unsigned li, void* ctx) -> unsigned {
-                        auto* oc = static_cast<occ_ctx*>(ctx);
-                        if (ci >= oc->c->m_aux_clauses.size()) return 0;
-                        clause* cls = oc->c->m_aux_clauses[ci];
-                        if (!cls || li >= cls->get_num_literals()) return 0;
-                        return (*cls)[li].var();
-                    },
-                    &octx);
-            }
-
-            // Dynamics: binary clause ratio (datapoint 19).
-            // Count binary clauses from the watch lists.
-            unsigned binary_count = 0;
-            for (unsigned v = 0; v < nv; ++v) {
-                unsigned pos_idx = literal(v, false).index();
-                unsigned neg_idx = literal(v, true).index();
-                if (pos_idx < m_watches.size())
-                    binary_count += m_watches[pos_idx].end_literals() - m_watches[pos_idx].begin_literals();
-                if (neg_idx < m_watches.size())
-                    binary_count += m_watches[neg_idx].end_literals() - m_watches[neg_idx].begin_literals();
-            }
-            // Each binary clause is stored twice (once per watched literal)
-            binary_count /= 2;
-            unsigned total_clauses = nc + binary_count;
-            m_landscape.dynamics_update_binary_ratio(binary_count, total_clauses);
         }
         m_next_progress_sample         = 0;
         m_internal_completed                = l_undef;
@@ -4416,35 +4347,11 @@ namespace smt {
             // E9: reset per-restart final-check counter after polarity score consumes it.
             m_final_checks_since_restart = 0;
 
-            // Landscape: compute phase hash and health, record region fingerprint.
-            // Must happen before pop_scope since m_bdata phase bits are needed.
-            {
-                unsigned num_vars = get_num_bool_vars();
-                uint64_t phase_hash = 0;
-                for (unsigned v = 0; v < num_vars; v += 64) {
-                    uint64_t bit = m_bdata[v].m_phase ? 1ULL : 0ULL;
-                    phase_hash ^= fmix64(static_cast<uint64_t>(v) + (bit << 32));
-                }
-                // Health = useful conflicts / total operations in this restart interval.
-                float health = 0.0f;
-                if (m_num_conflicts_since_restart > 0) {
-                    unsigned ops = m_stats.m_num_decisions + m_stats.m_num_propagations;
-                    health = static_cast<float>(m_num_conflicts_since_restart) /
-                             static_cast<float>(ops > 0 ? ops : 1);
-                }
-                m_landscape.on_restart(phase_hash, health);
-
-                // Dynamics: restart interval (datapoint 15) + theory prop density (18)
-                m_landscape.dynamics_on_restart(m_num_conflicts_since_restart);
-
-                // Deep landscape: update polarity_history for sampled variables.
-                // Sample every 64th variable to keep cost bounded.
-                for (unsigned v = 0; v < num_vars; v += 64) {
-                    m_landscape.update_polarity_history(v, m_bdata[v].m_phase);
-                }
-
-                // Complete fanout for the last decision before restart
-                // (the decision whose propagation chain was interrupted by conflict/restart)
+            // Landscape guidance at restart: fanout tracking + impact-based branching.
+            // Region fingerprints, dynamics, and polarity history are skipped
+            // (observational only, not consumed by any active guidance).
+            if (m_fparams.m_auto_tune) {
+                // Complete fanout measurement for the last decision before restart.
                 if (m_landscape.get_last_decision_var() != UINT32_MAX) {
                     unsigned trail_now = m_assigned_literals.size();
                     unsigned trail_prev = m_landscape.get_last_trail_pos();
@@ -4455,23 +4362,23 @@ namespace smt {
                     m_landscape.set_last_decision_var(UINT32_MAX);
                 }
 
-                // Impact-based branching: boost activity of high-fanout variables.
-                // Gives a small (10% of m_bvar_inc * log2(fanout)) nudge to variables
-                // whose decisions cause many propagations, helping the solver branch
-                // on high-impact variables sooner.
-                if (m_fparams.m_auto_tune && m_landscape.has_var_profiles() &&
-                    m_num_conflicts > 1000) {
+                // Impact-based branching: boost top-K high-fanout variables.
+                unsigned num_vars = get_num_bool_vars();
+                if (m_landscape.has_var_profiles() && m_num_conflicts > 1000) {
+                    unsigned const* top_vars = nullptr;
+                    unsigned top_count = 0;
+                    m_landscape.get_top_fanout_vars(top_vars, top_count);
                     bool need_rescale = false;
-                    for (unsigned v = 0; v < num_vars; ++v) {
+                    for (unsigned i = 0; i < top_count; ++i) {
+                        unsigned v = top_vars[i];
+                        if (v >= num_vars) continue;
                         unsigned fanout = m_landscape.get_var_fanout(v);
-                        if (fanout > 10) {
-                            double boost = std::log2(static_cast<double>(fanout))
-                                         * m_bvar_inc * 0.1;
-                            m_activity[v] += boost;
-                            if (m_activity[v] > ACTIVITY_LIMIT)
-                                need_rescale = true;
-                            m_case_split_queue->activity_increased_eh(v);
-                        }
+                        double boost = std::log2(static_cast<double>(fanout))
+                                     * m_bvar_inc * 0.1;
+                        m_activity[v] += boost;
+                        if (m_activity[v] > ACTIVITY_LIMIT)
+                            need_rescale = true;
+                        m_case_split_queue->activity_increased_eh(v);
                     }
                     if (need_rescale)
                         rescale_bool_var_activity();
@@ -4544,13 +4451,8 @@ namespace smt {
 
                 tick(counter);
 
-                // Phase timing: conflict analysis
-                m_landscape.dynamics_phase_begin();
-                if (!resolve_conflict()) {
-                    m_landscape.dynamics_phase_end_conflict();
+                if (!resolve_conflict())
                     return l_false;
-                }
-                m_landscape.dynamics_phase_end_conflict();
 
                 SASSERT(m_scope_lvl >= m_base_lvl);
 
@@ -4592,10 +4494,7 @@ namespace smt {
             if (m_base_lvl == m_scope_lvl && m_fparams.m_simplify_clauses)
                 simplify_clauses();
 
-            // Phase timing: decide
-            m_landscape.dynamics_phase_begin();
             if (!decide()) {
-                m_landscape.dynamics_phase_end_decide();
                 if (inconsistent())
                     return l_false;
                 final_check_status fcs = final_check();
@@ -4609,8 +4508,6 @@ namespace smt {
                 case FC_GIVEUP:
                     return l_undef;
                 }
-            } else {
-                m_landscape.dynamics_phase_end_decide();
             }
 
             if (resource_limits_exceeded() && !inconsistent()) {
@@ -4862,124 +4759,30 @@ namespace smt {
             // Must be done before pop_scope_core since justifications are invalidated.
             attribute_qi_conflict(num_lits, lits);
 
-            // Landscape map: bump literal stress for conflict lemma literals,
-            // feed variable pairs to the Bloom filter, and periodic decay.
-            // Also record extended conflict data for Tier 1b/2b.
-            {
-                // Extract bool_vars from literals for the Bloom filter (top 8 by FUIP order).
-                unsigned var_buf[8];
-                unsigned var_count = 0;
-                for (unsigned i = 0; i < num_lits; ++i) {
-                    m_landscape.on_conflict_antecedent(lits[i].index());
-                    if (var_count < 8)
-                        var_buf[var_count++] = lits[i].var();
-                }
-                m_landscape.on_learned_clause(var_count, var_buf);
-
-                // Tier 1b: mark variables in the learned clause as conflict participants.
-                // The FUIP literal (lits[0]) is at conflict_lvl; it is the closest
-                // variable to the decision, so we mark it as decision_conflict.
-                for (unsigned i = 0; i < num_lits; ++i) {
-                    bool_var bv = lits[i].var();
-                    bool was_dec = (i == 0);  // FUIP literal approximates the decision
-                    m_landscape.on_var_in_conflict(bv, was_dec);
-                }
-
-                // Tier 1a: bump antecedent count for reason clauses of learned-clause
-                // literals. This records which input clauses participate in conflict
-                // derivation (analogous to reason-side bumping in VSIDS).
-                for (unsigned i = 0; i < num_lits; ++i) {
-                    b_justification js = get_bdata(lits[i].var()).justification();
-                    if (js.get_kind() == b_justification::CLAUSE) {
-                        unsigned cidx = m_landscape.find_clause_idx(
-                            reinterpret_cast<uintptr_t>(js.get_clause()));
-                        if (cidx != UINT32_MAX)
-                            m_landscape.on_clause_antecedent(cidx);
-                    }
-                }
-
-                // Tier 2b: Record full conflict metadata in history buffer.
-                // Compute LBD (number of distinct decision levels in the clause).
-                {
-                    unsigned glue = 0;
-                    // Use a small bitset for levels up to 64, fallback to counting for deeper
-                    uint64_t level_bits = 0;
-                    bool overflow = false;
-                    for (unsigned i = 0; i < num_lits; ++i) {
-                        unsigned lvl = get_assign_level(lits[i]);
-                        if (lvl < 64) {
-                            level_bits |= (1ULL << lvl);
-                        } else {
-                            overflow = true;
+            // Landscape guidance: periodic clause scan + polarity safety update.
+            // Per-conflict stress/Bloom/history recording skipped (observational only).
+            // Only the periodic scan (every 1000 conflicts) feeds polarity safety.
+            if (m_fparams.m_auto_tune && m_num_conflicts % 1000 == 0) {
+                unsigned nc = m_aux_clauses.size();
+                for (unsigned ci = 0; ci < nc; ++ci) {
+                    clause* cls = m_aux_clauses[ci];
+                    if (!cls || cls->is_lemma()) continue;
+                    unsigned nlits = cls->get_num_literals();
+                    unsigned false_count = 0;
+                    unsigned true_lit_pos = UINT32_MAX;
+                    for (unsigned li = 0; li < nlits; ++li) {
+                        lbool val = get_assignment((*cls)[li]);
+                        if (val == l_false) {
+                            false_count++;
+                        } else if (val == l_true && true_lit_pos == UINT32_MAX) {
+                            true_lit_pos = li;
                         }
                     }
-                    // popcount for levels 0-63
-                    uint64_t b = level_bits;
-                    b = b - ((b >> 1) & 0x5555555555555555ULL);
-                    b = (b & 0x3333333333333333ULL) + ((b >> 2) & 0x3333333333333333ULL);
-                    b = (b + (b >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
-                    glue = static_cast<unsigned>((b * 0x0101010101010101ULL) >> 56);
-                    if (overflow) glue += 4;  // approximate extra levels
-
-                    // Compute learned clause hash for recurrence detection
-                    uint64_t clause_hash = fmix64(static_cast<uint64_t>(num_lits));
-                    for (unsigned i = 0; i < num_lits && i < 8; ++i)
-                        clause_hash ^= fmix64(static_cast<uint64_t>(lits[i].index()));
-
-                    // Compute theory_flags: bit per theory family
-                    uint8_t theory_flags = 0;
-                    if (m_conflict.get_kind() == b_justification::JUSTIFICATION)
-                        theory_flags |= 0x01;  // theory-originated
-                    for (unsigned i = 0; i < num_lits && i < 16; ++i) {
-                        theory_id tid = get_var_theory(lits[i].var());
-                        if (tid != null_theory_id && tid < 8)
-                            theory_flags |= (1u << tid);
+                    if (false_count == nlits - 1 && true_lit_pos != UINT32_MAX) {
+                        m_landscape.on_clause_propagation(ci, (*cls)[true_lit_pos].index());
                     }
-
-                    unsigned backjump = (conflict_lvl > new_lvl) ? (conflict_lvl - new_lvl) : 0;
-                    m_landscape.on_conflict_full(
-                        clause_hash, var_buf, var_count, glue,
-                        backjump, m_assigned_literals.size(),
-                        theory_flags, num_lits);
-
-                    // Dynamics: conflict-time datapoints (8-11, 14, 16-17, 20)
-                    bool th_conflict = (m_conflict.get_kind() == b_justification::JUSTIFICATION);
-                    m_landscape.dynamics_on_conflict(
-                        m_scope_lvl, m_assigned_literals.size(),
-                        get_num_bool_vars(), num_lits,
-                        glue, conflict_lvl, new_lvl, th_conflict);
                 }
-
-                // Periodic stress decay every 1000 conflicts.
-                if (m_num_conflicts % 1000 == 0) {
-                    m_landscape.decay_stress();
-
-                    // Tier 1a: Periodic clause scan — identify saving literals
-                    // by scanning input clauses under current assignment.
-                    unsigned nc = m_aux_clauses.size();
-                    for (unsigned ci = 0; ci < nc; ++ci) {
-                        clause* cls = m_aux_clauses[ci];
-                        if (!cls || cls->is_lemma()) continue;
-                        unsigned nlits = cls->get_num_literals();
-                        unsigned false_count = 0;
-                        unsigned true_lit_pos = UINT32_MAX;
-                        for (unsigned li = 0; li < nlits; ++li) {
-                            lbool val = get_assignment((*cls)[li]);
-                            if (val == l_false) {
-                                false_count++;
-                            } else if (val == l_true && true_lit_pos == UINT32_MAX) {
-                                true_lit_pos = li;
-                            }
-                        }
-                        // If all but one literal is false, the surviving one is the saver
-                        if (false_count == nlits - 1 && true_lit_pos != UINT32_MAX) {
-                            m_landscape.on_clause_propagation(ci, (*cls)[true_lit_pos].index());
-                        }
-                    }
-                    // Recompute per-variable polarity safety counters from saving-literal data.
-                    if (m_fparams.m_auto_tune)
-                        m_landscape.compute_polarity_safety();
-                }
+                m_landscape.compute_polarity_safety();
             }
 
             if (m_fparams.m_auto_tune) {
