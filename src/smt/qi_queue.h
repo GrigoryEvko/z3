@@ -99,6 +99,7 @@ namespace smt {
         unsigned m_num_instances, m_num_lazy_instances;
         unsigned m_num_qi_conflicts;  // global count of conflicts with QI participation
         unsigned m_num_fast_rejected; // insert() surprisal early-exit rejects
+        unsigned m_num_qi_bankruptcies; // number of times QI velocity gate triggered
         void reset() { memset(this, 0, sizeof(qi_queue_stats)); }
         qi_queue_stats() { reset(); }
     };
@@ -159,6 +160,14 @@ namespace smt {
         svector<scope>                m_scopes;
         unsigned                      m_final_check_no_conflict_streak = 0;
         unsigned                      m_last_conflict_count = 0;
+
+        // QI velocity gate: global insert/conflict ratio tracking.
+        // When QI floods in without producing conflicts, the velocity
+        // ratio (inserts / max(conflicts, 1)) spikes.  After a 50K-insert
+        // warmup, ratio > 5000 doubles the effective eager threshold (BFS mode),
+        // and ratio > 20000 blocks ALL new QI until the next search.
+        unsigned                      m_qi_velocity_inserts = 0;
+        bool                          m_qi_bankrupt = false;
 
         void init_parser_vars();
         q::quantifier_stat * set_values(quantifier * q, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation, float cost);

@@ -322,6 +322,9 @@ namespace smt {
     }
 
     void qi_queue::insert(fingerprint * f, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation) {
+        // QI velocity gate: if bankrupt, block all new inserts.
+        if (m_qi_bankrupt) return;
+
         quantifier * q         = static_cast<quantifier*>(f->get_data());
 
         // Increment inserts_total here (post-fingerprint) so it counts
@@ -331,6 +334,9 @@ namespace smt {
         q::quantifier_stat * stat = m_qm.get_stat(q);
         if (stat)
             stat->inc_inserts_total();
+
+        // Track global insert count for velocity ratio computation.
+        m_qi_velocity_inserts++;
 
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
         float const base_cost  = cost;  // snapshot for inflation cap
@@ -439,6 +445,42 @@ namespace smt {
     }
 
     void qi_queue::instantiate() {
+        // QI velocity gate: if already bankrupt, skip entire batch.
+        if (m_qi_bankrupt) {
+            m_new_entries.reset();
+            return;
+        }
+
+        // QI velocity gate: check global insert/conflict ratio.
+        // After a 50K-insert warmup, extreme ratios trigger throttling:
+        //   ratio > 5000:  double effective eager threshold (BFS mode)
+        //   ratio > 20000: declare bankruptcy — block ALL further QI
+        //
+        // Thresholds are deliberately very conservative: productive UFLIA
+        // queries (e.g., F* ModifiesGen-224) legitimately reach ratios of
+        // ~5000 because most QI contributes through propagation and
+        // equality merging rather than direct SAT conflicts.  The timeout
+        // matching loops we target have ratios of 100K+ (millions of
+        // inserts with near-zero conflicts across ALL quantifiers).
+        bool velocity_bfs = false;
+        if (m_qi_velocity_inserts > 50000) {
+            unsigned conflicts = m_context.get_num_conflicts();
+            double ratio = static_cast<double>(m_qi_velocity_inserts) / std::max(conflicts, 1u);
+            if (ratio > 20000.0) {
+                m_qi_bankrupt = true;
+                m_stats.m_num_qi_bankruptcies++;
+                ALOG(m_context.get_adaptive_log(), "QI_BANKRUPT")
+                    .u("inserts", m_qi_velocity_inserts)
+                    .u("conflicts", conflicts)
+                    .d("ratio", ratio);
+                m_new_entries.reset();
+                return;
+            }
+            if (ratio > 5000.0) {
+                velocity_bfs = true;
+            }
+        }
+
         // Adaptive QI budget: dynamically adjust the eager cost threshold
         // based on global success rate (qi_conflicts / total_instances).
         //
@@ -471,6 +513,13 @@ namespace smt {
         // Effective threshold: the Bayesian surprisal in get_cost() makes
         // per-quantifier costs adaptive, so no global threshold modulation needed.
         double effective_threshold = m_eager_cost_threshold;
+
+        // QI velocity BFS mode: double the threshold so more entries are
+        // delayed rather than eagerly instantiated.  Capped at 100.0 to
+        // avoid overflow effects on the cost comparison.
+        if (velocity_bfs) {
+            effective_threshold = std::min(effective_threshold * 2.0, 100.0);
+        }
 
         // E4.4: E-graph growth and merge ratio tracking (informational only).
         // The threshold modulation is disabled because even mild 5%
@@ -558,12 +607,19 @@ namespace smt {
 
         // Adaptive log: QI_BATCH summary for the instantiation batch
         if (batch_total > 0) {
+            double vel_ratio = 0.0;
+            if (m_qi_velocity_inserts > 0) {
+                unsigned c = m_context.get_num_conflicts();
+                vel_ratio = static_cast<double>(m_qi_velocity_inserts) / std::max(c, 1u);
+            }
             ALOG(m_context.get_adaptive_log(), "QI_BATCH")
                 .u("total", batch_total)
                 .u("eager", n_eager)
                 .u("delayed", n_delayed)
                 .u("delayed_q", static_cast<unsigned>(m_delayed_entries.size()))
-                .u("fast_rej", m_stats.m_num_fast_rejected);
+                .u("fast_rej", m_stats.m_num_fast_rejected)
+                .u("vel_ins", m_qi_velocity_inserts)
+                .d("vel_ratio", vel_ratio);
         }
         // E4.4: Post-batch E-graph growth and merge ratio tracking.
         if (m_params.m_qi_feedback && enodes_before > 0) {
@@ -831,6 +887,8 @@ namespace smt {
         m_failure_filter.reset();
         m_final_check_no_conflict_streak = 0;
         m_last_conflict_count = 0;
+        m_qi_velocity_inserts = 0;
+        m_qi_bankrupt = false;
     }
 
     void qi_queue::init_search_eh() {
@@ -838,6 +896,8 @@ namespace smt {
         m_new_entries.reset();
         m_egraph_metrics.reset();
         m_failure_filter.reset();
+        m_qi_velocity_inserts = 0;
+        m_qi_bankrupt = false;
         // NOTE: do NOT reset m_final_check_no_conflict_streak here.
         // For incremental queries (push/pop with many check-sat calls),
         // the streak must persist across check-sat calls so the
@@ -1016,6 +1076,7 @@ namespace smt {
         st.update("lazy quant instantiations", m_stats.m_num_lazy_instances);
         st.update("qi conflicts", m_stats.m_num_qi_conflicts);
         st.update("qi fast rejects", m_stats.m_num_fast_rejected);
+        st.update("qi bankruptcies", m_stats.m_num_qi_bankruptcies);
         st.update("missed quant instantiations", m_delayed_entries.size());
         float min, max;
         get_min_max_costs(min, max);
