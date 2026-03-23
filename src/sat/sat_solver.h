@@ -320,7 +320,9 @@ namespace sat {
         class i_local_search*   m_local_search;
         probsat                 m_probsat;              // lightweight in-place ProbSAT walker for rephase walk
 
-        statistics              m_aux_stats;        
+        statistics              m_aux_stats;
+
+        FILE*                   m_adaptive_log = nullptr; // JSONL trace (smt.adaptive_log)
 
         void del_clauses(clause_vector& clauses);
 

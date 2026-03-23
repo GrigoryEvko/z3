@@ -35,6 +35,8 @@ Revision History:
 #include "sat/sat_prob.h"
 #include "sat/sat_probsat.h"
 #include "sat/sat_anf_simplifier.h"
+#include "smt/adaptive_log.h"
+#include "params/smt_params_helper.hpp"
 #if defined(_MSC_VER) && !defined(_M_ARM) && !defined(_M_ARM64)
 # include <xmmintrin.h>
 #endif
@@ -134,6 +136,10 @@ namespace sat {
     }
 
     solver::~solver() {
+        if (m_adaptive_log) {
+            fclose(m_adaptive_log);
+            m_adaptive_log = nullptr;
+        }
         m_ext = nullptr;
         SASSERT(m_config.m_num_threads > 1 || m_trim || rlimit().is_canceled() || check_invariant());
         CTRACE(sat, !m_clauses.empty(), tout << "Delete clauses\n";);
@@ -1770,13 +1776,14 @@ namespace sat {
         }
         try {
             init_search();
-            if (check_inconsistent()) return l_false;
+            lbool result = l_undef;
+            if (check_inconsistent()) { result = l_false; goto alog_solve; }
             propagate(false);
-            if (check_inconsistent()) return l_false;
+            if (check_inconsistent()) { result = l_false; goto alog_solve; }
             if (!ilb_reused) {
                 init_assumptions(num_lits, lits);
                 propagate(false);
-                if (check_inconsistent()) return l_false;
+                if (check_inconsistent()) { result = l_false; goto alog_solve; }
             } else {
                 // ILB: assumptions already assigned; restore search_lvl.
                 m_search_lvl = scope_lvl();
@@ -1793,20 +1800,23 @@ namespace sat {
 
             if (m_config.m_enable_pre_simplify) {
                 do_simplify();
-                if (check_inconsistent()) return l_false;
+                if (check_inconsistent()) { result = l_false; goto alog_solve; }
             }
 
             if (m_config.m_max_conflicts == 0) {
                 IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat \"abort: max-conflicts = 0\")\n";);
                 TRACE(sat, display(tout); m_mc.display(tout););
-                return l_undef;
+                result = l_undef;
+                goto alog_solve;
             }
 
             // CaDiCaL-style lucky phase detection
             {
                 lbool lucky = try_lucky_phases();
-                if (lucky != l_undef)
-                    return lucky;
+                if (lucky != l_undef) {
+                    result = lucky;
+                    goto alog_solve;
+                }
             }
 
             if (m_config.m_phase == PS_LOCAL_SEARCH && m_ext) {
@@ -1814,22 +1824,31 @@ namespace sat {
             }
 
             log_stats();
-            if (m_config.m_max_conflicts > 0 && m_config.m_burst_search > 0) {               
+            if (m_config.m_max_conflicts > 0 && m_config.m_burst_search > 0) {
                 m_restart_threshold = m_config.m_burst_search;
-                lbool r = bounded_search();
+                result = bounded_search();
                 log_stats();
-                if (r != l_undef) 
-                    return r;
-                
+                if (result != l_undef)
+                    goto alog_solve;
+
                 pop_reinit(scope_lvl());
                 m_conflicts_since_restart = 0;
                 m_ticks_at_last_restart = m_search_ticks;
                 m_restart_threshold = m_config.m_restart_initial;
             }
 
-            lbool is_sat = search();
+            result = search();
             log_stats();
-            return is_sat;
+
+        alog_solve:
+            ALOG(m_adaptive_log, "SOLVE")
+                .s("result", result == l_false ? "unsat" : result == l_true ? "sat" : "unknown")
+                .u("conflicts", m_conflicts_since_init)
+                .u("restarts", m_restarts)
+                .u("decisions", m_stats.m_decision)
+                .u("props", m_stats.m_propagate)
+                .u("learned", m_learned.size());
+            return result;
         }
         catch (const abort_solver &) {
             IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat \"abort giveup\")\n";);
@@ -2710,6 +2729,23 @@ namespace sat {
         if (m_ext)
             m_ext->init_search();
 
+        // Open adaptive log lazily on first search (smt.adaptive_log param).
+        if (!m_adaptive_log) {
+            smt_params_helper sp(m_params);
+            const char* log_path = sp.adaptive_log();
+            if (log_path && log_path[0]) {
+                m_adaptive_log = fopen(log_path, "w");
+                if (m_adaptive_log) {
+                    setvbuf(m_adaptive_log, nullptr, _IOLBF, 0);
+                    ALOG(m_adaptive_log, "INIT")
+                        .s("version", "z3-adaptive-log-v1")
+                        .s("solver", "sat")
+                        .u("vars", num_vars())
+                        .u("clauses", num_clauses());
+                }
+            }
+        }
+
         // Incremental clause decay (CaDiCaL-style): age learned clauses from
         // previous check() calls by incrementing their glue.  This makes stale
         // clauses gradually eligible for GC if they are not useful in the new
@@ -3328,8 +3364,16 @@ namespace sat {
         TRACE(sat, tout << "restart " << restart_level(to_base) << "\n";);
         IF_VERBOSE(30, display_status(verbose_stream()););
         TRACE(sat, tout << "restart " << restart_level(to_base) << "\n";);
+
+        ALOG(m_adaptive_log, "RESTART")
+            .u("r", m_restarts)
+            .u("c", m_conflicts_since_init)
+            .u("trail", m_trail.size())
+            .d("fast_glue", static_cast<double>(m_fast_glue_avg))
+            .d("slow_glue", static_cast<double>(m_slow_glue_avg));
+
         pop_reinit(restart_level(to_base));
-        set_next_restart();        
+        set_next_restart();
     }
 
     unsigned solver::restart_level(bool to_base) {
@@ -3507,6 +3551,20 @@ namespace sat {
         // Periodically recompute dynamic tier boundaries from glue usage histogram.
         if (m_conflicts_since_init >= m_next_tier_recompute)
             recompute_tier_boundaries();
+
+        // Adaptive log: periodic SAT snapshot every 100 conflicts.
+        if (m_adaptive_log && m_conflicts_since_init > 0 && m_conflicts_since_init % 100 == 0) {
+            ALOG(m_adaptive_log, "SAT")
+                .u("c", m_conflicts_since_init)
+                .u("decisions", m_stats.m_decision)
+                .u("props", m_stats.m_propagate)
+                .u("learned", m_learned.size())
+                .u("clauses", m_clauses.size())
+                .u("restarts", m_restarts)
+                .u("vars", num_vars())
+                .d("fast_glue", static_cast<double>(m_fast_glue_avg))
+                .d("slow_glue", static_cast<double>(m_slow_glue_avg));
+        }
 
         bool unique_max;
         m_conflict_lvl = get_max_lvl(m_not_l, m_conflict, unique_max);
