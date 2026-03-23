@@ -38,6 +38,7 @@ Revision History:
 #include "smt/smt_case_split_queue.h"
 #include "smt/smt_almost_cg_table.h"
 #include "smt/smt_failure.h"
+#include "smt/smt_landscape.h"
 #include "smt/smt_types.h"
 #include "smt/dyn_ack.h"
 #include "ast/ast_smt_pp.h"
@@ -724,6 +725,10 @@ namespace smt {
 
         // Adaptive log file accessor (null when logging is disabled)
         FILE* get_adaptive_log() const { return m_adaptive_log; }
+
+        // Landscape map accessor — spatial awareness of the search space
+        landscape_map & get_landscape() { return m_landscape; }
+        landscape_map const & get_landscape() const { return m_landscape; }
 
         // E7: func_decl heat accessor — returns VSIDS-style activity score for a function symbol
         double get_func_decl_heat(func_decl const * d) const {
@@ -2383,6 +2388,9 @@ namespace smt {
 
         // Adaptive engine JSONL trace logger
         FILE*                       m_adaptive_log = nullptr;
+
+        // Landscape map: spatial awareness of the search space
+        landscape_map               m_landscape;
 
     };
 

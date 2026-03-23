@@ -33,6 +33,7 @@ z3_add_component(smt
     smt_internalizer.cpp
     smt_justification.cpp
     smt_kernel.cpp
+    smt_landscape.cpp
     smt_literal.cpp
     smt_lookahead.cpp
     smt_model_checker.cpp

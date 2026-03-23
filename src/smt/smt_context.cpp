@@ -324,6 +324,9 @@ namespace smt {
         if (m.has_trace_stream())
             trace_assign(l, j, decision);
 
+        if (decision)
+            m_landscape.on_decision(l.var(), !l.sign());
+
         m_case_split_queue->assign_lit_eh(l);
     }
 
@@ -3892,6 +3895,7 @@ namespace smt {
         m_bridge_conflict_count        = 0;
         m_phase_default                = false;
         m_case_split_queue             ->init_search_eh();
+        m_landscape                    .init_search();
         m_next_progress_sample         = 0;
         m_internal_completed                = l_undef;
         if (m.has_type_vars() && !m_theories.get_plugin(poly_family_id))
@@ -4296,6 +4300,26 @@ namespace smt {
                 meta_update_on_restart();
             // E9: reset per-restart final-check counter after polarity score consumes it.
             m_final_checks_since_restart = 0;
+
+            // Landscape: compute phase hash and health, record region fingerprint.
+            // Must happen before pop_scope since m_bdata phase bits are needed.
+            {
+                unsigned num_vars = get_num_bool_vars();
+                uint64_t phase_hash = 0;
+                for (unsigned v = 0; v < num_vars; v += 64) {
+                    uint64_t bit = m_bdata[v].m_phase ? 1ULL : 0ULL;
+                    phase_hash ^= fmix64(static_cast<uint64_t>(v) + (bit << 32));
+                }
+                // Health = useful conflicts / total operations in this restart interval.
+                float health = 0.0f;
+                if (m_num_conflicts_since_restart > 0) {
+                    unsigned ops = m_stats.m_num_decisions + m_stats.m_num_propagations;
+                    health = static_cast<float>(m_num_conflicts_since_restart) /
+                             static_cast<float>(ops > 0 ? ops : 1);
+                }
+                m_landscape.on_restart(phase_hash, health);
+            }
+
             if (m_scope_lvl > curr_lvl) {
                 pop_scope(m_scope_lvl - curr_lvl);
                 SASSERT(at_search_level());
@@ -4598,6 +4622,9 @@ namespace smt {
                 .u("clauses", m_stats.m_num_mk_clause)
                 .u("restarts", m_num_restarts);
         }
+        if (m_adaptive_log && m_num_conflicts > 0 && m_num_conflicts % 500 == 0) {
+            m_landscape.dump_to_alog(m_adaptive_log, m_num_conflicts, get_num_bool_vars());
+        }
         m_num_conflicts_since_lemma_gc ++;
 
         // E8.5: Check replay budget. If active and budget exceeded,
@@ -4666,6 +4693,24 @@ namespace smt {
             // (50K instances + 0 conflicts → blocked) and reward-adjusted scoring.
             // Must be done before pop_scope_core since justifications are invalidated.
             attribute_qi_conflict(num_lits, lits);
+
+            // Landscape map: bump literal stress for conflict lemma literals,
+            // feed variable pairs to the Bloom filter, and periodic decay.
+            {
+                // Extract bool_vars from literals for the Bloom filter (top 8 by FUIP order).
+                unsigned var_buf[8];
+                unsigned var_count = 0;
+                for (unsigned i = 0; i < num_lits; ++i) {
+                    m_landscape.on_conflict_antecedent(lits[i].index());
+                    if (var_count < 8)
+                        var_buf[var_count++] = lits[i].var();
+                }
+                m_landscape.on_learned_clause(var_count, var_buf);
+
+                // Periodic stress decay every 1000 conflicts.
+                if (m_num_conflicts % 1000 == 0)
+                    m_landscape.decay_stress();
+            }
 
             if (m_fparams.m_auto_tune) {
                 // Bump theory importance for theory atoms in theory-originated conflicts.
