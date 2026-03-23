@@ -505,11 +505,16 @@ namespace smt {
             q::quantifier_stat * stat = get_stat(q);
             if (stat) {
                 unsigned ni = stat->get_inserts_total();
-                unsigned nc = stat->get_num_conflicts();
+                // Use current-search conflicts, not lifetime total.
+                // A quantifier that had conflicts in earlier check-sat calls
+                // but zero in the current search is currently unproductive —
+                // historical productivity should not permanently protect
+                // against matching loop suppression.
+                unsigned nc = stat->get_num_conflicts_curr_search();
                 if (nc == 0 && ni > 5000) {
                     double coeff = 2.0;
                     double surprisal = coeff * std::log2(static_cast<double>(ni) / 5000.0);
-                    if (surprisal > m_params.m_qi_eager_threshold * 1.5) {
+                    if (surprisal > m_params.m_qi_eager_threshold * 1.05) {
                         return false;
                     }
                 }

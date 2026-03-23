@@ -218,11 +218,10 @@ namespace smt {
         //   n = 1000×N₀: +20 (past lazy threshold — fully blocked)
         {
             unsigned n = stat->get_inserts_total();
-            unsigned k = stat->get_num_conflicts();
-            // Self-loop quantifiers (body func_decls match own trigger) get
-            // a slightly faster-growing surprisal coefficient (2.5x vs 2x)
-            // to suppress true matching loops earlier while preserving
-            // productive recursive quantifiers during the N0 warmup window.
+            // Use current-search conflicts: historical productivity from
+            // earlier check-sat calls should not suppress the cost penalty
+            // in the current search where the quantifier may be looping.
+            unsigned k = stat->get_num_conflicts_curr_search();
             constexpr unsigned N0 = 5000;
             if (k == 0 && n > N0) {
                 double coeff = 2.0;
@@ -902,7 +901,7 @@ namespace smt {
                         q::quantifier_stat * stat = m_qm.get_stat(qa);
                         if (stat) {
                             unsigned ni = stat->get_inserts_total();
-                            unsigned nc = stat->get_num_conflicts();
+                            unsigned nc = stat->get_num_conflicts_curr_search();
                             constexpr unsigned N0 = 5000;
                             if (nc == 0 && ni > N0) {
                                 double coeff = 2.0;
