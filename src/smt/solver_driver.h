@@ -65,6 +65,9 @@ public:
         double gc_aggressiveness;       // [0.5, 2.0], default 1.0, log-space
     };
 
+    static_assert(sizeof(params) == 8 * sizeof(double),
+                  "params struct must be tightly packed doubles for array access");
+
     params const& current_params() const { return m_params; }
 
     // Counter accessors for integration into bounded_search().
