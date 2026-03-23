@@ -46,7 +46,7 @@ struct qi_params {
     bool               m_qi_feedback = false;
     double             m_qi_relevancy_weight = 0.0;
     double             m_qi_ucb_c = 0.0;
-    bool               m_auto_tune = false;
+    bool               m_auto_tune = true;
     bool               m_polarity_detection = false;
     std::string        m_cache_file;
     std::string        m_adaptive_log;   // JSONL trace file path, empty = disabled
