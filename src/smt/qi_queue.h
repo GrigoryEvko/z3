@@ -167,6 +167,7 @@ namespace smt {
         // warmup, ratio > 5000 doubles the effective eager threshold (BFS mode),
         // and ratio > 20000 blocks ALL new QI until the next search.
         unsigned                      m_qi_velocity_inserts = 0;
+        unsigned                      m_qi_velocity_conflicts_base = 0; // qi_conflicts at search start
         bool                          m_qi_bankrupt = false;
 
         void init_parser_vars();

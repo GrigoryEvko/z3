@@ -451,17 +451,24 @@ namespace smt {
             return;
         }
 
-        // QI velocity gate: check global insert/conflict ratio.
-        // After a 50K-insert warmup, extreme ratios trigger throttling:
-        //   ratio > 5000:  double effective eager threshold (BFS mode)
-        //   ratio > 20000: declare bankruptcy — block ALL further QI
+        // QI velocity gate: check insert/QI-conflict ratio.
+        // Uses QI-ATTRIBUTED conflicts (instances in FUIP antecedent chain),
+        // NOT total SAT conflicts.  Total SAT conflicts include noise from
+        // the solver working on QI-generated clauses — they don't indicate
+        // that QI is productive, just that the solver is busy.
         //
-        // Thresholds are deliberately very conservative: productive UFLIA
-        // queries (e.g., F* ModifiesGen-224) legitimately reach ratios of
-        // ~5000 because most QI contributes through propagation and
-        // equality merging rather than direct SAT conflicts.  The timeout
-        // matching loops we target have ratios of 100K+ (millions of
-        // inserts with near-zero conflicts across ALL quantifiers).
+        // After 10K-insert warmup:
+        //   ratio > 500:   double effective eager threshold (BFS mode)
+        //   ratio > 2000:  declare bankruptcy — block ALL further QI
+        //
+        // QI velocity gate using TOTAL SAT conflicts (not QI-attributed).
+        // QI-attributed conflicts are too sparse — most QI value is through
+        // propagation/equality merging, not direct conflict participation.
+        // Total conflicts capture the solver's overall health better.
+        //
+        // The gate only fires for extreme ratios (true dead zones):
+        //   BFS at 5000 inserts/conflict, bankruptcy at 20000.
+        // Productive Boogie: ratio ~300. F*: ratio ~600-5000. Loops: 100K+.
         bool velocity_bfs = false;
         if (m_qi_velocity_inserts > 50000) {
             unsigned conflicts = m_context.get_num_conflicts();
@@ -888,6 +895,7 @@ namespace smt {
         m_final_check_no_conflict_streak = 0;
         m_last_conflict_count = 0;
         m_qi_velocity_inserts = 0;
+        m_qi_velocity_conflicts_base = 0;
         m_qi_bankrupt = false;
     }
 
@@ -897,6 +905,7 @@ namespace smt {
         m_egraph_metrics.reset();
         m_failure_filter.reset();
         m_qi_velocity_inserts = 0;
+        m_qi_velocity_conflicts_base = m_stats.m_num_qi_conflicts;
         m_qi_bankrupt = false;
         // NOTE: do NOT reset m_final_check_no_conflict_streak here.
         // For incremental queries (push/pop with many check-sat calls),
