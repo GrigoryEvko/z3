@@ -2389,8 +2389,26 @@ namespace sat {
             next_lit.neg();
 
         TRACE(sat_decide, tout << scope_lvl() << ": next-case-split: " << next_lit << "\n";);
+        // Phase timing: decide
+        m_landscape.dynamics_phase_begin();
         assign_scoped(next_lit);
         m_landscape.on_decision(next_lit.var(), is_pos, scope_lvl(), m_trail.size());
+        // Dynamics: propagation chain length + reversal detection
+        m_landscape.dynamics_on_decision(m_trail.size());
+        {
+            // Reversal: check if polarity flipped vs last decision on this var
+            bool_var bv = next_lit.var();
+            auto& lp = m_landscape.last_decided_polarity();
+            if (bv >= lp.size())
+                lp.resize(bv + 1, 0);
+            uint8_t prev = lp[bv];
+            uint8_t cur = next_lit.sign() ? 1 : 2; // 1=negative(false), 2=positive(true)
+            if (prev != 0 && prev != cur)
+                m_landscape.dynamics_on_reversal();
+            lp[bv] = cur;
+            m_landscape.dynamics().reversal_window++;
+        }
+        m_landscape.dynamics_phase_end_decide();
         return true;
     }
 
@@ -2403,14 +2421,33 @@ namespace sat {
     lbool solver::basic_search() {
         lbool is_sat = l_undef;
         while (is_sat == l_undef && !should_cancel()) {
-            if (inconsistent()) is_sat = resolve_conflict_core();
-            else if (should_propagate()) propagate(true);
+            if (inconsistent()) {
+                // Phase timing: conflict analysis
+                m_landscape.dynamics_phase_begin();
+                is_sat = resolve_conflict_core();
+                m_landscape.dynamics_phase_end_conflict();
+            }
+            else if (should_propagate()) {
+                // Phase timing: BCP
+                m_landscape.dynamics_phase_begin();
+                unsigned trail_before = m_trail.size();
+                propagate(true);
+                m_landscape.dynamics_phase_end_bcp();
+                // Count BCP propagations for theory_prop_density denominator
+                unsigned bcp_props = m_trail.size() - trail_before;
+                m_landscape.dynamics().props_this_round += bcp_props;
+            }
             else if (do_cleanup(false)) continue;
             else if (should_gc()) do_gc();
             else if (should_rephase()) do_rephase();
             else if (should_restart()) { if (!m_restart_enabled) return l_undef; do_restart(!m_config.m_restart_fast); }
             else if (should_simplify()) do_simplify();
-            else if (!decide()) is_sat = final_check();
+            else if (!decide()) {
+                // Phase timing: decide (final_check path = no decision was made)
+                m_landscape.dynamics_phase_begin();
+                is_sat = final_check();
+                m_landscape.dynamics_phase_end_decide();
+            }
         }
         return is_sat;
     }
@@ -2792,6 +2829,14 @@ namespace sat {
                         return (*c)[li].var();
                     },
                     &octx);
+            }
+            // Dynamics: binary clause ratio (datapoint 19)
+            {
+                unsigned given_bin = 0, learned_bin = 0;
+                num_binary(given_bin, learned_bin);
+                unsigned total_binary = given_bin + learned_bin;
+                unsigned total_cls = nc + total_binary;
+                m_landscape.dynamics_update_binary_ratio(total_binary, total_cls);
             }
         }
 
@@ -3451,6 +3496,8 @@ namespace sat {
                 }
                 m_landscape.set_last_decision_var(UINT32_MAX);
             }
+            // Dynamics: restart interval (datapoint 15) + theory prop density (18)
+            m_landscape.dynamics_on_restart(m_conflicts_since_restart);
         }
 
         pop_reinit(restart_level(to_base));
@@ -4017,6 +4064,16 @@ namespace sat {
                 clause_hash, var_buf, var_count, glue,
                 backjump, m_trail.size(),
                 0 /* no theory in pure SAT */, num_lits);
+
+            // Dynamics: conflict-time datapoints (8-11, 14, 16-17, 20)
+            // In the pure SAT path, theory_conflict is always false.
+            // When m_ext is present (euf_solver), check if the conflict
+            // justification was an extension justification.
+            bool th_conflict = m_conflict.is_ext_justification();
+            m_landscape.dynamics_on_conflict(
+                m_conflict_lvl, m_trail.size(),
+                num_vars(), num_lits,
+                glue, m_conflict_lvl, backjump_lvl, th_conflict);
         }
 
         // Muon-style per-conflict normalization: LBD weight * clause-size normalization.

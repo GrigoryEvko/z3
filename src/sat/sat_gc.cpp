@@ -290,6 +290,11 @@ namespace sat {
             collect_garbage();
         unsigned deleted = sz - m_learned.size();
         m_stats.m_gc_clause += deleted;
+        // Dynamics: GC survival rate (datapoints 12-13)
+        {
+            unsigned survived = cand_sz - deleted;
+            m_landscape.dynamics_on_gc(survived, cand_sz, survived);
+        }
         IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat-gc :strategy " << st_name
                    << " :candidates " << cand_sz << " :protected " << cand_start
                    << " :deleted " << deleted << ")\n";);
@@ -313,6 +318,12 @@ namespace sat {
             collect_garbage();
         unsigned deleted = sz - m_learned.size();
         m_stats.m_gc_clause += deleted;
+        // Dynamics: GC survival rate (datapoints 12-13)
+        {
+            unsigned candidates = sz - new_sz;
+            unsigned survived = candidates - deleted;
+            m_landscape.dynamics_on_gc(survived, candidates, survived);
+        }
         IF_VERBOSE(SAT_VB_LVL, verbose_stream() << "(sat-gc :strategy " << st_name << " :deleted " << deleted << ")\n";);
     }
 
