@@ -47,6 +47,7 @@ Revision History:
 #include "sat/sat_probsat.h"
 #include "sat/sat_solver_core.h"
 #include "sat/sat_arena.h"
+#include "smt/smt_landscape.h"
 
 namespace pb {
     class solver;
@@ -323,6 +324,8 @@ namespace sat {
         statistics              m_aux_stats;
 
         FILE*                   m_adaptive_log = nullptr; // JSONL trace (smt.adaptive_log)
+
+        smt::landscape_map      m_landscape;             // Spatial awareness (Tier 0/1/2)
 
         void del_clauses(clause_vector& clauses);
 

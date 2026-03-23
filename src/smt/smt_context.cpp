@@ -3907,6 +3907,30 @@ namespace smt {
             }
             if (nc > 0)
                 m_landscape.ensure_clause_profiles(nc);
+            // Tier 1c: allocate QI pattern maps if quantifiers present.
+            if (m_qmanager && m_qmanager->num_quantifiers() > 0)
+                m_landscape.ensure_qi_patterns(m_qmanager->num_quantifiers());
+            // Tier 1b: compute clause_occurrence counts from input clauses.
+            if (nv > 0 && nc > 0) {
+                struct occ_ctx { context* c; };
+                occ_ctx octx{this};
+                m_landscape.compute_clause_occurrences(
+                    nv, nc,
+                    [](unsigned ci, void* ctx) -> unsigned {
+                        auto* oc = static_cast<occ_ctx*>(ctx);
+                        if (ci >= oc->c->m_aux_clauses.size()) return 0;
+                        clause* cls = oc->c->m_aux_clauses[ci];
+                        return cls ? cls->get_num_literals() : 0;
+                    },
+                    [](unsigned ci, unsigned li, void* ctx) -> unsigned {
+                        auto* oc = static_cast<occ_ctx*>(ctx);
+                        if (ci >= oc->c->m_aux_clauses.size()) return 0;
+                        clause* cls = oc->c->m_aux_clauses[ci];
+                        if (!cls || li >= cls->get_num_literals()) return 0;
+                        return (*cls)[li].var();
+                    },
+                    &octx);
+            }
         }
         m_next_progress_sample         = 0;
         m_internal_completed                = l_undef;
@@ -4652,7 +4676,7 @@ namespace smt {
                 .u("clauses", m_stats.m_num_mk_clause)
                 .u("restarts", m_num_restarts);
         }
-        if (m_adaptive_log && m_num_conflicts > 0 && m_num_conflicts % 500 == 0) {
+        if (m_adaptive_log && m_num_conflicts > 0 && m_num_conflicts % 250 == 0) {
             m_landscape.dump_to_alog(m_adaptive_log, m_num_conflicts, get_num_bool_vars());
         }
         m_num_conflicts_since_lemma_gc ++;
@@ -5136,6 +5160,14 @@ namespace smt {
                 stat->for_each_recent_binding_hash([this](uint64_t h) {
                     m_qmanager->mark_binding_useful(h);
                     m_qmanager->record_binding_success(h);
+                });
+                // Tier 1c: Update QI pattern success map.
+                // Each recent binding hash represents a pattern that
+                // participated in a useful conflict.
+                unsigned qid = seen_q[i]->get_id();
+                m_landscape.ensure_qi_patterns(qid + 1);
+                stat->for_each_recent_binding_hash([this, qid](uint64_t h) {
+                    m_landscape.update_qi_pattern(qid, static_cast<uint32_t>(h), /*useful=*/true);
                 });
             }
         }

@@ -119,7 +119,9 @@ public:
         uint32_t m_last_stress;        // conflict number when last stressed
         uint16_t m_violation_count;    // times clause was stressed (all but 1 lit false)
         uint16_t m_propagation_count;  // times clause propagated via BCP
-        uint16_t m_antecedent_count;   // times clause was in conflict antecedent chain
+        uint16_t m_antecedent_count;   // NOTE: not populated in hot path (conflict resolution
+                                       // inner loop doesn't carry clause indices). Reserved
+                                       // for future use. Periodic scan provides a proxy.
         uint8_t  m_saving_fraction;    // 0-255: how often saving_literal was sole survivor
         uint8_t  m_pad;
     };

@@ -2390,6 +2390,7 @@ namespace sat {
 
         TRACE(sat_decide, tout << scope_lvl() << ": next-case-split: " << next_lit << "\n";);
         assign_scoped(next_lit);
+        m_landscape.on_decision(next_lit.var(), is_pos, scope_lvl(), m_trail.size());
         return true;
     }
 
@@ -2743,6 +2744,40 @@ namespace sat {
                         .u("vars", num_vars())
                         .u("clauses", num_clauses());
                 }
+            }
+        }
+
+        // Initialize landscape map for spatial awareness.
+        m_landscape.init_search();
+        {
+            unsigned nv = num_vars();
+            unsigned nc = num_clauses();
+            if (nv > 0) {
+                m_landscape.ensure_var_profiles(nv);
+                m_landscape.ensure_conflict_graph(nv);
+            }
+            if (nc > 0)
+                m_landscape.ensure_clause_profiles(nc);
+            // Compute clause_occurrence counts from input clauses.
+            if (nv > 0 && nc > 0) {
+                struct occ_ctx { solver* s; };
+                occ_ctx octx{this};
+                m_landscape.compute_clause_occurrences(
+                    nv, nc,
+                    [](unsigned ci, void* ctx) -> unsigned {
+                        auto* oc = static_cast<occ_ctx*>(ctx);
+                        if (ci >= oc->s->m_clauses.size()) return 0;
+                        clause* c = oc->s->m_clauses[ci];
+                        return c ? c->size() : 0;
+                    },
+                    [](unsigned ci, unsigned li, void* ctx) -> unsigned {
+                        auto* oc = static_cast<occ_ctx*>(ctx);
+                        if (ci >= oc->s->m_clauses.size()) return 0;
+                        clause* c = oc->s->m_clauses[ci];
+                        if (!c || li >= c->size()) return 0;
+                        return (*c)[li].var();
+                    },
+                    &octx);
             }
         }
 
@@ -3372,6 +3407,38 @@ namespace sat {
             .d("fast_glue", static_cast<double>(m_fast_glue_avg))
             .d("slow_glue", static_cast<double>(m_slow_glue_avg));
 
+        // Landscape: compute phase hash and health for region tracking.
+        {
+            unsigned nv = num_vars();
+            uint64_t phase_hash = 0;
+            // Sample every 64th variable to keep cost bounded.
+            for (unsigned v = 0; v < nv; v += 64) {
+                uint64_t bit = m_phase[v] ? 1ULL : 0ULL;
+                phase_hash ^= fmix64(static_cast<uint64_t>(v) | (bit << 32));
+            }
+            // Health = conflicts_since_restart / trail_size (higher = more productive).
+            float health = 0.0f;
+            if (m_trail.size() > 0) {
+                health = static_cast<float>(m_conflicts_since_restart) /
+                         static_cast<float>(m_trail.size());
+            }
+            m_landscape.on_restart(phase_hash, health);
+            // Update polarity history for sampled variables.
+            for (unsigned v = 0; v < nv; v += 64) {
+                m_landscape.update_polarity_history(v, m_phase[v]);
+            }
+            // Complete fanout for the last decision before restart.
+            if (m_landscape.get_last_decision_var() != UINT32_MAX) {
+                unsigned trail_now = m_trail.size();
+                unsigned trail_prev = m_landscape.get_last_trail_pos();
+                if (trail_now > trail_prev) {
+                    unsigned fanout = trail_now - trail_prev - 1;
+                    m_landscape.on_decision_fanout(m_landscape.get_last_decision_var(), fanout);
+                }
+                m_landscape.set_last_decision_var(UINT32_MAX);
+            }
+        }
+
         pop_reinit(restart_level(to_base));
         set_next_restart();
     }
@@ -3564,6 +3631,34 @@ namespace sat {
                 .u("vars", num_vars())
                 .d("fast_glue", static_cast<double>(m_fast_glue_avg))
                 .d("slow_glue", static_cast<double>(m_slow_glue_avg));
+        }
+        // Landscape: dump every 250 conflicts.
+        if (m_adaptive_log && m_conflicts_since_init > 0 && m_conflicts_since_init % 250 == 0) {
+            m_landscape.dump_to_alog(m_adaptive_log, m_conflicts_since_init, num_vars());
+        }
+        // Landscape: periodic stress decay every 1000 conflicts.
+        if (m_conflicts_since_init > 0 && m_conflicts_since_init % 1000 == 0) {
+            m_landscape.decay_stress();
+            // Periodic clause scan for saving literals.
+            unsigned nc = m_clauses.size();
+            for (unsigned ci = 0; ci < nc; ++ci) {
+                clause* cls = m_clauses[ci];
+                if (!cls || cls->is_learned()) continue;
+                unsigned nlits = cls->size();
+                unsigned false_count = 0;
+                unsigned true_lit_pos = UINT32_MAX;
+                for (unsigned li = 0; li < nlits; ++li) {
+                    lbool val = value((*cls)[li]);
+                    if (val == l_false) {
+                        false_count++;
+                    } else if (val == l_true && true_lit_pos == UINT32_MAX) {
+                        true_lit_pos = li;
+                    }
+                }
+                if (false_count == nlits - 1 && true_lit_pos != UINT32_MAX) {
+                    m_landscape.on_clause_propagation(ci, (*cls)[true_lit_pos].index());
+                }
+            }
         }
 
         bool unique_max;
@@ -3864,6 +3959,38 @@ namespace sat {
         m_conflict_glue           = glue;
         m_conflict_clause_size    = m_lemma.size();
         m_conflict_decision_level = m_conflict_lvl;
+
+        // --- Landscape map: record conflict data ---
+        {
+            unsigned num_lits = m_lemma.size();
+            unsigned var_buf[8];
+            unsigned var_count = 0;
+            for (unsigned i = 0; i < num_lits; ++i) {
+                m_landscape.on_conflict_antecedent(m_lemma[i].index());
+                if (var_count < 8)
+                    var_buf[var_count++] = m_lemma[i].var();
+            }
+            m_landscape.on_learned_clause(var_count, var_buf);
+
+            // Tier 1b: mark variables as conflict participants.
+            for (unsigned i = 0; i < num_lits; ++i) {
+                bool was_dec = (i == 0); // FUIP literal approximates the decision
+                m_landscape.on_var_in_conflict(m_lemma[i].var(), was_dec);
+            }
+
+            // Tier 2b: full conflict metadata.
+            uint64_t clause_hash = fmix64(static_cast<uint64_t>(num_lits));
+            for (unsigned i = 0; i < num_lits && i < 8; ++i)
+                clause_hash ^= fmix64(static_cast<uint64_t>(m_lemma[i].index()));
+
+            unsigned backjump = (m_conflict_lvl > backjump_lvl)
+                              ? (m_conflict_lvl - backjump_lvl) : 0;
+            m_landscape.on_conflict_full(
+                clause_hash, var_buf, var_count, glue,
+                backjump, m_trail.size(),
+                0 /* no theory in pure SAT */, num_lits);
+        }
+
         // Muon-style per-conflict normalization: LBD weight * clause-size normalization.
         // Dividing by sqrt(clause_size) makes total activity injection per conflict
         // constant regardless of how many variables are bumped.
