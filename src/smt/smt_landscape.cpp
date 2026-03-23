@@ -69,6 +69,11 @@ void landscape_map::init_search() {
     m_prev_region_health = 0.0f;
     // NOTE: Tier 0 stress/coverage/regions/bloom, Tier 1/2 data all persist
     // across check-sat calls for cross-search spatial awareness.
+
+    // Tier 3: Solver dynamics — reset per search
+    m_dynamics.reset();
+    m_last_decided_polarity.reset();
+    m_decision_trail_start = 0;
 }
 
 void landscape_map::reset() {
@@ -133,6 +138,11 @@ void landscape_map::reset() {
     m_expanded_unique      = 0;
     m_prev_region_hash     = 0;
     m_prev_region_health   = 0.0f;
+
+    // Tier 3: solver dynamics
+    m_dynamics.reset();
+    m_last_decided_polarity.reset();
+    m_decision_trail_start = 0;
 }
 
 // -----------------------------------------------------------------------
@@ -1071,6 +1081,173 @@ unsigned landscape_map::expanded_region_insert_or_update(uint64_t key, float hea
 }
 
 // -----------------------------------------------------------------------
+// Tier 3: Solver Dynamics — 20 lightweight datapoints
+// -----------------------------------------------------------------------
+
+void landscape_map::dynamics_phase_begin() {
+    m_dynamics.phase_start_tsc = landscape_rdtsc();
+}
+
+void landscape_map::dynamics_phase_end_bcp() {
+    uint64_t now = landscape_rdtsc();
+    if (m_dynamics.phase_start_tsc > 0)
+        m_dynamics.cycles_bcp += now - m_dynamics.phase_start_tsc;
+    m_dynamics.cycles_total += now - m_dynamics.phase_start_tsc;
+    m_dynamics.phase_start_tsc = now;
+}
+
+void landscape_map::dynamics_phase_end_theory() {
+    uint64_t now = landscape_rdtsc();
+    if (m_dynamics.phase_start_tsc > 0)
+        m_dynamics.cycles_theory += now - m_dynamics.phase_start_tsc;
+    m_dynamics.cycles_total += now - m_dynamics.phase_start_tsc;
+    m_dynamics.phase_start_tsc = now;
+}
+
+void landscape_map::dynamics_phase_end_qi() {
+    uint64_t now = landscape_rdtsc();
+    if (m_dynamics.phase_start_tsc > 0)
+        m_dynamics.cycles_qi += now - m_dynamics.phase_start_tsc;
+    m_dynamics.cycles_total += now - m_dynamics.phase_start_tsc;
+    m_dynamics.phase_start_tsc = now;
+}
+
+void landscape_map::dynamics_phase_end_decide() {
+    uint64_t now = landscape_rdtsc();
+    if (m_dynamics.phase_start_tsc > 0)
+        m_dynamics.cycles_decide += now - m_dynamics.phase_start_tsc;
+    m_dynamics.cycles_total += now - m_dynamics.phase_start_tsc;
+    m_dynamics.phase_start_tsc = now;
+}
+
+void landscape_map::dynamics_phase_end_conflict() {
+    uint64_t now = landscape_rdtsc();
+    if (m_dynamics.phase_start_tsc > 0)
+        m_dynamics.cycles_conflict += now - m_dynamics.phase_start_tsc;
+    m_dynamics.cycles_total += now - m_dynamics.phase_start_tsc;
+    m_dynamics.phase_start_tsc = now;
+}
+
+// Datapoint 6: BCP propagation chain length.
+// Called on each decision. Computes chain = propagated_since_last_decision.
+void landscape_map::dynamics_on_decision(unsigned trail_size) {
+    if (m_decision_trail_start > 0 && trail_size > m_decision_trail_start) {
+        unsigned chain = trail_size - m_decision_trail_start - 1; // subtract the decision itself
+        // EMA alpha=0.05 (fast-changing metric)
+        m_dynamics.avg_prop_chain_length =
+            0.95f * m_dynamics.avg_prop_chain_length + 0.05f * static_cast<float>(chain);
+    }
+    m_decision_trail_start = trail_size;
+}
+
+// Datapoint 7: Decision reversal detection.
+void landscape_map::dynamics_on_reversal() {
+    m_dynamics.total_reversals++;
+}
+
+// Datapoints 8-11,14,16-17,20: Conflict-time metrics.
+void landscape_map::dynamics_on_conflict(unsigned scope_lvl, unsigned trail_size,
+                                          unsigned num_vars_total, unsigned num_lits,
+                                          unsigned glue, unsigned conflict_lvl,
+                                          unsigned backjump_lvl, bool theory_conflict) {
+    constexpr float ALPHA = 0.01f;  // slow EMA for most metrics
+
+    // 8: Assignment density at conflict
+    if (num_vars_total > 0) {
+        float density = static_cast<float>(trail_size) / static_cast<float>(num_vars_total);
+        m_dynamics.avg_conflict_density = (1.0f - ALPHA) * m_dynamics.avg_conflict_density + ALPHA * density;
+    }
+
+    // 9: Decision level at conflict
+    m_dynamics.avg_conflict_level = (1.0f - ALPHA) * m_dynamics.avg_conflict_level + ALPHA * static_cast<float>(scope_lvl);
+
+    // 10: Learned clause size trend
+    m_dynamics.avg_learned_size = (1.0f - ALPHA) * m_dynamics.avg_learned_size + ALPHA * static_cast<float>(num_lits);
+
+    // 11: LBD/glue trend
+    m_dynamics.avg_glue = (1.0f - ALPHA) * m_dynamics.avg_glue + ALPHA * static_cast<float>(glue);
+
+    // 14: Backjump distance fraction
+    if (conflict_lvl > 0) {
+        float frac = static_cast<float>(conflict_lvl - backjump_lvl) / static_cast<float>(conflict_lvl);
+        m_dynamics.avg_backjump_frac = (1.0f - ALPHA) * m_dynamics.avg_backjump_frac + ALPHA * frac;
+    }
+
+    // 16: Effective branching factor = trail_size / scope_level
+    if (scope_lvl > 0) {
+        float bf = static_cast<float>(trail_size) / static_cast<float>(scope_lvl);
+        m_dynamics.avg_branching_factor = (1.0f - ALPHA) * m_dynamics.avg_branching_factor + ALPHA * bf;
+    }
+
+    // 17: Theory conflict fraction
+    float tc = theory_conflict ? 1.0f : 0.0f;
+    m_dynamics.theory_conflict_frac = (1.0f - ALPHA) * m_dynamics.theory_conflict_frac + ALPHA * tc;
+
+    // 20: Conflict burstiness (inter-conflict gap in decisions)
+    if (m_dynamics.last_conflict_decisions > 0) {
+        float gap = static_cast<float>(m_total_decisions - m_dynamics.last_conflict_decisions);
+        m_dynamics.ema_gap = (1.0f - ALPHA) * m_dynamics.ema_gap + ALPHA * gap;
+        m_dynamics.ema_gap_sq = (1.0f - ALPHA) * m_dynamics.ema_gap_sq + ALPHA * gap * gap;
+        // Burstiness = normalized variance = (E[gap^2] - E[gap]^2) / max(E[gap^2], eps)
+        float var = m_dynamics.ema_gap_sq - m_dynamics.ema_gap * m_dynamics.ema_gap;
+        if (var < 0.0f) var = 0.0f;
+        float denom = m_dynamics.ema_gap_sq > 1e-6f ? m_dynamics.ema_gap_sq : 1e-6f;
+        m_dynamics.conflict_burstiness = var / denom;
+    }
+    m_dynamics.last_conflict_decisions = m_total_decisions;
+}
+
+// Datapoint 18: Theory propagation density (per-round accumulation).
+void landscape_map::dynamics_on_theory_prop() {
+    m_dynamics.theory_props_this_round++;
+}
+
+void landscape_map::dynamics_on_bcp_prop() {
+    m_dynamics.props_this_round++;
+}
+
+// Datapoints 12-13: GC-related metrics.
+void landscape_map::dynamics_on_gc(unsigned survived, unsigned candidates, unsigned used) {
+    // 13: GC survival rate
+    if (candidates > 0)
+        m_dynamics.gc_survival_rate = static_cast<float>(survived) / static_cast<float>(candidates);
+
+    // 12: Clause early-use rate (fraction of candidates that were used as antecedent)
+    if (candidates > 0) {
+        float rate = static_cast<float>(used) / static_cast<float>(candidates);
+        m_dynamics.clause_early_use_rate =
+            0.9f * m_dynamics.clause_early_use_rate + 0.1f * rate;
+    }
+}
+
+// Datapoint 15: Restart interval.
+void landscape_map::dynamics_on_restart(unsigned conflicts_since_restart) {
+    constexpr float ALPHA = 0.01f;
+    m_dynamics.avg_restart_interval =
+        (1.0f - ALPHA) * m_dynamics.avg_restart_interval + ALPHA * static_cast<float>(conflicts_since_restart);
+
+    // 18: Finalize theory prop density for this restart interval.
+    if (m_dynamics.props_this_round > 0) {
+        float density = static_cast<float>(m_dynamics.theory_props_this_round) /
+                        static_cast<float>(m_dynamics.props_this_round);
+        m_dynamics.theory_prop_density =
+            (1.0f - ALPHA) * m_dynamics.theory_prop_density + ALPHA * density;
+    }
+    m_dynamics.props_this_round = 0;
+    m_dynamics.theory_props_this_round = 0;
+}
+
+// Datapoint 19: Binary clause ratio.
+void landscape_map::dynamics_update_binary_ratio(unsigned binary, unsigned total) {
+    m_dynamics.binary_clauses = binary;
+    m_dynamics.total_clauses = total;
+    if (total > 0)
+        m_dynamics.binary_clause_ratio = static_cast<float>(binary) / static_cast<float>(total);
+    else
+        m_dynamics.binary_clause_ratio = 0.0f;
+}
+
+// -----------------------------------------------------------------------
 // Aggregate snapshot (extended)
 // -----------------------------------------------------------------------
 
@@ -1271,6 +1448,22 @@ void landscape_map::dump_to_alog(FILE* alog, unsigned num_conflicts, unsigned nu
     double recurrence = m_conflict_history ? conflict_recurrence_rate(1000) : 0.0;
     unsigned unique = m_expanded_regions ? m_expanded_unique : m_unique_regions;
 
+    // Compute dynamics phase time percentages (safe against div-by-zero)
+    double time_bcp_pct = 0, time_decide_pct = 0, time_conflict_pct = 0,
+           time_theory_pct = 0, time_qi_pct = 0;
+    if (m_dynamics.cycles_total > 0) {
+        double inv = 100.0 / static_cast<double>(m_dynamics.cycles_total);
+        time_bcp_pct      = static_cast<double>(m_dynamics.cycles_bcp) * inv;
+        time_decide_pct   = static_cast<double>(m_dynamics.cycles_decide) * inv;
+        time_conflict_pct = static_cast<double>(m_dynamics.cycles_conflict) * inv;
+        time_theory_pct   = static_cast<double>(m_dynamics.cycles_theory) * inv;
+        time_qi_pct       = static_cast<double>(m_dynamics.cycles_qi) * inv;
+    }
+    // Reversal rate
+    double reversal_rate = 0.0;
+    if (m_dynamics.reversal_window > 0)
+        reversal_rate = static_cast<double>(m_dynamics.total_reversals) / m_dynamics.reversal_window;
+
     ALOG(alog, "LANDSCAPE")
         .u("c", num_conflicts)
         .d("stress_avg", avg_stress())
@@ -1283,7 +1476,34 @@ void landscape_map::dump_to_alog(FILE* alog, unsigned num_conflicts, unsigned nu
         .u("max_fanout_var", max_fanout_var)
         .d("avg_fanout", avg_fanout)
         .d("conflict_recurrence", recurrence)
-        .u("conflict_history_n", m_conflict_history_count);
+        .u("conflict_history_n", m_conflict_history_count)
+        // Dynamics: phase time breakdown (datapoints 1-5)
+        .d("time_bcp_pct", time_bcp_pct)
+        .d("time_decide_pct", time_decide_pct)
+        .d("time_conflict_pct", time_conflict_pct)
+        .d("time_theory_pct", time_theory_pct)
+        .d("time_qi_pct", time_qi_pct)
+        // Dynamics: BCP quality (6)
+        .d("prop_chain", static_cast<double>(m_dynamics.avg_prop_chain_length))
+        // Dynamics: decision quality (7-9)
+        .d("reversals", reversal_rate)
+        .d("conflict_density", static_cast<double>(m_dynamics.avg_conflict_density))
+        .d("conflict_level", static_cast<double>(m_dynamics.avg_conflict_level))
+        // Dynamics: learning quality (10-13)
+        .d("learned_size", static_cast<double>(m_dynamics.avg_learned_size))
+        .d("glue", static_cast<double>(m_dynamics.avg_glue))
+        .d("early_use", static_cast<double>(m_dynamics.clause_early_use_rate))
+        .d("gc_survival", static_cast<double>(m_dynamics.gc_survival_rate))
+        // Dynamics: search structure (14-16)
+        .d("backjump_frac", static_cast<double>(m_dynamics.avg_backjump_frac))
+        .d("restart_interval", static_cast<double>(m_dynamics.avg_restart_interval))
+        .d("branching_factor", static_cast<double>(m_dynamics.avg_branching_factor))
+        // Dynamics: theory engagement (17-18)
+        .d("theory_conflict_frac", static_cast<double>(m_dynamics.theory_conflict_frac))
+        .d("theory_prop_density", static_cast<double>(m_dynamics.theory_prop_density))
+        // Dynamics: problem structure (19-20)
+        .d("binary_ratio", static_cast<double>(m_dynamics.binary_clause_ratio))
+        .d("burstiness", static_cast<double>(m_dynamics.conflict_burstiness));
 }
 
 } // namespace smt

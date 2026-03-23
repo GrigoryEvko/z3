@@ -324,9 +324,25 @@ namespace smt {
         if (m.has_trace_stream())
             trace_assign(l, j, decision);
 
-        if (decision)
+        if (decision) {
             m_landscape.on_decision(l.var(), !l.sign(), m_scope_lvl,
                                     m_assigned_literals.size());
+            // Dynamics: propagation chain length + reversal detection
+            m_landscape.dynamics_on_decision(m_assigned_literals.size());
+            {
+                // Reversal: check if polarity flipped vs last decision on this var
+                bool_var bv = l.var();
+                auto& lp = m_landscape.last_decided_polarity();
+                if (bv >= lp.size())
+                    lp.resize(bv + 1, 0);
+                uint8_t prev = lp[bv];
+                uint8_t cur = l.sign() ? 1 : 2; // 1=negative(false), 2=positive(true)
+                if (prev != 0 && prev != cur)
+                    m_landscape.dynamics_on_reversal();
+                lp[bv] = cur;
+                m_landscape.dynamics().reversal_window++;
+            }
+        }
 
         m_case_split_queue->assign_lit_eh(l);
     }
@@ -1675,21 +1691,31 @@ namespace smt {
      */
     bool context::propagate() {
         TRACE(propagate, tout << "propagating... " << m_qhead << ":" << m_assigned_literals.size() << "\n");
-        
+
         while (true) {
             if (inconsistent())
                 return false;
             unsigned qhead = m_qhead;
             {
                 scoped_suspend_rlimit _suspend_cancel(m.limit(), at_base_level());
+                // Phase timing: BCP
+                m_landscape.dynamics_phase_begin();
+                unsigned trail_before_bcp = m_assigned_literals.size();
                 if (!bcp())
                     return false;
+                m_landscape.dynamics_phase_end_bcp();
+                // Dynamics: count BCP propagations (trail growth during BCP)
+                unsigned bcp_props = m_assigned_literals.size() - trail_before_bcp;
+                m_landscape.dynamics().props_this_round += bcp_props;
                 if (!propagate_th_case_split(qhead))
                     return false;
                 SASSERT(!inconsistent());
                 propagate_relevancy(qhead);
                 if (inconsistent())
                     return false;
+                // Phase timing: Theory propagation
+                m_landscape.dynamics_phase_begin();
+                unsigned trail_before_th = m_assigned_literals.size();
                 if (!propagate_atoms())
                     return false;
                 if (!propagate_eqs())
@@ -1700,10 +1726,17 @@ namespace smt {
                     return false;
                 if (!propagate_theories())
                     return false;
+                m_landscape.dynamics_phase_end_theory();
+                // Dynamics: count theory propagations (trail growth during theory)
+                unsigned th_props = m_assigned_literals.size() - trail_before_th;
+                m_landscape.dynamics().theory_props_this_round += th_props;
             }
             if (!get_cancel_flag()) {
 //                scoped_suspend_rlimit _suspend_cancel(m.limit(), at_base_level());
+                // Phase timing: QI
+                m_landscape.dynamics_phase_begin();
                 m_qmanager->propagate();
+                m_landscape.dynamics_phase_end_qi();
             }
             if (inconsistent())
                 return false;
@@ -2793,6 +2826,13 @@ namespace smt {
             }
         }
         IF_VERBOSE(2, verbose_stream() << " :num-deleted-clauses " << num_del_cls << ")" << std::endl;);
+        // Dynamics: GC survival rate (datapoints 12-13)
+        {
+            unsigned candidates = end_at - start_del_at;
+            unsigned survived = candidates - num_del_cls;
+            // Approximate "used" as clauses with non-zero activity (kept by nth_element)
+            m_landscape.dynamics_on_gc(survived, candidates, survived);
+        }
     }
 
     /**
@@ -2843,6 +2883,12 @@ namespace smt {
         SASSERT(j <= sz);
         m_lemmas.shrink(j);
         IF_VERBOSE(2, verbose_stream() << " :num-deleted-clauses " << num_del_cls << ")" << std::endl;);
+        // Dynamics: GC survival rate (datapoints 12-13)
+        {
+            unsigned candidates = sz - start_at;
+            unsigned survived = j - start_at;
+            m_landscape.dynamics_on_gc(survived, candidates, survived);
+        }
     }
 
     /**
@@ -3939,6 +3985,22 @@ namespace smt {
                     },
                     &octx);
             }
+
+            // Dynamics: binary clause ratio (datapoint 19).
+            // Count binary clauses from the watch lists.
+            unsigned binary_count = 0;
+            for (unsigned v = 0; v < nv; ++v) {
+                unsigned pos_idx = literal(v, false).index();
+                unsigned neg_idx = literal(v, true).index();
+                if (pos_idx < m_watches.size())
+                    binary_count += m_watches[pos_idx].end_literals() - m_watches[pos_idx].begin_literals();
+                if (neg_idx < m_watches.size())
+                    binary_count += m_watches[neg_idx].end_literals() - m_watches[neg_idx].begin_literals();
+            }
+            // Each binary clause is stored twice (once per watched literal)
+            binary_count /= 2;
+            unsigned total_clauses = nc + binary_count;
+            m_landscape.dynamics_update_binary_ratio(binary_count, total_clauses);
         }
         m_next_progress_sample         = 0;
         m_internal_completed                = l_undef;
@@ -4363,6 +4425,9 @@ namespace smt {
                 }
                 m_landscape.on_restart(phase_hash, health);
 
+                // Dynamics: restart interval (datapoint 15) + theory prop density (18)
+                m_landscape.dynamics_on_restart(m_num_conflicts_since_restart);
+
                 // Deep landscape: update polarity_history for sampled variables.
                 // Sample every 64th variable to keep cost bounded.
                 for (unsigned v = 0; v < num_vars; v += 64) {
@@ -4448,8 +4513,13 @@ namespace smt {
 
                 tick(counter);
 
-                if (!resolve_conflict())
+                // Phase timing: conflict analysis
+                m_landscape.dynamics_phase_begin();
+                if (!resolve_conflict()) {
+                    m_landscape.dynamics_phase_end_conflict();
                     return l_false;
+                }
+                m_landscape.dynamics_phase_end_conflict();
 
                 SASSERT(m_scope_lvl >= m_base_lvl);
 
@@ -4491,8 +4561,11 @@ namespace smt {
             if (m_base_lvl == m_scope_lvl && m_fparams.m_simplify_clauses)
                 simplify_clauses();
 
+            // Phase timing: decide
+            m_landscape.dynamics_phase_begin();
             if (!decide()) {
-                if (inconsistent()) 
+                m_landscape.dynamics_phase_end_decide();
+                if (inconsistent())
                     return l_false;
                 final_check_status fcs = final_check();
                 TRACE(final_check_result, tout << "fcs: " << fcs << " last_search_failure: " << m_last_search_failure << "\n";);
@@ -4505,6 +4578,8 @@ namespace smt {
                 case FC_GIVEUP:
                     return l_undef;
                 }
+            } else {
+                m_landscape.dynamics_phase_end_decide();
             }
 
             if (resource_limits_exceeded() && !inconsistent()) {
@@ -4835,6 +4910,13 @@ namespace smt {
                         clause_hash, var_buf, var_count, glue,
                         backjump, m_assigned_literals.size(),
                         theory_flags, num_lits);
+
+                    // Dynamics: conflict-time datapoints (8-11, 14, 16-17, 20)
+                    bool th_conflict = (m_conflict.get_kind() == b_justification::JUSTIFICATION);
+                    m_landscape.dynamics_on_conflict(
+                        m_scope_lvl, m_assigned_literals.size(),
+                        get_num_bool_vars(), num_lits,
+                        glue, conflict_lvl, new_lvl, th_conflict);
                 }
 
                 // Periodic stress decay every 1000 conflicts.

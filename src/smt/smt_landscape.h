@@ -53,7 +53,20 @@ Author:
 #include <algorithm>
 #include <cmath>
 
+#ifdef __x86_64__
+#include <x86intrin.h>
+#endif
+
 namespace smt {
+
+// Lightweight cycle counter: ~1ns on x86, 0 (disabled) elsewhere.
+inline uint64_t landscape_rdtsc() {
+#ifdef __x86_64__
+    return __rdtsc();
+#else
+    return 0;
+#endif
+}
 
 class landscape_map {
 public:
@@ -268,6 +281,107 @@ public:
     static constexpr unsigned EXPANDED_REGION_MAP_SIZE = 100000;
 
     // ===================================================================
+    // TIER 3 — Solver Dynamics (20 lightweight datapoints)
+    //
+    // Cheap-to-collect signals about solver behavior:
+    //   1-5:   Phase time breakdown (rdtsc-based cycle counters)
+    //   6:     BCP propagation chain length (EMA)
+    //   7:     Decision reversal rate
+    //   8:     Assignment density at conflict (EMA)
+    //   9:     Decision level at conflict (EMA)
+    //   10:    Learned clause size trend (EMA)
+    //   11:    LBD/glue trend (EMA)
+    //   12:    Clause early-use rate (EMA, proxy: used-at-GC fraction)
+    //   13:    GC survival rate
+    //   14:    Backjump distance fraction (EMA)
+    //   15:    Restart interval length (EMA)
+    //   16:    Effective branching factor (EMA)
+    //   17:    Theory conflict fraction (EMA)
+    //   18:    Theory propagation density (EMA)
+    //   19:    Binary clause ratio
+    //   20:    Conflict temporal clustering / burstiness (EMA)
+    //
+    // Total memory: ~160 bytes.  Per-event overhead: < 50ns.
+    // ===================================================================
+
+    struct solver_dynamics {
+        // Phase time breakdown (rdtsc cycles)
+        uint64_t cycles_bcp;
+        uint64_t cycles_decide;
+        uint64_t cycles_conflict;
+        uint64_t cycles_theory;
+        uint64_t cycles_qi;
+        uint64_t cycles_total;
+        uint64_t phase_start_tsc;
+
+        // BCP quality
+        float    avg_prop_chain_length;  // EMA: propagated_lits between decisions
+
+        // Decision quality
+        uint32_t total_reversals;
+        uint32_t reversal_window;
+        float    avg_conflict_density;   // EMA: assigned/total at conflict
+        float    avg_conflict_level;     // EMA: scope_lvl at conflict
+
+        // Learning quality
+        float    avg_learned_size;       // EMA: literals in learned clauses
+        float    avg_glue;               // EMA: LBD of learned clauses
+        float    clause_early_use_rate;  // EMA: fraction used at GC time
+        float    gc_survival_rate;       // last GC: survived / candidates
+
+        // Search structure
+        float    avg_backjump_frac;      // EMA: backjump_dist / conflict_level
+        float    avg_restart_interval;   // EMA: conflicts between restarts
+        float    avg_branching_factor;   // EMA: trail_size / scope_level at conflict
+
+        // Theory engagement
+        float    theory_conflict_frac;   // EMA: theory / total conflicts
+        float    theory_prop_density;    // EMA: theory_props / bcp_props per round
+
+        // Problem structure
+        float    binary_clause_ratio;    // binary / total clauses
+        float    conflict_burstiness;    // normalized variance of inter-conflict gap
+        float    ema_gap;                // EMA of decisions between conflicts
+        float    ema_gap_sq;             // EMA of gap^2 (for variance)
+        uint32_t last_conflict_decisions; // decisions at last conflict
+
+        // Scratch counters for per-round aggregation
+        uint32_t props_this_round;       // BCP propagations in current round
+        uint32_t theory_props_this_round; // theory propagations in current round
+        uint32_t binary_clauses;         // count of binary clauses
+        uint32_t total_clauses;          // total clauses
+
+        void reset() { memset(this, 0, sizeof(*this)); }
+    };
+    static_assert(sizeof(solver_dynamics) <= 192, "solver_dynamics should be compact");
+
+    // Dynamics public accessors
+    solver_dynamics const& dynamics() const { return m_dynamics; }
+    solver_dynamics&       dynamics()       { return m_dynamics; }
+    svector<uint8_t>&      last_decided_polarity() { return m_last_decided_polarity; }
+
+    // Phase timing helpers (call from context at phase boundaries)
+    void     dynamics_phase_begin();
+    void     dynamics_phase_end_bcp();
+    void     dynamics_phase_end_theory();
+    void     dynamics_phase_end_qi();
+    void     dynamics_phase_end_decide();
+    void     dynamics_phase_end_conflict();
+
+    // Event hooks (call from context at specific events)
+    void     dynamics_on_decision(unsigned trail_size);
+    void     dynamics_on_conflict(unsigned scope_lvl, unsigned trail_size,
+                                  unsigned num_vars_total, unsigned num_lits,
+                                  unsigned glue, unsigned conflict_lvl,
+                                  unsigned backjump_lvl, bool theory_conflict);
+    void     dynamics_on_theory_prop();
+    void     dynamics_on_bcp_prop();
+    void     dynamics_on_gc(unsigned survived, unsigned candidates, unsigned used);
+    void     dynamics_on_restart(unsigned conflicts_since_restart);
+    void     dynamics_on_reversal();
+    void     dynamics_update_binary_ratio(unsigned binary, unsigned total);
+
+    // ===================================================================
     // Aggregate snapshot (extended)
     // ===================================================================
 
@@ -407,6 +521,14 @@ private:
     void ensure_conflict_graph_internal(unsigned cap);
     // Tier 2b helpers
     void ensure_conflict_history();
+
+    // -- Tier 3: Solver dynamics --
+    solver_dynamics     m_dynamics;
+    // Per-variable last-decided-polarity for reversal detection.
+    // Lazily allocated (1 byte per var, could be bits but vars are few).
+    svector<uint8_t>    m_last_decided_polarity;  // 0=unset, 1=false, 2=true
+    // Scratch: trail size at start of current decision for prop chain length
+    unsigned            m_decision_trail_start = 0;
 };
 
 } // namespace smt
