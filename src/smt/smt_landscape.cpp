@@ -7,7 +7,14 @@ Module Name:
 
 Abstract:
 
-    Landscape map implementation.  See smt_landscape.h for design overview.
+    Deep landscape map implementation.  See smt_landscape.h for design overview.
+
+    Three tiers:
+      Tier 0: literal stress, variable coverage, region fingerprints, Bloom filter
+      Tier 1: clause profiles, variable profiles, QI pattern maps
+      Tier 2: conflict co-occurrence graph, conflict history, expanded regions
+
+    All Tier 1/2 structures are heap-allocated lazily on first use.
 
 Author:
 
@@ -31,6 +38,17 @@ landscape_map::landscape_map() {
     memset(m_conflict_pairs, 0, sizeof(m_conflict_pairs));
 }
 
+landscape_map::~landscape_map() {
+    delete[] m_clause_profiles;
+    delete[] m_var_profiles;
+    delete[] m_qi_patterns;
+    delete[] m_conflict_graph;
+    delete[] m_conflict_history;
+    delete[] m_expanded_regions;
+    delete[] m_expanded_region_keys;
+    delete[] m_expanded_region_occ;
+}
+
 void landscape_map::init_search() {
     // Per-search counters reset.  The map itself persists across searches
     // so that cross-search spatial awareness is maintained.
@@ -38,11 +56,22 @@ void landscape_map::init_search() {
     m_total_decisions       = 0;
     m_conflicts_since_decay = 0;
     m_total_restarts        = 0;
-    // NOTE: m_lit_stress, m_decisions_*, m_region_*, m_conflict_pairs
-    // are intentionally NOT reset — they accumulate across check-sat calls.
+    // Fanout tracking
+    m_last_decision_trail_pos = 0;
+    m_last_decision_var       = UINT32_MAX;
+    m_last_decision_polarity  = false;
+    // Conflict history position resets (ring buffer wraps, data persists)
+    m_conflict_history_pos   = 0;
+    m_conflict_history_count = 0;
+    // Region transition state
+    m_prev_region_hash   = 0;
+    m_prev_region_health = 0.0f;
+    // NOTE: Tier 0 stress/coverage/regions/bloom, Tier 1/2 data all persist
+    // across check-sat calls for cross-search spatial awareness.
 }
 
 void landscape_map::reset() {
+    // Tier 0
     m_lit_stress.reset();
     m_conflicts_since_decay = 0;
     m_total_conflicts       = 0;
@@ -59,10 +88,51 @@ void landscape_map::reset() {
     m_unique_regions  = 0;
 
     memset(m_conflict_pairs, 0, sizeof(m_conflict_pairs));
+
+    // Tier 1a: clause profiles
+    delete[] m_clause_profiles;
+    m_clause_profiles     = nullptr;
+    m_clause_profiles_cap = 0;
+
+    // Tier 1b: var profiles
+    delete[] m_var_profiles;
+    m_var_profiles     = nullptr;
+    m_var_profiles_cap = 0;
+
+    m_last_decision_trail_pos = 0;
+    m_last_decision_var       = UINT32_MAX;
+    m_last_decision_polarity  = false;
+
+    // Tier 1c: QI patterns
+    delete[] m_qi_patterns;
+    m_qi_patterns     = nullptr;
+    m_qi_patterns_cap = 0;
+
+    // Tier 2a: conflict graph
+    delete[] m_conflict_graph;
+    m_conflict_graph     = nullptr;
+    m_conflict_graph_cap = 0;
+
+    // Tier 2b: conflict history
+    delete[] m_conflict_history;
+    m_conflict_history       = nullptr;
+    m_conflict_history_pos   = 0;
+    m_conflict_history_count = 0;
+
+    // Tier 2c: expanded regions
+    delete[] m_expanded_regions;
+    delete[] m_expanded_region_keys;
+    delete[] m_expanded_region_occ;
+    m_expanded_regions     = nullptr;
+    m_expanded_region_keys = nullptr;
+    m_expanded_region_occ  = nullptr;
+    m_expanded_unique      = 0;
+    m_prev_region_hash     = 0;
+    m_prev_region_health   = 0.0f;
 }
 
 // -----------------------------------------------------------------------
-// Layer 1: Literal stress
+// Tier 0 Layer 1: Literal stress
 // -----------------------------------------------------------------------
 
 void landscape_map::ensure_literal(unsigned lit_idx) {
@@ -72,19 +142,12 @@ void landscape_map::ensure_literal(unsigned lit_idx) {
 
 void landscape_map::on_conflict_antecedent(unsigned lit_idx) {
     ensure_literal(lit_idx);
-    // EMA bump: stress = 0.95 * stress + 0.05 * 255
-    // In uint8_t arithmetic:  new = old - (old >> 4) + (255 >> 4)
-    //   ~= old * 0.9375 + 15.9375
-    // This slightly differs from exact 0.95/0.05 but avoids float.
     unsigned old = m_lit_stress[lit_idx];
     unsigned bumped = old - (old >> 4) + 16;
     m_lit_stress[lit_idx] = static_cast<uint8_t>(bumped > 255 ? 255 : bumped);
 }
 
 void landscape_map::decay_stress() {
-    // Called every 1000 conflicts.  Multiplicative decay: stress *= 0.99
-    // In uint8_t: new = old - (old / 128) ≈ old * 0.992
-    // Close enough; exact 0.99 would need float per entry.
     unsigned sz = m_lit_stress.size();
     uint8_t* p = m_lit_stress.data();
     for (unsigned i = 0; i < sz; ++i) {
@@ -108,21 +171,12 @@ double landscape_map::avg_stress() const {
 }
 
 double landscape_map::stress_concentration() const {
-    // Gini coefficient of the stress distribution.
-    // For large arrays, we sample up to 4096 entries.
     unsigned sz = m_lit_stress.size();
     if (sz < 2) return 0.0;
 
     unsigned step = 1;
-    unsigned n = sz;
-    if (sz > 4096) {
-        step = sz / 4096;
-        n = 4096;
-    }
+    if (sz > 4096) step = sz / 4096;
 
-    // Compute Gini via the sorted formula:
-    // G = (2 * sum_i(i * x_i)) / (n * sum_i(x_i)) - (n+1)/n
-    // We avoid a full sort by using a histogram (values are 0..255).
     unsigned hist[256];
     memset(hist, 0, sizeof(hist));
     const uint8_t* p = m_lit_stress.data();
@@ -147,7 +201,7 @@ double landscape_map::stress_concentration() const {
 }
 
 // -----------------------------------------------------------------------
-// Layer 2: Variable coverage
+// Tier 0 Layer 2: Variable coverage (legacy interface)
 // -----------------------------------------------------------------------
 
 void landscape_map::ensure_var(unsigned var) {
@@ -157,9 +211,12 @@ void landscape_map::ensure_var(unsigned var) {
     }
 }
 
-void landscape_map::on_decision(unsigned var, bool is_true) {
+void landscape_map::on_decision(unsigned var, bool is_true, unsigned scope_lvl,
+                                unsigned trail_size) {
     ensure_var(var);
     m_total_decisions++;
+
+    // Legacy uint16 coverage counters
     if (is_true) {
         uint16_t old = m_decisions_true[var];
         if (old == 0 && m_decisions_false[var] == 0)
@@ -173,6 +230,38 @@ void landscape_map::on_decision(unsigned var, bool is_true) {
         if (old < 65535)
             m_decisions_false[var] = old + 1;
     }
+
+    // --- Tier 1b: var_profile updates ---
+    if (m_var_profiles && var < m_var_profiles_cap) {
+        var_profile& vp = m_var_profiles[var];
+        if (is_true) {
+            if (vp.decisions_true < UINT32_MAX) vp.decisions_true++;
+        } else {
+            if (vp.decisions_false < UINT32_MAX) vp.decisions_false++;
+        }
+
+        // EMA of decision depth (scope_lvl → 0-255)
+        if (scope_lvl > 0) {
+            unsigned depth_byte = scope_lvl > 255 ? 255 : scope_lvl;
+            // EMA: new = 0.9375 * old + 0.0625 * sample
+            unsigned old = vp.avg_decision_depth;
+            vp.avg_decision_depth = static_cast<uint8_t>(
+                old - (old >> 4) + (depth_byte >> 4));
+        }
+    }
+
+    // --- Fanout tracking: compute fanout for PREVIOUS decision ---
+    if (m_last_decision_var != UINT32_MAX && trail_size > 0) {
+        unsigned fanout = (trail_size > m_last_decision_trail_pos)
+                        ? (trail_size - m_last_decision_trail_pos - 1)  // subtract 1 for the decision itself
+                        : 0;
+        on_decision_fanout(m_last_decision_var, fanout);
+    }
+
+    // Save state for next fanout computation
+    m_last_decision_trail_pos = trail_size;
+    m_last_decision_var       = var;
+    m_last_decision_polarity  = is_true;
 }
 
 uint16_t landscape_map::get_decisions_true(unsigned var) const {
@@ -198,21 +287,19 @@ unsigned landscape_map::most_unexplored_var(unsigned num_vars) const {
         if (t < best_total) {
             best_total = t;
             best_var = v;
-            if (t == 0) break;  // can't do better than zero
+            if (t == 0) break;
         }
     }
-    // If num_vars > what we've tracked, those vars have 0 decisions.
     if (limit < num_vars && best_total > 0)
         best_var = limit;
     return best_var;
 }
 
 // -----------------------------------------------------------------------
-// Layer 3: Region fingerprints
+// Tier 0 Layer 3: Region fingerprints (1024-slot legacy + expanded)
 // -----------------------------------------------------------------------
 
 unsigned landscape_map::region_slot(uint64_t key) const {
-    // Open-addressing: primary slot from upper bits
     return static_cast<unsigned>(fmix64(key) >> 54) & (REGION_MAP_SIZE - 1);
 }
 
@@ -221,7 +308,7 @@ unsigned landscape_map::region_find(uint64_t key) const {
     for (unsigned probe = 0; probe < REGION_MAP_SIZE; ++probe) {
         unsigned idx = (slot + probe) & (REGION_MAP_SIZE - 1);
         if (!m_region_occupied[idx])
-            return REGION_MAP_SIZE;  // not found
+            return REGION_MAP_SIZE;
         if (m_region_keys[idx] == key)
             return idx;
     }
@@ -237,7 +324,6 @@ unsigned landscape_map::region_insert_or_update(uint64_t key, float health) {
         unsigned idx = (slot + probe) & (REGION_MAP_SIZE - 1);
 
         if (!m_region_occupied[idx]) {
-            // Empty slot — insert here
             m_region_occupied[idx] = true;
             m_region_keys[idx] = key;
             m_region_vals[idx].visits = 1;
@@ -249,8 +335,7 @@ unsigned landscape_map::region_insert_or_update(uint64_t key, float health) {
         }
 
         if (m_region_keys[idx] == key) {
-            // Found — update
-            region_record& r = m_region_vals[idx];
+            old_region_record& r = m_region_vals[idx];
             if (r.visits < 65535) r.visits++;
             r.avg_health = 0.8f * r.avg_health + 0.2f * health;
             if (health > r.best_health) r.best_health = health;
@@ -258,7 +343,6 @@ unsigned landscape_map::region_insert_or_update(uint64_t key, float health) {
             return idx;
         }
 
-        // Track LRU candidate for eviction
         if (m_region_vals[idx].last_visit < oldest_visit) {
             oldest_visit = m_region_vals[idx].last_visit;
             oldest_slot = idx;
@@ -271,36 +355,69 @@ unsigned landscape_map::region_insert_or_update(uint64_t key, float health) {
     m_region_vals[oldest_slot].avg_health = health;
     m_region_vals[oldest_slot].best_health = health;
     m_region_vals[oldest_slot].last_visit = m_total_restarts;
-    // unique_regions stays the same (evicted one, inserted one)
     return oldest_slot;
 }
 
 void landscape_map::on_restart(uint64_t phase_hash, float health) {
     m_total_restarts++;
+
+    // Legacy 1024-slot map
     region_insert_or_update(phase_hash, health);
+
+    // Expanded region map (Tier 2c) — update if allocated
+    if (m_expanded_regions) {
+        // Record transition from previous region
+        unsigned slot = expanded_region_insert_or_update(phase_hash, health);
+        if (slot < EXPANDED_REGION_MAP_SIZE) {
+            expanded_region_record& rec = m_expanded_regions[slot];
+            if (m_prev_region_hash != 0) {
+                rec.prev_region_hash = m_prev_region_hash;
+                rec.entry_health = health;
+            }
+            // Update exit_health of previous region
+            if (m_prev_region_hash != 0) {
+                unsigned prev_slot = expanded_region_find(m_prev_region_hash);
+                if (prev_slot < EXPANDED_REGION_MAP_SIZE)
+                    m_expanded_regions[prev_slot].exit_health = m_prev_region_health;
+            }
+        }
+        m_prev_region_hash   = phase_hash;
+        m_prev_region_health = health;
+    }
 }
 
 unsigned landscape_map::region_visit_count(uint64_t phase_hash) const {
+    // Check expanded map first if available
+    if (m_expanded_regions) {
+        unsigned idx = expanded_region_find(phase_hash);
+        if (idx < EXPANDED_REGION_MAP_SIZE)
+            return m_expanded_regions[idx].visit_count;
+    }
     unsigned idx = region_find(phase_hash);
     return idx < REGION_MAP_SIZE ? m_region_vals[idx].visits : 0;
 }
 
 float landscape_map::region_best_health(uint64_t phase_hash) const {
+    if (m_expanded_regions) {
+        unsigned idx = expanded_region_find(phase_hash);
+        if (idx < EXPANDED_REGION_MAP_SIZE)
+            return m_expanded_regions[idx].best_health;
+    }
     unsigned idx = region_find(phase_hash);
     return idx < REGION_MAP_SIZE ? m_region_vals[idx].best_health : 0.0f;
 }
 
 double landscape_map::region_diversity() const {
     if (m_total_restarts == 0) return 0.0;
-    return static_cast<double>(m_unique_regions) / m_total_restarts;
+    unsigned unique = m_expanded_regions ? m_expanded_unique : m_unique_regions;
+    return static_cast<double>(unique) / m_total_restarts;
 }
 
 // -----------------------------------------------------------------------
-// Layer 4: Conflict variable pairs (Bloom filter)
+// Tier 0 Layer 4: Conflict variable pairs (Bloom filter)
 // -----------------------------------------------------------------------
 
 void landscape_map::bloom_hashes(unsigned v1, unsigned v2, unsigned& h0, unsigned& h1, unsigned& h2) {
-    // Canonical ordering
     unsigned lo = v1 < v2 ? v1 : v2;
     unsigned hi = v1 < v2 ? v2 : v1;
     uint64_t combined = (static_cast<uint64_t>(lo) << 32) | hi;
@@ -329,20 +446,22 @@ bool landscape_map::bloom_test(unsigned v1, unsigned v2) const {
 
 void landscape_map::on_learned_clause(unsigned num_vars, unsigned const* vars) {
     m_total_conflicts++;
-    // Mark pairs of the top-8 variables (by input order, which is
-    // already sorted by activity in the FUIP lemma).
     unsigned top = num_vars < 8 ? num_vars : 8;
     for (unsigned i = 0; i < top; ++i) {
         for (unsigned j = i + 1; j < top; ++j) {
             bloom_set(vars[i], vars[j]);
         }
     }
+
+    // --- Tier 2a: Update co-occurrence graph ---
+    if (m_conflict_graph)
+        on_conflict_cooccurrence(num_vars, vars);
 }
 
 double landscape_map::conflict_affinity(unsigned var, unsigned const* assigned_vars, unsigned num_assigned) const {
     if (num_assigned == 0) return 0.0;
     unsigned hits = 0;
-    unsigned check = num_assigned < 32 ? num_assigned : 32;  // cap to avoid O(n) scan
+    unsigned check = num_assigned < 32 ? num_assigned : 32;
     for (unsigned i = 0; i < check; ++i) {
         if (bloom_test(var, assigned_vars[i]))
             hits++;
@@ -351,7 +470,551 @@ double landscape_map::conflict_affinity(unsigned var, unsigned const* assigned_v
 }
 
 // -----------------------------------------------------------------------
-// Aggregate snapshot
+// Tier 1a: Clause Saving-Literal Profiles
+// -----------------------------------------------------------------------
+
+void landscape_map::ensure_clause_profiles_internal(unsigned cap) {
+    if (cap <= m_clause_profiles_cap) return;
+    unsigned new_cap = cap + (cap >> 2) + 64;  // grow 25% + slack
+    auto* p = new clause_profile[new_cap];
+    memset(p, 0, sizeof(clause_profile) * new_cap);
+    if (m_clause_profiles) {
+        memcpy(p, m_clause_profiles, sizeof(clause_profile) * m_clause_profiles_cap);
+        delete[] m_clause_profiles;
+    }
+    m_clause_profiles     = p;
+    m_clause_profiles_cap = new_cap;
+}
+
+void landscape_map::ensure_clause_profiles(unsigned num_clauses) {
+    if (num_clauses > m_clause_profiles_cap)
+        ensure_clause_profiles_internal(num_clauses);
+}
+
+void landscape_map::on_clause_propagation(unsigned clause_idx, unsigned saving_lit_idx) {
+    if (!m_clause_profiles) return;
+    if (clause_idx >= m_clause_profiles_cap) return;
+    clause_profile& cp = m_clause_profiles[clause_idx];
+    if (cp.m_propagation_count < UINT16_MAX)
+        cp.m_propagation_count++;
+    // Update saving literal with EMA logic:
+    // If this is the same saving literal, bump the fraction.
+    // If different, decay the fraction and possibly switch.
+    if (cp.m_saving_literal == saving_lit_idx || cp.m_violation_count == 0) {
+        cp.m_saving_literal = saving_lit_idx;
+        unsigned frac = cp.m_saving_fraction;
+        // EMA up: frac = 0.9375 * frac + 0.0625 * 255
+        cp.m_saving_fraction = static_cast<uint8_t>(
+            frac - (frac >> 4) + 16);
+    } else {
+        // EMA down
+        unsigned frac = cp.m_saving_fraction;
+        unsigned decayed = frac - (frac >> 3);  // *= 0.875
+        if (decayed < 64) {
+            // Switch saving literal
+            cp.m_saving_literal = saving_lit_idx;
+            cp.m_saving_fraction = 64;
+        } else {
+            cp.m_saving_fraction = static_cast<uint8_t>(decayed);
+        }
+    }
+    if (cp.m_violation_count < UINT16_MAX)
+        cp.m_violation_count++;
+    cp.m_last_stress = m_total_conflicts;
+}
+
+void landscape_map::on_clause_antecedent(unsigned clause_idx) {
+    if (!m_clause_profiles) return;
+    if (clause_idx >= m_clause_profiles_cap) return;
+    clause_profile& cp = m_clause_profiles[clause_idx];
+    if (cp.m_antecedent_count < UINT16_MAX)
+        cp.m_antecedent_count++;
+}
+
+void landscape_map::periodic_clause_scan(unsigned num_clauses,
+                                         unsigned num_lits_fn(unsigned, void*),
+                                         unsigned get_lit_value_fn(unsigned, unsigned, void*),
+                                         void* ctx) {
+    // Called every 1000 conflicts. For each input clause, check current
+    // assignment: count how many literals are false. If all but one are
+    // false, the surviving literal is the current "saver."
+    if (!m_clause_profiles) return;
+    unsigned limit = num_clauses < m_clause_profiles_cap ? num_clauses : m_clause_profiles_cap;
+    for (unsigned ci = 0; ci < limit; ++ci) {
+        unsigned nlits = num_lits_fn(ci, ctx);
+        if (nlits == 0) continue;
+        unsigned false_count = 0;
+        unsigned true_lit = UINT32_MAX;
+        for (unsigned li = 0; li < nlits; ++li) {
+            // get_lit_value_fn returns: 0=false, 1=true, 2=undef
+            unsigned val = get_lit_value_fn(ci, li, ctx);
+            if (val == 0) {
+                false_count++;
+            } else if (val == 1) {
+                true_lit = li;
+            }
+        }
+        if (false_count == nlits - 1 && true_lit != UINT32_MAX) {
+            on_clause_propagation(ci, true_lit);
+        }
+    }
+}
+
+landscape_map::clause_profile const* landscape_map::get_clause_profile(unsigned clause_idx) const {
+    if (!m_clause_profiles || clause_idx >= m_clause_profiles_cap) return nullptr;
+    return &m_clause_profiles[clause_idx];
+}
+
+unsigned landscape_map::get_saving_literal(unsigned clause_idx) const {
+    if (!m_clause_profiles || clause_idx >= m_clause_profiles_cap) return UINT32_MAX;
+    return m_clause_profiles[clause_idx].m_saving_literal;
+}
+
+// -----------------------------------------------------------------------
+// Tier 1b: Variable Propagation Fan-Out Profiles
+// -----------------------------------------------------------------------
+
+void landscape_map::ensure_var_profiles_internal(unsigned cap) {
+    if (cap <= m_var_profiles_cap) return;
+    unsigned new_cap = cap + (cap >> 2) + 64;
+    auto* p = new var_profile[new_cap];
+    memset(p, 0, sizeof(var_profile) * new_cap);
+    if (m_var_profiles) {
+        memcpy(p, m_var_profiles, sizeof(var_profile) * m_var_profiles_cap);
+        delete[] m_var_profiles;
+    }
+    m_var_profiles     = p;
+    m_var_profiles_cap = new_cap;
+}
+
+void landscape_map::ensure_var_profiles(unsigned num_vars) {
+    if (num_vars > m_var_profiles_cap)
+        ensure_var_profiles_internal(num_vars);
+}
+
+landscape_map::var_profile const* landscape_map::get_var_profile(unsigned var) const {
+    if (!m_var_profiles || var >= m_var_profiles_cap) return nullptr;
+    return &m_var_profiles[var];
+}
+
+void landscape_map::on_decision_fanout(unsigned var, unsigned fanout) {
+    if (!m_var_profiles || var >= m_var_profiles_cap) return;
+    var_profile& vp = m_var_profiles[var];
+    if (fanout > vp.max_fanout) {
+        vp.max_fanout = static_cast<uint16_t>(fanout > UINT16_MAX ? UINT16_MAX : fanout);
+    }
+    // Update EMA for the appropriate polarity
+    // EMA: new = 0.9375 * old + 0.0625 * sample
+    bool polarity = (vp.decisions_true > vp.decisions_false);
+    // Use the actual polarity from the decision that produced this fanout
+    // (the PREVIOUS decision's polarity, stored before we updated)
+    // We approximate: check if the last increment was to decisions_true
+    if (m_last_decision_polarity) {
+        unsigned old = vp.avg_fanout_true;
+        unsigned sample = fanout > UINT16_MAX ? UINT16_MAX : fanout;
+        vp.avg_fanout_true = static_cast<uint16_t>(
+            old - (old >> 4) + (sample >> 4));
+    } else {
+        unsigned old = vp.avg_fanout_false;
+        unsigned sample = fanout > UINT16_MAX ? UINT16_MAX : fanout;
+        vp.avg_fanout_false = static_cast<uint16_t>(
+            old - (old >> 4) + (sample >> 4));
+    }
+}
+
+void landscape_map::on_var_in_conflict(unsigned var, bool was_decision) {
+    if (!m_var_profiles || var >= m_var_profiles_cap) return;
+    var_profile& vp = m_var_profiles[var];
+    if (vp.conflict_count < UINT16_MAX)
+        vp.conflict_count++;
+    if (was_decision && vp.decision_conflict_count < UINT16_MAX)
+        vp.decision_conflict_count++;
+}
+
+void landscape_map::update_polarity_history(unsigned var, bool polarity) {
+    if (!m_var_profiles || var >= m_var_profiles_cap) return;
+    var_profile& vp = m_var_profiles[var];
+    vp.polarity_history = (vp.polarity_history << 1) | (polarity ? 1u : 0u);
+}
+
+void landscape_map::compute_clause_occurrences(unsigned num_vars, unsigned num_clauses,
+                                               unsigned clause_num_lits_fn(unsigned, void*),
+                                               unsigned clause_get_var_fn(unsigned, unsigned, void*),
+                                               void* ctx) {
+    if (!m_var_profiles) return;
+    // Clear existing counts
+    for (unsigned v = 0; v < m_var_profiles_cap; ++v)
+        m_var_profiles[v].clause_occurrence = 0;
+
+    for (unsigned ci = 0; ci < num_clauses; ++ci) {
+        unsigned nlits = clause_num_lits_fn(ci, ctx);
+        for (unsigned li = 0; li < nlits; ++li) {
+            unsigned v = clause_get_var_fn(ci, li, ctx);
+            if (v < m_var_profiles_cap) {
+                if (m_var_profiles[v].clause_occurrence < 255)
+                    m_var_profiles[v].clause_occurrence++;
+            }
+        }
+    }
+}
+
+double landscape_map::get_polarity_safety_score(unsigned var, bool is_true) const {
+    if (!m_var_profiles || var >= m_var_profiles_cap) return 0.5;
+    var_profile const& vp = m_var_profiles[var];
+    uint32_t total = vp.decisions_true + vp.decisions_false;
+    if (total == 0) return 0.5;
+    // Safety = fraction of decisions in this polarity that didn't lead to conflict
+    uint32_t decisions = is_true ? vp.decisions_true : vp.decisions_false;
+    if (decisions == 0) return 0.5;
+    // Approximate: higher fanout = more propagation = more useful
+    uint16_t fanout = is_true ? vp.avg_fanout_true : vp.avg_fanout_false;
+    // Normalize fanout to 0-1 range (assume max ~1000)
+    double fanout_norm = std::min(1.0, static_cast<double>(fanout) / 1000.0);
+    // Combine with conflict rate
+    double conflict_rate = (vp.conflict_count > 0)
+        ? static_cast<double>(vp.decision_conflict_count) / vp.conflict_count
+        : 0.0;
+    return 0.5 * (1.0 - conflict_rate) + 0.5 * fanout_norm;
+}
+
+double landscape_map::get_impact_score(unsigned var) const {
+    if (!m_var_profiles || var >= m_var_profiles_cap) return 0.0;
+    var_profile const& vp = m_var_profiles[var];
+    // Impact = max of average fanouts * clause occurrence density
+    double fanout = std::max(static_cast<double>(vp.avg_fanout_true),
+                             static_cast<double>(vp.avg_fanout_false));
+    double occ = static_cast<double>(vp.clause_occurrence) / 255.0;
+    return fanout * (0.5 + 0.5 * occ);
+}
+
+// -----------------------------------------------------------------------
+// Tier 1c: QI Binding Pattern Success Map
+// -----------------------------------------------------------------------
+
+void landscape_map::ensure_qi_patterns_internal(unsigned cap) {
+    if (cap <= m_qi_patterns_cap) return;
+    unsigned new_cap = cap + (cap >> 2) + 16;
+    auto* p = new quantifier_pattern_map[new_cap];
+    memset(p, 0, sizeof(quantifier_pattern_map) * new_cap);
+    if (m_qi_patterns) {
+        memcpy(p, m_qi_patterns, sizeof(quantifier_pattern_map) * m_qi_patterns_cap);
+        delete[] m_qi_patterns;
+    }
+    m_qi_patterns     = p;
+    m_qi_patterns_cap = new_cap;
+}
+
+void landscape_map::ensure_qi_patterns(unsigned num_quantifiers) {
+    if (num_quantifiers > m_qi_patterns_cap)
+        ensure_qi_patterns_internal(num_quantifiers);
+}
+
+void landscape_map::update_qi_pattern(unsigned quant_id, uint32_t pattern_hash, bool useful) {
+    if (!m_qi_patterns || quant_id >= m_qi_patterns_cap) return;
+    quantifier_pattern_map& qpm = m_qi_patterns[quant_id];
+
+    // Open-addressing lookup in the per-quantifier hash table
+    unsigned slot = pattern_hash & (QI_PATTERN_SLOTS - 1);
+    unsigned empty_slot = UINT32_MAX;
+    for (unsigned probe = 0; probe < QI_PATTERN_SLOTS; ++probe) {
+        unsigned idx = (slot + probe) & (QI_PATTERN_SLOTS - 1);
+        if (qpm.slots[idx].total_instances == 0 && qpm.slots[idx].pattern_hash == 0) {
+            // Empty slot
+            if (empty_slot == UINT32_MAX) empty_slot = idx;
+            break;  // pattern not in table
+        }
+        if (qpm.slots[idx].pattern_hash == pattern_hash) {
+            // Found — update
+            if (qpm.slots[idx].total_instances < UINT32_MAX)
+                qpm.slots[idx].total_instances++;
+            if (useful && qpm.slots[idx].useful_instances < UINT16_MAX)
+                qpm.slots[idx].useful_instances++;
+            return;
+        }
+    }
+
+    // Not found — insert if we have an empty slot
+    if (empty_slot != UINT32_MAX && qpm.num_entries < QI_PATTERN_SLOTS * 3 / 4) {
+        qpm.slots[empty_slot].pattern_hash = pattern_hash;
+        qpm.slots[empty_slot].total_instances = 1;
+        qpm.slots[empty_slot].useful_instances = useful ? 1 : 0;
+        qpm.num_entries++;
+    }
+}
+
+float landscape_map::get_qi_pattern_success(unsigned quant_id, uint32_t pattern_hash) const {
+    if (!m_qi_patterns || quant_id >= m_qi_patterns_cap) return 0.0f;
+    quantifier_pattern_map const& qpm = m_qi_patterns[quant_id];
+    unsigned slot = pattern_hash & (QI_PATTERN_SLOTS - 1);
+    for (unsigned probe = 0; probe < QI_PATTERN_SLOTS; ++probe) {
+        unsigned idx = (slot + probe) & (QI_PATTERN_SLOTS - 1);
+        if (qpm.slots[idx].total_instances == 0 && qpm.slots[idx].pattern_hash == 0)
+            return 0.0f;  // not found
+        if (qpm.slots[idx].pattern_hash == pattern_hash) {
+            if (qpm.slots[idx].total_instances == 0) return 0.0f;
+            return static_cast<float>(qpm.slots[idx].useful_instances) /
+                   static_cast<float>(qpm.slots[idx].total_instances);
+        }
+    }
+    return 0.0f;
+}
+
+// -----------------------------------------------------------------------
+// Tier 2a: Variable Conflict Co-occurrence Graph
+// -----------------------------------------------------------------------
+
+void landscape_map::ensure_conflict_graph_internal(unsigned cap) {
+    if (cap <= m_conflict_graph_cap) return;
+    unsigned new_cap = cap + (cap >> 2) + 64;
+    auto* p = new var_conflict_graph_entry[new_cap];
+    memset(p, 0, sizeof(var_conflict_graph_entry) * new_cap);
+    if (m_conflict_graph) {
+        memcpy(p, m_conflict_graph, sizeof(var_conflict_graph_entry) * m_conflict_graph_cap);
+        delete[] m_conflict_graph;
+    }
+    m_conflict_graph     = p;
+    m_conflict_graph_cap = new_cap;
+}
+
+void landscape_map::ensure_conflict_graph(unsigned num_vars) {
+    if (num_vars > m_conflict_graph_cap)
+        ensure_conflict_graph_internal(num_vars);
+}
+
+void landscape_map::on_conflict_cooccurrence(unsigned num_vars, unsigned const* vars) {
+    // For each pair of top-8 variables, update the co-occurrence graph
+    unsigned top = num_vars < 8 ? num_vars : 8;
+    for (unsigned i = 0; i < top; ++i) {
+        unsigned vi = vars[i];
+        if (vi >= m_conflict_graph_cap) continue;
+        var_conflict_graph_entry& entry = m_conflict_graph[vi];
+        if (entry.total_degree < UINT16_MAX)
+            entry.total_degree++;
+
+        for (unsigned j = i + 1; j < top; ++j) {
+            unsigned vj = vars[j];
+            // Update vi's partner list with vj
+            bool found = false;
+            unsigned min_idx = 0;
+            uint16_t min_count = UINT16_MAX;
+            for (unsigned k = 0; k < 16; ++k) {
+                if (entry.partner_ids[k] == vj && entry.partner_counts[k] > 0) {
+                    if (entry.partner_counts[k] < UINT16_MAX)
+                        entry.partner_counts[k]++;
+                    found = true;
+                    break;
+                }
+                if (entry.partner_counts[k] < min_count) {
+                    min_count = entry.partner_counts[k];
+                    min_idx = k;
+                }
+            }
+            if (!found) {
+                // Insert into the slot with minimum count (evict if needed)
+                if (min_count == 0 || min_count < 2) {
+                    entry.partner_ids[min_idx] = vj;
+                    entry.partner_counts[min_idx] = 1;
+                }
+            }
+
+            // Also update vj's partner list with vi (symmetric)
+            if (vj >= m_conflict_graph_cap) continue;
+            var_conflict_graph_entry& entry_j = m_conflict_graph[vj];
+            found = false;
+            min_idx = 0;
+            min_count = UINT16_MAX;
+            for (unsigned k = 0; k < 16; ++k) {
+                if (entry_j.partner_ids[k] == vi && entry_j.partner_counts[k] > 0) {
+                    if (entry_j.partner_counts[k] < UINT16_MAX)
+                        entry_j.partner_counts[k]++;
+                    found = true;
+                    break;
+                }
+                if (entry_j.partner_counts[k] < min_count) {
+                    min_count = entry_j.partner_counts[k];
+                    min_idx = k;
+                }
+            }
+            if (!found) {
+                if (min_count == 0 || min_count < 2) {
+                    entry_j.partner_ids[min_idx] = vi;
+                    entry_j.partner_counts[min_idx] = 1;
+                }
+            }
+        }
+    }
+}
+
+landscape_map::var_conflict_graph_entry const* landscape_map::get_conflict_graph_entry(unsigned var) const {
+    if (!m_conflict_graph || var >= m_conflict_graph_cap) return nullptr;
+    return &m_conflict_graph[var];
+}
+
+// -----------------------------------------------------------------------
+// Tier 2b: Conflict History Buffer
+// -----------------------------------------------------------------------
+
+void landscape_map::ensure_conflict_history() {
+    if (m_conflict_history) return;
+    m_conflict_history = new conflict_record[CONFLICT_HISTORY_SIZE];
+    memset(m_conflict_history, 0, sizeof(conflict_record) * CONFLICT_HISTORY_SIZE);
+    m_conflict_history_pos   = 0;
+    m_conflict_history_count = 0;
+}
+
+void landscape_map::on_conflict_full(uint64_t clause_hash, unsigned const* top_vars,
+                                     unsigned num_top_vars, unsigned glue,
+                                     unsigned backjump, unsigned trail_size,
+                                     uint8_t theory_flags, unsigned clause_size) {
+    ensure_conflict_history();
+    conflict_record& rec = m_conflict_history[m_conflict_history_pos];
+    rec.learned_clause_hash = clause_hash;
+    unsigned top = num_top_vars < 5 ? num_top_vars : 5;
+    for (unsigned i = 0; i < top; ++i)
+        rec.top_vars[i] = top_vars[i];
+    for (unsigned i = top; i < 5; ++i)
+        rec.top_vars[i] = 0;
+    rec.timestamp         = m_total_conflicts;
+    rec.glue              = static_cast<uint16_t>(glue > UINT16_MAX ? UINT16_MAX : glue);
+    rec.backjump_distance = static_cast<uint16_t>(backjump > UINT16_MAX ? UINT16_MAX : backjump);
+    rec.trail_size_lo     = static_cast<uint16_t>(trail_size & 0xFFFF);
+    rec.theory_flags      = theory_flags;
+    rec.clause_size       = static_cast<uint8_t>(clause_size > 255 ? 255 : clause_size);
+
+    m_conflict_history_pos = (m_conflict_history_pos + 1) % CONFLICT_HISTORY_SIZE;
+    if (m_conflict_history_count < CONFLICT_HISTORY_SIZE)
+        m_conflict_history_count++;
+}
+
+landscape_map::conflict_record const* landscape_map::get_conflict_record(unsigned idx) const {
+    if (!m_conflict_history || idx >= m_conflict_history_count) return nullptr;
+    // Convert logical index (0 = oldest) to ring buffer position
+    if (m_conflict_history_count < CONFLICT_HISTORY_SIZE) {
+        return &m_conflict_history[idx];
+    }
+    unsigned pos = (m_conflict_history_pos + idx) % CONFLICT_HISTORY_SIZE;
+    return &m_conflict_history[pos];
+}
+
+unsigned landscape_map::conflict_history_count() const {
+    return m_conflict_history_count;
+}
+
+double landscape_map::conflict_recurrence_rate(unsigned window) const {
+    if (!m_conflict_history || m_conflict_history_count < 2) return 0.0;
+    unsigned w = window < m_conflict_history_count ? window : m_conflict_history_count;
+    if (w < 2) return 0.0;
+
+    // Check how many of the recent conflicts have duplicate hashes
+    // in the same window. Use a simple quadratic scan (window is small).
+    unsigned duplicates = 0;
+    unsigned start = (m_conflict_history_pos + CONFLICT_HISTORY_SIZE - w) % CONFLICT_HISTORY_SIZE;
+    for (unsigned i = 0; i < w; ++i) {
+        unsigned idx_i = (start + i) % CONFLICT_HISTORY_SIZE;
+        uint64_t hash_i = m_conflict_history[idx_i].learned_clause_hash;
+        if (hash_i == 0) continue;
+        for (unsigned j = i + 1; j < w; ++j) {
+            unsigned idx_j = (start + j) % CONFLICT_HISTORY_SIZE;
+            if (m_conflict_history[idx_j].learned_clause_hash == hash_i) {
+                duplicates++;
+                break;  // count each duplicate once
+            }
+        }
+    }
+    return static_cast<double>(duplicates) / w;
+}
+
+// -----------------------------------------------------------------------
+// Tier 2c: Expanded Region Map
+// -----------------------------------------------------------------------
+
+void landscape_map::ensure_expanded_regions() {
+    if (m_expanded_regions) return;
+    m_expanded_regions     = new expanded_region_record[EXPANDED_REGION_MAP_SIZE];
+    m_expanded_region_keys = new uint64_t[EXPANDED_REGION_MAP_SIZE];
+    m_expanded_region_occ  = new bool[EXPANDED_REGION_MAP_SIZE];
+    memset(m_expanded_regions, 0, sizeof(expanded_region_record) * EXPANDED_REGION_MAP_SIZE);
+    memset(m_expanded_region_keys, 0, sizeof(uint64_t) * EXPANDED_REGION_MAP_SIZE);
+    memset(m_expanded_region_occ, 0, sizeof(bool) * EXPANDED_REGION_MAP_SIZE);
+    m_expanded_unique = 0;
+}
+
+unsigned landscape_map::expanded_region_slot(uint64_t key) const {
+    // Use upper bits of fmix64 to distribute across 100K slots
+    return static_cast<unsigned>(fmix64(key) % EXPANDED_REGION_MAP_SIZE);
+}
+
+unsigned landscape_map::expanded_region_find(uint64_t key) const {
+    if (!m_expanded_regions) return EXPANDED_REGION_MAP_SIZE;
+    unsigned slot = expanded_region_slot(key);
+    // Linear probing with bounded search (cap at 64 probes)
+    for (unsigned probe = 0; probe < 64; ++probe) {
+        unsigned idx = (slot + probe) % EXPANDED_REGION_MAP_SIZE;
+        if (!m_expanded_region_occ[idx])
+            return EXPANDED_REGION_MAP_SIZE;
+        if (m_expanded_region_keys[idx] == key)
+            return idx;
+    }
+    return EXPANDED_REGION_MAP_SIZE;
+}
+
+unsigned landscape_map::expanded_region_insert_or_update(uint64_t key, float health) {
+    ensure_expanded_regions();
+    unsigned slot = expanded_region_slot(key);
+    unsigned oldest_slot = slot;
+    uint32_t oldest_visit = UINT32_MAX;
+
+    for (unsigned probe = 0; probe < 64; ++probe) {
+        unsigned idx = (slot + probe) % EXPANDED_REGION_MAP_SIZE;
+
+        if (!m_expanded_region_occ[idx]) {
+            m_expanded_region_occ[idx]  = true;
+            m_expanded_region_keys[idx] = key;
+            expanded_region_record& r = m_expanded_regions[idx];
+            r.hash        = key;
+            r.avg_health  = health;
+            r.best_health = health;
+            r.visit_count = 1;
+            r.last_visit  = m_total_restarts;
+            r.prev_region_hash = 0;
+            r.entry_health     = health;
+            r.exit_health      = 0.0f;
+            m_expanded_unique++;
+            return idx;
+        }
+
+        if (m_expanded_region_keys[idx] == key) {
+            expanded_region_record& r = m_expanded_regions[idx];
+            if (r.visit_count < UINT32_MAX) r.visit_count++;
+            r.avg_health = 0.8f * r.avg_health + 0.2f * health;
+            if (health > r.best_health) r.best_health = health;
+            r.last_visit = m_total_restarts;
+            return idx;
+        }
+
+        if (m_expanded_regions[idx].last_visit < oldest_visit) {
+            oldest_visit = m_expanded_regions[idx].last_visit;
+            oldest_slot = idx;
+        }
+    }
+
+    // Probe limit hit — evict LRU entry in the probe window
+    m_expanded_region_keys[oldest_slot] = key;
+    expanded_region_record& r = m_expanded_regions[oldest_slot];
+    r.hash        = key;
+    r.avg_health  = health;
+    r.best_health = health;
+    r.visit_count = 1;
+    r.last_visit  = m_total_restarts;
+    r.prev_region_hash = 0;
+    r.entry_health     = health;
+    r.exit_health      = 0.0f;
+    // unique count stays same (evicted one, inserted one)
+    return oldest_slot;
+}
+
+// -----------------------------------------------------------------------
+// Aggregate snapshot (extended)
 // -----------------------------------------------------------------------
 
 landscape_map::health_snapshot landscape_map::snapshot(unsigned num_vars) const {
@@ -359,10 +1022,40 @@ landscape_map::health_snapshot landscape_map::snapshot(unsigned num_vars) const 
     s.avg_stress           = avg_stress();
     s.stress_concentration = stress_concentration();
     s.coverage             = coverage_fraction();
-    s.unique_regions       = m_unique_regions;
+    s.unique_regions       = m_expanded_regions ? m_expanded_unique : m_unique_regions;
     s.region_diversity     = region_diversity();
     s.total_conflicts      = m_total_conflicts;
     s.total_decisions      = m_total_decisions;
+
+    // New fields
+    s.max_fanout_var       = 0;
+    s.avg_fanout           = 0.0;
+    s.conflict_recurrence  = 0.0;
+
+    if (m_var_profiles) {
+        uint16_t max_fo = 0;
+        double sum_fo = 0.0;
+        unsigned count_fo = 0;
+        unsigned limit = num_vars < m_var_profiles_cap ? num_vars : m_var_profiles_cap;
+        for (unsigned v = 0; v < limit; ++v) {
+            uint16_t fo = std::max(m_var_profiles[v].avg_fanout_true,
+                                   m_var_profiles[v].avg_fanout_false);
+            if (fo > max_fo) {
+                max_fo = fo;
+                s.max_fanout_var = v;
+            }
+            if (m_var_profiles[v].decisions_true + m_var_profiles[v].decisions_false > 0) {
+                sum_fo += fo;
+                count_fo++;
+            }
+        }
+        if (count_fo > 0)
+            s.avg_fanout = sum_fo / count_fo;
+    }
+
+    if (m_conflict_history)
+        s.conflict_recurrence = conflict_recurrence_rate(1000);
+
     return s;
 }
 
@@ -371,7 +1064,7 @@ landscape_map::health_snapshot landscape_map::snapshot(unsigned num_vars) const 
 // -----------------------------------------------------------------------
 
 void landscape_map::dump_to_stream(std::ostream& out, unsigned num_vars) const {
-    out << "=== LANDSCAPE MAP ===\n";
+    out << "=== LANDSCAPE MAP (DEEP) ===\n";
     out << "Conflicts: " << m_total_conflicts
         << ", Decisions: " << m_total_decisions
         << ", Restarts: " << m_total_restarts << "\n";
@@ -391,7 +1084,6 @@ void landscape_map::dump_to_stream(std::ostream& out, unsigned num_vars) const {
 
     // Top 10 stressed literals
     {
-        // Collect top-10 via partial selection
         struct entry { unsigned lit; uint8_t stress; };
         entry top[10];
         unsigned top_n = 0;
@@ -400,7 +1092,6 @@ void landscape_map::dump_to_stream(std::ostream& out, unsigned num_vars) const {
             if (top_n < 10) {
                 top[top_n++] = {i, p[i]};
             } else {
-                // Find min in top
                 unsigned min_idx = 0;
                 for (unsigned k = 1; k < 10; ++k)
                     if (top[k].stress < top[min_idx].stress) min_idx = k;
@@ -408,7 +1099,6 @@ void landscape_map::dump_to_stream(std::ostream& out, unsigned num_vars) const {
                     top[min_idx] = {i, p[i]};
             }
         }
-        // Sort descending
         for (unsigned i = 0; i < top_n; ++i)
             for (unsigned j = i + 1; j < top_n; ++j)
                 if (top[j].stress > top[i].stress) std::swap(top[i], top[j]);
@@ -423,58 +1113,34 @@ void landscape_map::dump_to_stream(std::ostream& out, unsigned num_vars) const {
     out << "Coverage: " << (cov * 100.0) << "% ("
         << m_vars_explored << " / " << m_decisions_true.size() << " vars explored)\n";
 
-    // Top 10 least explored
-    {
-        struct entry { unsigned var; unsigned total; };
-        entry least[10];
-        unsigned least_n = 0;
-        unsigned limit = std::min(num_vars, static_cast<unsigned>(m_decisions_true.size()));
-        for (unsigned v = 0; v < limit && least_n < 10; ++v) {
-            unsigned t = static_cast<unsigned>(m_decisions_true[v]) + m_decisions_false[v];
-            if (t == 0) {
-                least[least_n++] = {v, 0};
-            }
+    // Regions
+    unsigned unique = m_expanded_regions ? m_expanded_unique : m_unique_regions;
+    out << "Regions: " << unique << " unique / "
+        << m_total_restarts << " restarts (diversity=" << region_diversity() << ")\n";
+
+    // Tier 1b: Variable profile summary
+    if (m_var_profiles) {
+        uint16_t max_fo = 0;
+        unsigned max_fo_var = 0;
+        unsigned limit = num_vars < m_var_profiles_cap ? num_vars : m_var_profiles_cap;
+        for (unsigned v = 0; v < limit; ++v) {
+            uint16_t fo = std::max(m_var_profiles[v].avg_fanout_true,
+                                   m_var_profiles[v].avg_fanout_false);
+            if (fo > max_fo) { max_fo = fo; max_fo_var = v; }
         }
-        if (least_n < 10) {
-            // Fill with lowest non-zero
-            for (unsigned v = 0; v < limit && least_n < 10; ++v) {
-                unsigned t = static_cast<unsigned>(m_decisions_true[v]) + m_decisions_false[v];
-                if (t > 0) least[least_n++] = {v, t};
-            }
-        }
-        out << "  Least explored:";
-        for (unsigned i = 0; i < least_n; ++i)
-            out << " var#" << least[i].var << "(" << least[i].total << ")";
-        out << "\n";
+        out << "Max fanout var: " << max_fo_var << " (avg_fanout=" << max_fo << ")\n";
     }
 
-    // Regions
-    out << "Regions: " << m_unique_regions << " unique / "
-        << m_total_restarts << " restarts (diversity=" << region_diversity() << ")\n";
-    {
-        float best = 0.0f;
-        uint64_t best_key = 0;
-        unsigned best_visits = 0;
-        for (unsigned i = 0; i < REGION_MAP_SIZE; ++i) {
-            if (m_region_occupied[i] && m_region_vals[i].best_health > best) {
-                best = m_region_vals[i].best_health;
-                best_key = m_region_keys[i];
-                best_visits = m_region_vals[i].visits;
-            }
-        }
-        if (best > 0.0f) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "0x%016" PRIx64, static_cast<uint64_t>(best_key));
-            out << "  Best region: hash=" << buf
-                << " health=" << best << " visits=" << best_visits << "\n";
-        }
+    // Tier 2b: Conflict history summary
+    if (m_conflict_history) {
+        out << "Conflict history: " << m_conflict_history_count << " records, "
+            << "recurrence=" << conflict_recurrence_rate(1000) << "\n";
     }
 
     // Bloom filter fill ratio
     {
         unsigned bits_set = 0;
         for (unsigned i = 0; i < BLOOM_BYTES; ++i) {
-            // popcount byte
             unsigned b = m_conflict_pairs[i];
             b = b - ((b >> 1) & 0x55);
             b = (b & 0x33) + ((b >> 2) & 0x33);
@@ -512,7 +1178,6 @@ void landscape_map::dump_to_alog(FILE* alog, unsigned num_conflicts, unsigned nu
                     top[min_idx] = {i, p[i]};
             }
         }
-        // Sort descending
         for (unsigned i = 0; i < top_n; ++i)
             for (unsigned j = i + 1; j < top_n; ++j)
                 if (top[j].stress > top[i].stress) std::swap(top[i], top[j]);
@@ -526,15 +1191,42 @@ void landscape_map::dump_to_alog(FILE* alog, unsigned num_conflicts, unsigned nu
 
     unsigned unexplored = most_unexplored_var(num_vars);
 
+    // Compute new aggregate fields
+    unsigned max_fanout_var = 0;
+    double avg_fanout = 0.0;
+    if (m_var_profiles) {
+        uint16_t max_fo = 0;
+        double sum_fo = 0.0;
+        unsigned count_fo = 0;
+        unsigned limit = num_vars < m_var_profiles_cap ? num_vars : m_var_profiles_cap;
+        for (unsigned v = 0; v < limit; ++v) {
+            uint16_t fo = std::max(m_var_profiles[v].avg_fanout_true,
+                                   m_var_profiles[v].avg_fanout_false);
+            if (fo > max_fo) { max_fo = fo; max_fanout_var = v; }
+            if (m_var_profiles[v].decisions_true + m_var_profiles[v].decisions_false > 0) {
+                sum_fo += fo;
+                count_fo++;
+            }
+        }
+        if (count_fo > 0) avg_fanout = sum_fo / count_fo;
+    }
+
+    double recurrence = m_conflict_history ? conflict_recurrence_rate(1000) : 0.0;
+    unsigned unique = m_expanded_regions ? m_expanded_unique : m_unique_regions;
+
     ALOG(alog, "LANDSCAPE")
         .u("c", num_conflicts)
         .d("stress_avg", avg_stress())
         .d("stress_gini", stress_concentration())
         .d("coverage", coverage_fraction())
-        .u("regions", m_unique_regions)
+        .u("regions", unique)
         .d("diversity", region_diversity())
         .raw("top_stressed", top_stressed_buf)
-        .u("unexplored", unexplored);
+        .u("unexplored", unexplored)
+        .u("max_fanout_var", max_fanout_var)
+        .d("avg_fanout", avg_fanout)
+        .d("conflict_recurrence", recurrence)
+        .u("conflict_history_n", m_conflict_history_count);
 }
 
 } // namespace smt

@@ -325,7 +325,8 @@ namespace smt {
             trace_assign(l, j, decision);
 
         if (decision)
-            m_landscape.on_decision(l.var(), !l.sign());
+            m_landscape.on_decision(l.var(), !l.sign(), m_scope_lvl,
+                                    m_assigned_literals.size());
 
         m_case_split_queue->assign_lit_eh(l);
     }
@@ -3896,6 +3897,17 @@ namespace smt {
         m_phase_default                = false;
         m_case_split_queue             ->init_search_eh();
         m_landscape                    .init_search();
+        // Deep landscape: lazily allocate Tier 1/2 structures sized to actual problem.
+        {
+            unsigned nv = get_num_bool_vars();
+            unsigned nc = m_aux_clauses.size();
+            if (nv > 0) {
+                m_landscape.ensure_var_profiles(nv);
+                m_landscape.ensure_conflict_graph(nv);
+            }
+            if (nc > 0)
+                m_landscape.ensure_clause_profiles(nc);
+        }
         m_next_progress_sample         = 0;
         m_internal_completed                = l_undef;
         if (m.has_type_vars() && !m_theories.get_plugin(poly_family_id))
@@ -4318,6 +4330,24 @@ namespace smt {
                              static_cast<float>(ops > 0 ? ops : 1);
                 }
                 m_landscape.on_restart(phase_hash, health);
+
+                // Deep landscape: update polarity_history for sampled variables.
+                // Sample every 64th variable to keep cost bounded.
+                for (unsigned v = 0; v < num_vars; v += 64) {
+                    m_landscape.update_polarity_history(v, m_bdata[v].m_phase);
+                }
+
+                // Complete fanout for the last decision before restart
+                // (the decision whose propagation chain was interrupted by conflict/restart)
+                if (m_landscape.get_last_decision_var() != UINT32_MAX) {
+                    unsigned trail_now = m_assigned_literals.size();
+                    unsigned trail_prev = m_landscape.get_last_trail_pos();
+                    if (trail_now > trail_prev) {
+                        unsigned fanout = trail_now - trail_prev - 1;
+                        m_landscape.on_decision_fanout(m_landscape.get_last_decision_var(), fanout);
+                    }
+                    m_landscape.set_last_decision_var(UINT32_MAX);
+                }
             }
 
             if (m_scope_lvl > curr_lvl) {
@@ -4696,6 +4726,7 @@ namespace smt {
 
             // Landscape map: bump literal stress for conflict lemma literals,
             // feed variable pairs to the Bloom filter, and periodic decay.
+            // Also record extended conflict data for Tier 1b/2b.
             {
                 // Extract bool_vars from literals for the Bloom filter (top 8 by FUIP order).
                 unsigned var_buf[8];
@@ -4707,9 +4738,87 @@ namespace smt {
                 }
                 m_landscape.on_learned_clause(var_count, var_buf);
 
+                // Tier 1b: mark variables in the learned clause as conflict participants.
+                // The FUIP literal (lits[0]) is at conflict_lvl; it is the closest
+                // variable to the decision, so we mark it as decision_conflict.
+                for (unsigned i = 0; i < num_lits; ++i) {
+                    bool_var bv = lits[i].var();
+                    bool was_dec = (i == 0);  // FUIP literal approximates the decision
+                    m_landscape.on_var_in_conflict(bv, was_dec);
+                }
+
+                // Tier 2b: Record full conflict metadata in history buffer.
+                // Compute LBD (number of distinct decision levels in the clause).
+                {
+                    unsigned glue = 0;
+                    // Use a small bitset for levels up to 64, fallback to counting for deeper
+                    uint64_t level_bits = 0;
+                    bool overflow = false;
+                    for (unsigned i = 0; i < num_lits; ++i) {
+                        unsigned lvl = get_assign_level(lits[i]);
+                        if (lvl < 64) {
+                            level_bits |= (1ULL << lvl);
+                        } else {
+                            overflow = true;
+                        }
+                    }
+                    // popcount for levels 0-63
+                    uint64_t b = level_bits;
+                    b = b - ((b >> 1) & 0x5555555555555555ULL);
+                    b = (b & 0x3333333333333333ULL) + ((b >> 2) & 0x3333333333333333ULL);
+                    b = (b + (b >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+                    glue = static_cast<unsigned>((b * 0x0101010101010101ULL) >> 56);
+                    if (overflow) glue += 4;  // approximate extra levels
+
+                    // Compute learned clause hash for recurrence detection
+                    uint64_t clause_hash = fmix64(static_cast<uint64_t>(num_lits));
+                    for (unsigned i = 0; i < num_lits && i < 8; ++i)
+                        clause_hash ^= fmix64(static_cast<uint64_t>(lits[i].index()));
+
+                    // Compute theory_flags: bit per theory family
+                    uint8_t theory_flags = 0;
+                    if (m_conflict.get_kind() == b_justification::JUSTIFICATION)
+                        theory_flags |= 0x01;  // theory-originated
+                    for (unsigned i = 0; i < num_lits && i < 16; ++i) {
+                        theory_id tid = get_var_theory(lits[i].var());
+                        if (tid != null_theory_id && tid < 8)
+                            theory_flags |= (1u << tid);
+                    }
+
+                    unsigned backjump = (conflict_lvl > new_lvl) ? (conflict_lvl - new_lvl) : 0;
+                    m_landscape.on_conflict_full(
+                        clause_hash, var_buf, var_count, glue,
+                        backjump, m_assigned_literals.size(),
+                        theory_flags, num_lits);
+                }
+
                 // Periodic stress decay every 1000 conflicts.
-                if (m_num_conflicts % 1000 == 0)
+                if (m_num_conflicts % 1000 == 0) {
                     m_landscape.decay_stress();
+
+                    // Tier 1a: Periodic clause scan — identify saving literals
+                    // by scanning input clauses under current assignment.
+                    unsigned nc = m_aux_clauses.size();
+                    for (unsigned ci = 0; ci < nc; ++ci) {
+                        clause* cls = m_aux_clauses[ci];
+                        if (!cls || cls->is_lemma()) continue;
+                        unsigned nlits = cls->get_num_literals();
+                        unsigned false_count = 0;
+                        unsigned true_lit_pos = UINT32_MAX;
+                        for (unsigned li = 0; li < nlits; ++li) {
+                            lbool val = get_assignment((*cls)[li]);
+                            if (val == l_false) {
+                                false_count++;
+                            } else if (val == l_true && true_lit_pos == UINT32_MAX) {
+                                true_lit_pos = li;
+                            }
+                        }
+                        // If all but one literal is false, the surviving one is the saver
+                        if (false_count == nlits - 1 && true_lit_pos != UINT32_MAX) {
+                            m_landscape.on_clause_propagation(ci, (*cls)[true_lit_pos].index());
+                        }
+                    }
+                }
             }
 
             if (m_fparams.m_auto_tune) {
