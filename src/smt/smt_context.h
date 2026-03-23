@@ -39,6 +39,7 @@ Revision History:
 #include "smt/smt_almost_cg_table.h"
 #include "smt/smt_failure.h"
 #include "smt/smt_landscape.h"
+#include "smt/solver_driver.h"
 #include "smt/smt_types.h"
 #include "smt/dyn_ack.h"
 #include "ast/ast_smt_pp.h"
@@ -729,6 +730,13 @@ namespace smt {
         // Landscape map accessor — spatial awareness of the search space
         landscape_map & get_landscape() { return m_landscape; }
         landscape_map const & get_landscape() const { return m_landscape; }
+
+        // Solver driver accessor — adaptive parameter controller
+        solver_driver & get_driver() { return m_driver; }
+        solver_driver const & get_driver() const { return m_driver; }
+
+        // Quantifier manager reference (for driver to set qi_eager_threshold).
+        quantifier_manager & get_qmanager_ref() { return *m_qmanager; }
 
         // E7: func_decl heat accessor — returns VSIDS-style activity score for a function symbol
         double get_func_decl_heat(func_decl const * d) const {
@@ -2391,6 +2399,9 @@ namespace smt {
 
         // Landscape map: spatial awareness of the search space
         landscape_map               m_landscape;
+
+        // Solver driver: adaptive controller (reads landscape, tunes parameters)
+        solver_driver               m_driver;
 
     };
 

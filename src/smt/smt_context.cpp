@@ -3067,7 +3067,7 @@ namespace smt {
     }
 
 
-    void context::push() {       
+    void context::push() {
         pop_to_base_lvl();
         setup_context(false);
         bool was_consistent = !inconsistent();
@@ -3084,6 +3084,9 @@ namespace smt {
             // logical context became inconsistent during user PUSH
             VERIFY(!resolve_conflict()); // build the proof
         }
+        // Solver driver: save state before scope push.
+        if (m_fparams.m_auto_tune)
+            m_driver.push();
         push_scope();
         m_base_scopes.push_back(base_scope());
         base_scope & bs = m_base_scopes.back();
@@ -3099,6 +3102,11 @@ namespace smt {
         SASSERT (num_scopes > 0);
         if (num_scopes > m_scope_lvl) return;
         pop_to_base_lvl();
+        // Solver driver: restore state for each popped scope.
+        if (m_fparams.m_auto_tune) {
+            for (unsigned i = 0; i < num_scopes; i++)
+                m_driver.pop();
+        }
         pop_scope(num_scopes);
     }
 
@@ -3945,6 +3953,10 @@ namespace smt {
         m_phase_default                = false;
         m_case_split_queue             ->init_search_eh();
         m_landscape                    .init_search();
+        // Solver driver: reset per-search state (persists learned params).
+        if (m_fparams.m_auto_tune) {
+            m_driver.init_search(*this);
+        }
         // Landscape guidance: allocate only structures consumed by active guidance.
         // var_profiles: needed by on_decision_fanout (fanout boost).
         // clause_profiles: needed by on_clause_propagation (polarity safety).
@@ -4498,6 +4510,11 @@ namespace smt {
                 if (!resolve_conflict())
                     return l_false;
 
+                // Solver driver: count conflicts for update scheduling.
+                if (m_fparams.m_auto_tune) {
+                    m_driver.inc_conflicts();
+                }
+
                 SASSERT(m_scope_lvl >= m_base_lvl);
 
                 if (!inconsistent()) {
@@ -4551,6 +4568,15 @@ namespace smt {
                     break;
                 case FC_GIVEUP:
                     return l_undef;
+                }
+            } else {
+                // Solver driver: count decisions and check update trigger.
+                if (m_fparams.m_auto_tune) {
+                    m_driver.inc_decisions();
+                    if (m_driver.should_update()) {
+                        m_driver.update(*this);
+                        m_driver.reset_interval();
+                    }
                 }
             }
 

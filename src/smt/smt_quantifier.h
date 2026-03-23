@@ -129,6 +129,9 @@ namespace smt {
 
         // E-graph growth rate EMA (for SPSA causal signal C3).
         float get_egraph_growth_rate_ema() const;
+
+        // Solver driver: direct write to qi_queue's cached eager threshold.
+        void set_eager_threshold(double t);
     };
 
     class quantifier_manager_plugin {

@@ -35,6 +35,7 @@ z3_add_component(smt
     smt_kernel.cpp
     smt_landscape.cpp
     smt_literal.cpp
+    solver_driver.cpp
     smt_lookahead.cpp
     smt_model_checker.cpp
     smt_model_finder.cpp

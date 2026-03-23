@@ -210,6 +210,11 @@ namespace smt {
         // SPSA causal signal accessors
         unsigned get_qi_velocity_inserts() const { return m_qi_velocity_inserts; }
         float    get_egraph_growth_rate_ema() const { return m_egraph_metrics.m_growth_rate_ema; }
+
+        // Solver driver: direct write to the cached eager threshold.
+        // qi_queue::setup() copies m_params.m_qi_eager_threshold once;
+        // subsequent runtime changes must go through this setter.
+        void set_eager_threshold(double t) { m_eager_cost_threshold = t; }
     };
 };
 

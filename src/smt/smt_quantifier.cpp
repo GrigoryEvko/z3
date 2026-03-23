@@ -850,6 +850,10 @@ namespace smt {
         return m_imp->m_qi_queue.get_egraph_growth_rate_ema();
     }
 
+    void quantifier_manager::set_eager_threshold(double t) {
+        m_imp->m_qi_queue.set_eager_threshold(t);
+    }
+
     void quantifier_manager::relevant_eh(enode * n) {
         m_imp->relevant_eh(n);
     }
