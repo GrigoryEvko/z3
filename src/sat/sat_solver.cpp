@@ -2758,6 +2758,20 @@ namespace sat {
             }
             if (nc > 0)
                 m_landscape.ensure_clause_profiles(nc);
+            // Build clause pointer → index reverse map for on_clause_antecedent.
+            // Use m_clauses.size() (input clauses only), not nc (which includes
+            // units, binaries, and learned clauses).
+            {
+                unsigned n_input = m_clauses.size();
+                if (n_input > 0) {
+                    m_landscape.ensure_clause_ptr_map(n_input);
+                    for (unsigned ci = 0; ci < n_input; ++ci) {
+                        clause* cls = m_clauses[ci];
+                        if (cls)
+                            m_landscape.register_clause_ptr(ci, reinterpret_cast<uintptr_t>(cls));
+                    }
+                }
+            }
             // Compute clause_occurrence counts from input clauses.
             if (nv > 0 && nc > 0) {
                 struct occ_ctx { solver* s; };
@@ -3976,6 +3990,20 @@ namespace sat {
             for (unsigned i = 0; i < num_lits; ++i) {
                 bool was_dec = (i == 0); // FUIP literal approximates the decision
                 m_landscape.on_var_in_conflict(m_lemma[i].var(), was_dec);
+            }
+
+            // Tier 1a: bump antecedent count for reason clauses of learned-clause
+            // literals. Records which input clauses contribute to conflict derivation.
+            for (unsigned i = 0; i < num_lits; ++i) {
+                bool_var v = m_lemma[i].var();
+                justification js = m_justification[v];
+                if (js.is_clause()) {
+                    clause& c = get_clause(js);
+                    unsigned cidx = m_landscape.find_clause_idx(
+                        reinterpret_cast<uintptr_t>(&c));
+                    if (cidx != UINT32_MAX)
+                        m_landscape.on_clause_antecedent(cidx);
+                }
             }
 
             // Tier 2b: full conflict metadata.

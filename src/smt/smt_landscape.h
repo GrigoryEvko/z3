@@ -119,9 +119,8 @@ public:
         uint32_t m_last_stress;        // conflict number when last stressed
         uint16_t m_violation_count;    // times clause was stressed (all but 1 lit false)
         uint16_t m_propagation_count;  // times clause propagated via BCP
-        uint16_t m_antecedent_count;   // NOTE: not populated in hot path (conflict resolution
-                                       // inner loop doesn't carry clause indices). Reserved
-                                       // for future use. Periodic scan provides a proxy.
+        uint16_t m_antecedent_count;   // times clause appeared as reason in conflict derivation
+                                       // (bumped via clause_ptr reverse map during FUIP walk)
         uint8_t  m_saving_fraction;    // 0-255: how often saving_literal was sole survivor
         uint8_t  m_pad;
     };
@@ -136,6 +135,13 @@ public:
                                   void* ctx);
     clause_profile const* get_clause_profile(unsigned clause_idx) const;
     unsigned get_saving_literal(unsigned clause_idx) const;
+
+    // Clause pointer → index reverse map (for on_clause_antecedent wiring).
+    // Callers register clause pointers during init_search, then look up
+    // indices during conflict resolution.
+    void     ensure_clause_ptr_map(unsigned num_clauses);
+    void     register_clause_ptr(unsigned clause_idx, uintptr_t ptr);
+    unsigned find_clause_idx(uintptr_t ptr) const;  // returns UINT32_MAX if not found
 
     // ===================================================================
     // TIER 1 — Variable Propagation Fan-Out Profiles
@@ -345,6 +351,15 @@ private:
     // -- Tier 1a: Clause profiles (lazy) --
     clause_profile*   m_clause_profiles     = nullptr;
     unsigned          m_clause_profiles_cap = 0;
+
+    // Clause pointer → index reverse map (open-addressing hash table).
+    // Stores (ptr, idx) pairs for O(1) lookup during conflict resolution.
+    struct clause_ptr_entry {
+        uintptr_t ptr;   // 0 = empty slot
+        unsigned  idx;
+    };
+    clause_ptr_entry* m_clause_ptr_map     = nullptr;
+    unsigned          m_clause_ptr_map_cap = 0;  // always a power of 2
 
     // -- Tier 1b: Variable profiles (lazy) --
     var_profile*      m_var_profiles        = nullptr;

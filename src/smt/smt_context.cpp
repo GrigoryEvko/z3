@@ -3905,8 +3905,16 @@ namespace smt {
                 m_landscape.ensure_var_profiles(nv);
                 m_landscape.ensure_conflict_graph(nv);
             }
-            if (nc > 0)
+            if (nc > 0) {
                 m_landscape.ensure_clause_profiles(nc);
+                // Build clause pointer → index reverse map for on_clause_antecedent.
+                m_landscape.ensure_clause_ptr_map(nc);
+                for (unsigned ci = 0; ci < nc; ++ci) {
+                    clause* cls = m_aux_clauses[ci];
+                    if (cls)
+                        m_landscape.register_clause_ptr(ci, reinterpret_cast<uintptr_t>(cls));
+                }
+            }
             // Tier 1c: allocate QI pattern maps if quantifiers present.
             if (m_qmanager && m_qmanager->num_quantifiers() > 0)
                 m_landscape.ensure_qi_patterns(m_qmanager->num_quantifiers());
@@ -4769,6 +4777,19 @@ namespace smt {
                     bool_var bv = lits[i].var();
                     bool was_dec = (i == 0);  // FUIP literal approximates the decision
                     m_landscape.on_var_in_conflict(bv, was_dec);
+                }
+
+                // Tier 1a: bump antecedent count for reason clauses of learned-clause
+                // literals. This records which input clauses participate in conflict
+                // derivation (analogous to reason-side bumping in VSIDS).
+                for (unsigned i = 0; i < num_lits; ++i) {
+                    b_justification js = get_bdata(lits[i].var()).justification();
+                    if (js.get_kind() == b_justification::CLAUSE) {
+                        unsigned cidx = m_landscape.find_clause_idx(
+                            reinterpret_cast<uintptr_t>(js.get_clause()));
+                        if (cidx != UINT32_MAX)
+                            m_landscape.on_clause_antecedent(cidx);
+                    }
                 }
 
                 // Tier 2b: Record full conflict metadata in history buffer.

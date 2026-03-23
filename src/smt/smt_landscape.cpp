@@ -40,6 +40,7 @@ landscape_map::landscape_map() {
 
 landscape_map::~landscape_map() {
     delete[] m_clause_profiles;
+    delete[] m_clause_ptr_map;
     delete[] m_var_profiles;
     delete[] m_qi_patterns;
     delete[] m_conflict_graph;
@@ -93,6 +94,9 @@ void landscape_map::reset() {
     delete[] m_clause_profiles;
     m_clause_profiles     = nullptr;
     m_clause_profiles_cap = 0;
+    delete[] m_clause_ptr_map;
+    m_clause_ptr_map     = nullptr;
+    m_clause_ptr_map_cap = 0;
 
     // Tier 1b: var profiles
     delete[] m_var_profiles;
@@ -529,6 +533,59 @@ void landscape_map::on_clause_antecedent(unsigned clause_idx) {
     clause_profile& cp = m_clause_profiles[clause_idx];
     if (cp.m_antecedent_count < UINT16_MAX)
         cp.m_antecedent_count++;
+}
+
+// -----------------------------------------------------------------------
+// Clause pointer → index reverse map
+// -----------------------------------------------------------------------
+
+void landscape_map::ensure_clause_ptr_map(unsigned num_clauses) {
+    // Size the table to next power of 2 with ~50% load factor
+    unsigned needed = num_clauses * 2;
+    if (needed < 64) needed = 64;
+    // Round up to power of 2
+    unsigned cap = 1;
+    while (cap < needed) cap <<= 1;
+    if (cap <= m_clause_ptr_map_cap) return;
+    delete[] m_clause_ptr_map;
+    m_clause_ptr_map = new clause_ptr_entry[cap];
+    memset(m_clause_ptr_map, 0, sizeof(clause_ptr_entry) * cap);
+    m_clause_ptr_map_cap = cap;
+}
+
+void landscape_map::register_clause_ptr(unsigned clause_idx, uintptr_t ptr) {
+    if (!m_clause_ptr_map || m_clause_ptr_map_cap == 0 || ptr == 0) return;
+    unsigned mask = m_clause_ptr_map_cap - 1;
+    unsigned slot = static_cast<unsigned>(fmix64(ptr)) & mask;
+    for (unsigned probe = 0; probe < 64; ++probe) {
+        unsigned idx = (slot + probe) & mask;
+        if (m_clause_ptr_map[idx].ptr == 0) {
+            m_clause_ptr_map[idx].ptr = ptr;
+            m_clause_ptr_map[idx].idx = clause_idx;
+            return;
+        }
+        if (m_clause_ptr_map[idx].ptr == ptr) {
+            // Already registered (update index in case of reuse)
+            m_clause_ptr_map[idx].idx = clause_idx;
+            return;
+        }
+    }
+    // Probe limit hit — silently drop (shouldn't happen with 50% load)
+}
+
+unsigned landscape_map::find_clause_idx(uintptr_t ptr) const {
+    if (!m_clause_ptr_map || m_clause_ptr_map_cap == 0 || ptr == 0)
+        return UINT32_MAX;
+    unsigned mask = m_clause_ptr_map_cap - 1;
+    unsigned slot = static_cast<unsigned>(fmix64(ptr)) & mask;
+    for (unsigned probe = 0; probe < 64; ++probe) {
+        unsigned idx = (slot + probe) & mask;
+        if (m_clause_ptr_map[idx].ptr == 0)
+            return UINT32_MAX;  // Empty slot — not found
+        if (m_clause_ptr_map[idx].ptr == ptr)
+            return m_clause_ptr_map[idx].idx;
+    }
+    return UINT32_MAX;
 }
 
 void landscape_map::periodic_clause_scan(unsigned num_clauses,
