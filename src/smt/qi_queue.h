@@ -139,6 +139,7 @@ namespace smt {
         cached_var_subst              m_subst;
         svector<float>                m_vals;
         double                        m_eager_cost_threshold = 0;
+        double                        m_surprisal_coeff = 2.0;
         std::function<bool(quantifier*,expr*)> m_on_binding;
         struct entry {
             fingerprint * m_qb;
@@ -215,6 +216,11 @@ namespace smt {
         // qi_queue::setup() copies m_params.m_qi_eager_threshold once;
         // subsequent runtime changes must go through this setter.
         void set_eager_threshold(double t) { m_eager_cost_threshold = t; }
+
+        // Solver driver: scale the Bayesian surprisal coefficient.
+        // Base coefficient is 2.0; the driver multiplies by qi_surprisal_scale.
+        void set_surprisal_coeff(double c) { m_surprisal_coeff = c; }
+        double get_surprisal_coeff() const { return m_surprisal_coeff; }
     };
 };
 

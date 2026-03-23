@@ -528,6 +528,9 @@ namespace smt {
             return std::min(m_relevancy_lvl, m_fparams.m_relevancy_lvl);
         }
 
+        // Solver driver: set effective relevancy level (capped by fparams).
+        void set_relevancy_lvl(unsigned lvl) { m_relevancy_lvl = lvl; }
+
         relevancy_propagator const & get_relevancy_propagator() const { return *m_relevancy_propagator; }
 
         enode * get_enode(expr const * n) const {

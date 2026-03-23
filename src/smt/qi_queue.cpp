@@ -224,8 +224,7 @@ namespace smt {
             unsigned k = stat->get_num_conflicts_curr_search();
             constexpr unsigned N0 = 5000;
             if (k == 0 && n > N0) {
-                double coeff = 2.0;
-                r += static_cast<float>(coeff * std::log2(static_cast<double>(n) / N0));
+                r += static_cast<float>(m_surprisal_coeff * std::log2(static_cast<double>(n) / N0));
             }
         }
 
@@ -979,8 +978,7 @@ namespace smt {
                             unsigned nc = stat->get_num_conflicts_curr_search();
                             constexpr unsigned N0 = 5000;
                             if (nc == 0 && ni > N0) {
-                                double coeff = 2.0;
-                                double surprisal = coeff * std::log2(static_cast<double>(ni) / N0);
+                                double surprisal = m_surprisal_coeff * std::log2(static_cast<double>(ni) / N0);
                                 if (surprisal > m_eager_cost_threshold) {
                                     continue;
                                 }
@@ -1012,8 +1010,7 @@ namespace smt {
                         unsigned nc = stat->get_num_conflicts();
                         constexpr unsigned N0 = 5000;
                         if (nc == 0 && ni > N0) {
-                            double coeff = 2.0;
-                            double surprisal = coeff * std::log2(static_cast<double>(ni) / N0);
+                            double surprisal = m_surprisal_coeff * std::log2(static_cast<double>(ni) / N0);
                             if (surprisal > m_eager_cost_threshold) {
                                 continue;
                             }

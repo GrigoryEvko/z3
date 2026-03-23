@@ -512,8 +512,7 @@ namespace smt {
                 // against matching loop suppression.
                 unsigned nc = stat->get_num_conflicts_curr_search();
                 if (nc == 0 && ni > 5000) {
-                    double coeff = 2.0;
-                    double surprisal = coeff * std::log2(static_cast<double>(ni) / 5000.0);
+                    double surprisal = m_qi_queue.get_surprisal_coeff() * std::log2(static_cast<double>(ni) / 5000.0);
                     if (surprisal > m_params.m_qi_eager_threshold * 1.05) {
                         return false;
                     }
@@ -852,6 +851,14 @@ namespace smt {
 
     void quantifier_manager::set_eager_threshold(double t) {
         m_imp->m_qi_queue.set_eager_threshold(t);
+    }
+
+    void quantifier_manager::set_surprisal_coeff(double c) {
+        m_imp->m_qi_queue.set_surprisal_coeff(c);
+    }
+
+    double quantifier_manager::get_surprisal_coeff() const {
+        return m_imp->m_qi_queue.get_surprisal_coeff();
     }
 
     void quantifier_manager::relevant_eh(enode * n) {

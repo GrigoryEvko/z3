@@ -61,7 +61,7 @@ public:
         double activity_decay_scale;    // [0.95, 1.05], default 1.0, linear
         double phase_noise;             // [0.0, 0.20], default 0.0, linear
         double relevancy_probability;   // [0.0, 1.0], default 1.0, linear
-        double mbqi_probability;        // [0.0, 1.0], default 0.0, linear
+        double mbqi_probability;        // [0.0, 1.0], default 1.0, linear
         double gc_aggressiveness;       // [0.5, 2.0], default 1.0, log-space
     };
 
@@ -159,6 +159,8 @@ private:
     double m_base_inv_decay;        // from fparams.m_inv_decay
     double m_base_gc_factor;        // from fparams.m_lemma_gc_factor
     double m_base_qi_eager;         // from qi_queue's initial eager threshold
+    bool   m_base_mbqi;            // from fparams.m_mbqi (user's original setting)
+    unsigned m_base_relevancy_lvl; // from fparams.m_relevancy_lvl
 
     // Counters.
     unsigned m_total_decisions;

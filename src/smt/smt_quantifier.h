@@ -132,6 +132,10 @@ namespace smt {
 
         // Solver driver: direct write to qi_queue's cached eager threshold.
         void set_eager_threshold(double t);
+
+        // Solver driver: scale the Bayesian surprisal coefficient (base 2.0).
+        void set_surprisal_coeff(double c);
+        double get_surprisal_coeff() const;
     };
 
     class quantifier_manager_plugin {

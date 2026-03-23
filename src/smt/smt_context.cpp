@@ -1899,6 +1899,18 @@ namespace smt {
                 }});
         
             is_pos = guess(var, phase);
+
+            // Solver driver: phase noise injection.
+            // Randomly flip the phase decision with probability phase_noise.
+            // Applied AFTER all other phase logic as a final random perturbation.
+            if (m_fparams.m_auto_tune) {
+                double pn = m_driver.current_params().phase_noise;
+                if (pn > 0.0) {
+                    double r = static_cast<double>(m_random() % 10000) / 10000.0;
+                    if (r < pn)
+                        is_pos = !is_pos;
+                }
+            }
         }
 
         m_stats.m_num_decisions++;

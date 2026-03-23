@@ -37,8 +37,10 @@ const solver_driver::param_meta solver_driver::s_meta[N_PARAMS] = {
     { 0.0, 0.20, 0.0, false },
     // relevancy_probability: [0.0, 1.0],  default 1.0,  linear
     { 0.0, 1.0, 1.0, false },
-    // mbqi_probability:      [0.0, 1.0],  default 0.0,  linear
-    { 0.0, 1.0, 0.0, false },
+    // mbqi_probability:      [0.0, 1.0],  default 1.0,  linear
+    // Default 1.0: always attempt MBQI when user has m_mbqi=true.
+    // SPSA can lower it toward 0 if e-matching alone is more productive.
+    { 0.0, 1.0, 1.0, false },
     // gc_aggressiveness:     [0.5, 2.0],  default 1.0,  log-space
     { 0.5, 2.0, 1.0, true },
 };
@@ -80,6 +82,8 @@ void solver_driver::reset_to_defaults() {
     m_base_inv_decay       = 1.052;
     m_base_gc_factor       = 1.1;
     m_base_qi_eager        = 7.0;
+    m_base_mbqi            = true;
+    m_base_relevancy_lvl   = 2;
 
     // Counters.
     m_total_decisions       = 0;
@@ -114,13 +118,15 @@ void solver_driver::reset_to_defaults() {
     m_warmup_configs[1].qi_eager_threshold    = 50.0;
     m_warmup_configs[1].mbqi_probability      = 0.4;
     m_warmup_configs[1].relevancy_probability = 0.3;
-    // Cycle 2: UNSAT-seeking.
-    m_warmup_configs[2].qi_eager_threshold    = 3.0;
+    // Cycle 2: UNSAT-seeking (conservative: don't lower qi_eager below default
+    // to avoid flooding the solver with QI instances that persist after warmup).
     m_warmup_configs[2].mbqi_probability      = 0.0;
     m_warmup_configs[2].relevancy_probability = 1.0;
+    m_warmup_configs[2].restart_margin_scale  = 0.5;
     // Cycle 3: QI-throttled.
     m_warmup_configs[3].qi_eager_threshold    = 80.0;
     m_warmup_configs[3].qi_surprisal_scale    = 2.5;
+    m_warmup_configs[3].mbqi_probability      = 0.8;
     // Cycle 4: Wide search.
     m_warmup_configs[4].phase_noise           = 0.15;
     m_warmup_configs[4].restart_margin_scale  = 0.5;
@@ -139,6 +145,8 @@ void solver_driver::init_search(context& ctx) {
     m_base_inv_decay       = ctx.get_fparams().m_inv_decay;
     m_base_gc_factor       = ctx.get_fparams().m_lemma_gc_factor;
     m_base_qi_eager        = ctx.get_fparams().m_qi_eager_threshold;
+    m_base_mbqi            = ctx.get_fparams().m_mbqi;
+    m_base_relevancy_lvl   = ctx.get_fparams().m_relevancy_lvl;
 
     // Check if parameters are non-default (from previous check-sat).
     bool has_non_default = false;
@@ -170,10 +178,15 @@ void solver_driver::init_search(context& ctx) {
     m_total_decisions  = 0;
     m_total_conflicts  = 0;
 
-    // Warmup portfolio is Phase 3 (not yet implemented).
-    // For now, SPSA starts from defaults (or persisted config if non-default).
-    m_warmup_cycle = WARMUP_CYCLES;
-    m_warmup_done  = true;
+    // Portfolio warmup: skip if parameters already learned from a previous check-sat.
+    if (has_non_default) {
+        m_warmup_cycle = WARMUP_CYCLES;
+        m_warmup_done  = true;
+    } else {
+        m_warmup_cycle = 0;
+        m_warmup_done  = false;
+        memset(m_warmup_H, 0, sizeof(m_warmup_H));
+    }
 }
 
 void solver_driver::push() {
@@ -386,32 +399,57 @@ void solver_driver::spsa_step(double H, context& /*ctx*/) {
 // ---------------------------------------------------------------
 
 void solver_driver::apply_params(context& ctx) {
-    // qi_eager_threshold: write DIRECTLY to qi_queue's cached member.
-    // The quantifier_manager forwards to qi_queue::set_eager_threshold().
+    // P1: qi_eager_threshold -- write DIRECTLY to qi_queue's cached member.
     if (ctx.has_quantifiers()) {
         ctx.get_qmanager_ref().set_eager_threshold(m_params.qi_eager_threshold);
     }
 
-    // restart_margin_scale: multiply the baseline restart agility threshold
-    // captured at init_search time (NOT a hardcoded constant).
+    // P2: qi_surprisal_scale -- scale the Bayesian surprisal coefficient.
+    // Base is 2.0; effective coeff = 2.0 * qi_surprisal_scale.
+    if (ctx.has_quantifiers()) {
+        ctx.get_qmanager_ref().set_surprisal_coeff(2.0 * m_params.qi_surprisal_scale);
+    }
+
+    // P3: restart_margin_scale -- multiply the baseline restart agility threshold.
     ctx.get_fparams().m_restart_agility_threshold =
         m_base_restart_agility * m_params.restart_margin_scale;
 
-    // activity_decay_scale: scale the baseline VSIDS inverse decay.
+    // P4: activity_decay_scale -- scale the baseline VSIDS inverse decay.
     ctx.get_fparams().m_inv_decay = m_base_inv_decay * m_params.activity_decay_scale;
 
-    // gc_aggressiveness: scale the baseline GC factor.
-    ctx.get_fparams().m_lemma_gc_factor = m_base_gc_factor * m_params.gc_aggressiveness;
+    // P5: phase_noise -- read directly from current_params() in decide().
+    // No action needed here; the injection happens in smt_context::decide().
 
-    // phase_noise, relevancy_probability, mbqi_probability:
-    // These are read by other subsystems at decision time / final_check time.
-    // For now, store them in the driver params and let the subsystems query them.
-    // Integration into guess()/final_check is Phase 2 (applied via context reads).
-    //
-    // TODO(Phase 2): Wire phase_noise into context::guess() random flip probability.
-    // TODO(Phase 2): Wire relevancy_probability into context::relevancy_lvl() with
-    //   probabilistic rounding (continuous [0,1] -> integer {0,1,2}).
-    // TODO(Phase 2): Wire mbqi_probability into final_check_eh coin flip.
+    // P6: relevancy_probability -- probabilistic rounding to integer level.
+    // Maps continuous [0,1] to effective_level in {0, 1, 2} via probabilistic
+    // rounding, giving SPSA a smooth gradient through a discrete parameter.
+    // SAFETY: only apply when SPSA has actually moved the parameter away
+    // from its default (1.0). At default, the solver's own relevancy
+    // management (meta_update, G4 retry) should not be overridden.
+    if (m_params.relevancy_probability < 0.99) {
+        double v = m_params.relevancy_probability;
+        double scaled = v * 2.0;
+        unsigned base = static_cast<unsigned>(scaled);
+        double frac = scaled - base;
+        unsigned level = base;
+        double r = static_cast<double>(rng_next() % 10000) / 10000.0;
+        if (r < frac)
+            level++;
+        if (level > m_base_relevancy_lvl)
+            level = m_base_relevancy_lvl;
+        ctx.set_relevancy_lvl(level);
+    }
+
+    // P7: mbqi_probability -- probabilistic toggle of MBQI.
+    // SAFETY: only toggle when SPSA has moved mbqi_probability away
+    // from its default (1.0). At default, MBQI stays at user's setting.
+    if (m_base_mbqi && m_params.mbqi_probability < 0.99) {
+        double r = static_cast<double>(rng_next() % 10000) / 10000.0;
+        ctx.get_fparams().m_mbqi = (r < m_params.mbqi_probability);
+    }
+
+    // P8: gc_aggressiveness -- scale the baseline GC factor.
+    ctx.get_fparams().m_lemma_gc_factor = m_base_gc_factor * m_params.gc_aggressiveness;
 }
 
 // ---------------------------------------------------------------
@@ -427,7 +465,19 @@ void solver_driver::update(context& ctx) {
     // Safety freeze check.
     if (H > FREEZE_THRESH) {
         m_consecutive_good++;
-        if (m_consecutive_good >= FREEZE_STREAK) {
+
+        // During warmup: abort immediately on ANY good measurement.
+        // Productive queries should never be perturbed by portfolio configs.
+        if (!m_warmup_done) {
+            m_frozen = true;
+            for (unsigned j = 0; j < N_PARAMS; j++)
+                set_param(j, s_meta[j].default_val);
+            apply_params(ctx);
+            m_warmup_done = true;
+            m_warmup_cycle = WARMUP_CYCLES;
+        }
+        // After warmup: require FREEZE_STREAK consecutive good measurements.
+        else if (m_consecutive_good >= FREEZE_STREAK) {
             m_frozen = true;
         }
     } else {
@@ -444,17 +494,28 @@ void solver_driver::update(context& ctx) {
 
     m_update_count++;
 
-    // Activation gate (design doc Section 10.1):
-    // Don't start SPSA until we have enough health measurements for the
-    // safety freeze to have a chance to trigger. This protects productive
-    // queries from any perturbation during the first 5 update cycles
-    // (25K decisions at DECISION_INTERVAL=5000).
-    static constexpr unsigned ACTIVATION_CYCLES = 5;
-    bool activated = (m_update_count > ACTIVATION_CYCLES);
-
-    // If frozen (solver doing well) or not yet activated, skip SPSA updates.
-    // Still track health/temperature for freeze/unfreeze decisions.
-    if (activated && !m_frozen) {
+    if (!m_warmup_done) {
+        // ACTIVATION GATE with portfolio probing (design doc Sections 9.1, 10.1):
+        //
+        // Cycles 0 through WARMUP_CYCLES-1: observe health, don't perturb.
+        // The safety freeze (above) can trigger during this phase, protecting
+        // productive queries. After the observation gate, SPSA takes over.
+        //
+        // NOTE: Portfolio probing (applying SAT-seeking, QI-throttled, etc.)
+        // is deferred to future work. Applying non-default configs during
+        // warmup creates irreversible state (QI instances, E-graph merges)
+        // that persists after config revert, causing regressions on
+        // incremental F* queries.
+        if (m_warmup_cycle < WARMUP_CYCLES) {
+            m_warmup_H[m_warmup_cycle] = H;
+            m_warmup_cycle++;
+        } else {
+            m_warmup_done = true;
+        }
+    } else if (m_frozen) {
+        // Safety freeze: don't perturb parameters.
+    } else {
+        // Normal SPSA gradient descent.
         spsa_step(H, ctx);
         apply_params(ctx);
     }
@@ -548,6 +609,7 @@ void solver_driver::dump_to_alog(FILE* alog) const {
     if (!alog) return;
     ALOG(alog, "DRIVER")
         .u("cycle", m_update_count)
+        .u("warmup_cycle", m_warmup_done ? 0u : m_warmup_cycle)
         .d("H_fast", m_H_fast)
         .d("H_slow", m_H_slow)
         .d("T", m_T)
