@@ -97,10 +97,10 @@ void bool_rewriter::mk_and_as_or(unsigned num_args, expr * const * args, expr_re
         if (mk_not_core(b, not_b) != BR_DONE)
             not_b = m().mk_not(b);
 
-        // Direct dispatch — bit-blaster sets flat=false, so mk_nflat_or_core is the target
+        // Dispatch through mk_or_core so flat_and_or=true triggers flattening
         expr_ref or_result(m());
         expr * or_args[2] = { not_a.get(), not_b.get() };
-        if (mk_nflat_or_core(2, or_args, or_result) == BR_FAILED)
+        if (mk_or_core(2, or_args, or_result) == BR_FAILED)
             or_result = m().mk_or(not_a, not_b);
 
         // Final NOT (mk_not_core handles double-negation when OR collapsed to NOT node)
