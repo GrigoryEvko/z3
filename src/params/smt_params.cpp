@@ -389,9 +389,9 @@ void smt_params::setup_AUFLIA(bool simple_array) {
     m_restart_factor          = 1.5;
     m_eliminate_bounds        = true;
     m_qi_quick_checker        = MC_UNSAT;
-    m_qi_lazy_threshold       = 25;
+    m_qi_lazy_threshold       = 24;
     m_mbqi                    = true; // enabling MBQI and MACRO_FINDER by default :-)
-    
+
     // MACRO_FINDER is a horrible for AUFLIA and UFNIA benchmarks (boogie benchmarks in general)
     // It destroys the existing patterns.
     // m_macro_finder            = true; 
@@ -411,8 +411,8 @@ void smt_params::setup_AUFLIRA(bool simple_array) {
     m_qi_quick_checker        = MC_UNSAT;
     m_qi_eager_threshold      = 5;
     // Added for MBQI release
-    m_qi_lazy_threshold       = 25;
-    // 
+    m_qi_lazy_threshold       = 24;
+    //
     m_macro_finder            = true;
     if (m_ng_lift_ite == lift_ite_kind::LI_NONE)
         m_ng_lift_ite         = lift_ite_kind::LI_CONSERVATIVE;
