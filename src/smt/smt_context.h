@@ -734,6 +734,9 @@ namespace smt {
         landscape_map & get_landscape() { return m_landscape; }
         landscape_map const & get_landscape() const { return m_landscape; }
 
+        // Whether landscape data is actively being collected (false for fast queries).
+        bool is_landscape_collecting() const { return m_landscape_collecting; }
+
         // Solver driver accessor — adaptive parameter controller
         solver_driver & get_driver() { return m_driver; }
         solver_driver const & get_driver() const { return m_driver; }
@@ -2408,6 +2411,12 @@ namespace smt {
 
         // Landscape map: spatial awareness of the search space
         landscape_map               m_landscape;
+
+        // Deferred landscape collection: starts false, becomes true only
+        // after 5000+ conflicts AND the driver is not frozen.
+        // Gates ALL per-decision/per-conflict landscape hooks to eliminate
+        // ~17% CPU overhead on fast/medium queries that never need it.
+        bool                        m_landscape_collecting = false;
 
         // Solver driver: adaptive controller (reads landscape, tunes parameters)
         solver_driver               m_driver;

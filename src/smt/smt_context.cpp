@@ -309,15 +309,15 @@ namespace smt {
             }
         }
         // A3: Phase flip detection for SPSA causal signal.
-        // Lazy activation: only after 2000 conflicts to avoid overhead on easy queries.
-        if (decision && d.m_phase_available && m_fparams.m_auto_tune && m_num_conflicts > 2000) {
+        // Gated by m_landscape_collecting: zero overhead until hard-query activation.
+        if (decision && d.m_phase_available && m_landscape_collecting) {
             bool actual_polarity = !l.sign();
             m_landscape.dynamics_on_phase_flip(actual_polarity != d.m_phase);
         }
 
         // E3: Propagation-phase alignment — sample every 64th propagation.
-        if (!decision && d.m_phase_available && m_fparams.m_auto_tune &&
-            m_num_conflicts > 2000 && (m_stats.m_num_propagations & 63) == 0) {
+        if (!decision && d.m_phase_available && m_landscape_collecting &&
+            (m_stats.m_num_propagations & 63) == 0) {
             bool aligned = (!l.sign()) == d.m_phase;
             m_landscape.dynamics_on_prop_alignment(aligned);
         }
@@ -338,9 +338,8 @@ namespace smt {
         if (m.has_trace_stream())
             trace_assign(l, j, decision);
 
-        if (decision && m_fparams.m_auto_tune && m_num_conflicts > 2000) {
-            // Lazy-activated fanout tracking: only after 2000 conflicts.
-            // Easy queries (< 2000 conflicts) get ZERO landscape overhead.
+        if (decision && m_landscape_collecting) {
+            // Fanout tracking: gated by m_landscape_collecting.
             unsigned trail_size = m_assigned_literals.size();
             unsigned last_var = m_landscape.get_last_decision_var();
             if (last_var != UINT32_MAX) {
@@ -1801,8 +1800,9 @@ namespace smt {
             return true;
 
         // Landscape-guided polarity: use saving-literal data when signal is strong.
-        // Only fires after 1000+ conflicts (periodic scan must have run at least once).
-        if (m_fparams.m_auto_tune && m_num_conflicts > 2000) {
+        // Gated by m_landscape_collecting — polarity_safety() depends on periodic
+        // clause scan data that only populates when collecting is active.
+        if (m_landscape_collecting) {
             int safety = m_landscape.polarity_safety(var);
             if (safety > 0) return true;   // true protects more clauses
             if (safety < 0) return false;  // false protects more clauses
@@ -1900,7 +1900,8 @@ namespace smt {
             // Solver driver: phase noise injection.
             // Randomly flip the phase decision with probability phase_noise.
             // Applied AFTER all other phase logic as a final random perturbation.
-            if (m_fparams.m_auto_tune) {
+            // Only active when landscape is collecting (driver has started perturbing).
+            if (m_landscape_collecting) {
                 double pn = m_driver.current_params().phase_noise;
                 if (pn > 0.0) {
                     double r = static_cast<double>(m_random() % 10000) / 10000.0;
@@ -2840,7 +2841,7 @@ namespace smt {
             }
         }
         IF_VERBOSE(2, verbose_stream() << " :num-deleted-clauses " << num_del_cls << ")" << std::endl;);
-        if (m_fparams.m_auto_tune) {
+        if (m_landscape_collecting) {
             unsigned candidates = end_at - start_del_at;
             unsigned survived = candidates - num_del_cls;
             m_landscape.dynamics_on_gc(survived, candidates, survived);
@@ -2895,7 +2896,7 @@ namespace smt {
         SASSERT(j <= sz);
         m_lemmas.shrink(j);
         IF_VERBOSE(2, verbose_stream() << " :num-deleted-clauses " << num_del_cls << ")" << std::endl;);
-        if (m_fparams.m_auto_tune) {
+        if (m_landscape_collecting) {
             unsigned candidates = sz - start_at;
             unsigned survived = j - start_at;
             m_landscape.dynamics_on_gc(survived, candidates, survived);
@@ -3962,23 +3963,14 @@ namespace smt {
         m_phase_default                = false;
         m_case_split_queue             ->init_search_eh();
         m_landscape                    .init_search();
+        m_landscape_collecting         = false;
         // Solver driver: reset per-search state (persists learned params).
         if (m_fparams.m_auto_tune) {
             m_driver.init_search(*this);
         }
-        // Landscape guidance: allocate only structures consumed by active guidance.
-        // var_profiles: needed by on_decision_fanout (fanout boost).
-        // clause_profiles: needed by on_clause_propagation (polarity safety).
-        // Conflict graph, clause_ptr_map, QI patterns, clause occurrences,
-        // binary ratio — all purely observational, skipped for performance.
-        if (m_fparams.m_auto_tune) {
-            unsigned nv = get_num_bool_vars();
-            unsigned nc = m_aux_clauses.size();
-            if (nv > 0)
-                m_landscape.ensure_var_profiles(nv);
-            if (nc > 0)
-                m_landscape.ensure_clause_profiles(nc);
-        }
+        // Landscape arrays (var_profiles, clause_profiles) are allocated lazily
+        // when m_landscape_collecting transitions to true (after 5000 conflicts).
+        // This eliminates 60MB of cold memory allocation for fast queries.
         m_next_progress_sample         = 0;
         m_internal_completed                = l_undef;
         if (m.has_type_vars() && !m_theories.get_plugin(poly_family_id))
@@ -4357,10 +4349,13 @@ namespace smt {
         // E3: curvature-informed restart gate — override agility when auto-tuning.
         // Suppress restart when solver is converging (high velocity, low variance).
         // Force restart when solver is diverging (low velocity or high variance).
+        // Warmup gate: don't override restart logic until 1000 conflicts, because
+        // belief_variance and cv_trend need calibration time.  Early override
+        // caused ModifiesGen-195 regression (suppressed restarts → premature unknown).
         bool do_restart;
         if (status == l_true || !m_fparams.m_restart_adaptive) {
             do_restart = true;
-        } else if (m_fparams.m_auto_tune) {
+        } else if (m_fparams.m_auto_tune && m_num_conflicts >= 1000) {
             double cv_trend = compute_conflict_velocity_trend();
             if (cv_trend > 0.7 && m_belief_variance < 0.02)
                 do_restart = false;  // converging: suppress restart
@@ -4378,8 +4373,9 @@ namespace smt {
             m_stats.m_num_restarts++;
             m_num_restarts++;
             m_restart_count++;
-            // Landscape dynamics at restart (gated by auto_tune).
-            if (m_fparams.m_auto_tune) {
+            // Landscape dynamics at restart — gated by m_landscape_collecting.
+            // Easy/medium queries (< 5000 conflicts) skip this entirely.
+            if (m_landscape_collecting) {
                 m_landscape.dynamics_on_restart(m_num_conflicts_since_restart);
                 // A4: Activity Gini — every 5th restart (O(N) scan).
                 if (m_num_restarts % 5 == 0)
@@ -4406,15 +4402,16 @@ namespace smt {
             }
 
             // B11: invoke meta-update orchestrator when auto-tuning is enabled.
+            // This stays gated on auto_tune (not landscape_collecting) because
+            // it feeds rule-based adjustments that don't need landscape data.
             if (m_fparams.m_auto_tune)
                 meta_update_on_restart();
             // E9: reset per-restart final-check counter after polarity score consumes it.
             m_final_checks_since_restart = 0;
 
             // Landscape guidance at restart: fanout tracking + impact-based branching.
-            // Region fingerprints, dynamics, and polarity history are skipped
-            // (observational only, not consumed by any active guidance).
-            if (m_fparams.m_auto_tune) {
+            // Gated by m_landscape_collecting to avoid touching cold memory on fast queries.
+            if (m_landscape_collecting) {
                 // Complete fanout measurement for the last decision before restart.
                 if (m_landscape.get_last_decision_var() != UINT32_MAX) {
                     unsigned trail_now = m_assigned_literals.size();
@@ -4525,6 +4522,19 @@ namespace smt {
                     m_driver.inc_conflicts();
                     if (m_qmanager)
                         m_driver.notify_qi_inserts(m_qmanager->get_qi_velocity_inserts());
+                    // Deferred landscape activation: after 5000 conflicts, if driver
+                    // is not frozen (i.e. query is hard enough to need adaptation),
+                    // start collecting landscape data.  All per-decision and per-conflict
+                    // landscape hooks are gated on this flag.
+                    if (!m_landscape_collecting && m_num_conflicts >= 5000 &&
+                        !m_driver.is_frozen()) {
+                        m_landscape_collecting = true;
+                        // Lazy allocation of landscape arrays now that we know we need them.
+                        unsigned nv = get_num_bool_vars();
+                        unsigned nc = m_aux_clauses.size();
+                        if (nv > 0) m_landscape.ensure_var_profiles(nv);
+                        if (nc > 0) m_landscape.ensure_clause_profiles(nc);
+                    }
                 }
 
                 SASSERT(m_scope_lvl >= m_base_lvl);
@@ -4772,20 +4782,23 @@ namespace smt {
                 .u("clauses", m_stats.m_num_mk_clause)
                 .u("restarts", m_num_restarts);
         }
-        // Landscape batch update every 250 conflicts (gated by auto_tune or adaptive log).
+        // Landscape batch update every 250 conflicts — gated by m_landscape_collecting.
+        // The ALOG dump also requires landscape_collecting (no point dumping empty data).
         if (m_num_conflicts > 0 && m_num_conflicts % 250 == 0 &&
-            (m_fparams.m_auto_tune || m_adaptive_log)) {
-            unsigned qi_ins = m_qmanager ? m_qmanager->get_qi_velocity_inserts() : 0;
-            unsigned fp_h = m_qmanager ? m_qmanager->get_fp_hit_total() : 0;
-            unsigned fp_m = m_qmanager ? m_qmanager->get_fp_miss_total() : 0;
-            double stress_gini = m_landscape.stress_concentration();
-            m_landscape.dynamics_update_rates(qi_ins, m_stats.m_num_decisions,
-                                              m_landscape.dynamics().theory_lemma_count,
-                                              stress_gini);
-            m_landscape.dynamics_update_fp_hit_rate(fp_h, fp_m);
-            float eg_growth = m_qmanager ? m_qmanager->get_egraph_growth_rate_ema() : 0.0f;
-            m_landscape.dynamics_update_qi_egraph_growth(eg_growth);
-            m_landscape.dynamics_update_agility(static_cast<float>(m_agility));
+            (m_landscape_collecting || m_adaptive_log)) {
+            if (m_landscape_collecting) {
+                unsigned qi_ins = m_qmanager ? m_qmanager->get_qi_velocity_inserts() : 0;
+                unsigned fp_h = m_qmanager ? m_qmanager->get_fp_hit_total() : 0;
+                unsigned fp_m = m_qmanager ? m_qmanager->get_fp_miss_total() : 0;
+                double stress_gini = m_landscape.stress_concentration();
+                m_landscape.dynamics_update_rates(qi_ins, m_stats.m_num_decisions,
+                                                  m_landscape.dynamics().theory_lemma_count,
+                                                  stress_gini);
+                m_landscape.dynamics_update_fp_hit_rate(fp_h, fp_m);
+                float eg_growth = m_qmanager ? m_qmanager->get_egraph_growth_rate_ema() : 0.0f;
+                m_landscape.dynamics_update_qi_egraph_growth(eg_growth);
+                m_landscape.dynamics_update_agility(static_cast<float>(m_agility));
+            }
             if (m_adaptive_log)
                 m_landscape.dump_to_alog(m_adaptive_log, m_num_conflicts, get_num_bool_vars());
         }
@@ -4848,8 +4861,8 @@ namespace smt {
             }
 
             // --- Efficiency signals (E1-E4) for landscape map ---
-            // Lightweight per-conflict measurements, gated by auto_tune.
-            if (m_fparams.m_auto_tune) {
+            // Gated by m_landscape_collecting: zero overhead on fast queries.
+            if (m_landscape_collecting) {
                 // E1: Wasted work — decisions undone on this conflict
                 m_landscape.dynamics_on_wasted_work(conflict_lvl, new_lvl);
 
@@ -4887,7 +4900,7 @@ namespace smt {
             attribute_qi_conflict(num_lits, lits);
 
             // Landscape guidance: periodic clause scan + polarity safety update.
-            if (m_fparams.m_auto_tune && m_num_conflicts % 1000 == 0) {
+            if (m_landscape_collecting && m_num_conflicts % 1000 == 0) {
                 unsigned nc = m_aux_clauses.size();
                 for (unsigned ci = 0; ci < nc; ++ci) {
                     clause* cls = m_aux_clauses[ci];
@@ -4910,7 +4923,7 @@ namespace smt {
                 m_landscape.compute_polarity_safety();
             }
 
-            if (m_fparams.m_auto_tune) {
+            if (m_landscape_collecting) {
                 // Bump theory importance for theory atoms in theory-originated conflicts.
                 // Must be done before pop_scope_core since m_bdata is needed.
                 if (m_conflict.get_kind() == b_justification::JUSTIFICATION)
@@ -5227,13 +5240,15 @@ namespace smt {
                     m_qmanager->record_binding_success(h);
                 });
                 // Tier 1c: Update QI pattern success map.
-                // Each recent binding hash represents a pattern that
-                // participated in a useful conflict.
-                unsigned qid = seen_q[i]->get_id();
-                m_landscape.ensure_qi_patterns(qid + 1);
-                stat->for_each_recent_binding_hash([this, qid](uint64_t h) {
-                    m_landscape.update_qi_pattern(qid, static_cast<uint32_t>(h), /*useful=*/true);
-                });
+                // Gated by landscape_collecting to avoid cold memory allocation
+                // on fast queries where this data is never consumed.
+                if (m_landscape_collecting) {
+                    unsigned qid = seen_q[i]->get_id();
+                    m_landscape.ensure_qi_patterns(qid + 1);
+                    stat->for_each_recent_binding_hash([this, qid](uint64_t h) {
+                        m_landscape.update_qi_pattern(qid, static_cast<uint32_t>(h), /*useful=*/true);
+                    });
+                }
             }
         }
         // E5.3: Periodic decay of failure filter counters.

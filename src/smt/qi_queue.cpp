@@ -772,10 +772,13 @@ namespace smt {
             stat->record_binding_hash(bh);
             // Tier 1c: Record binding pattern in the landscape map (useful=false;
             // attribute_qi_conflict upgrades to useful=true on conflict).
-            unsigned qid = q->get_id();
-            landscape_map & lm = m_context.get_landscape();
-            lm.ensure_qi_patterns(qid + 1);
-            lm.update_qi_pattern(qid, static_cast<uint32_t>(bh), /*useful=*/false);
+            // Gated by landscape_collecting to avoid allocation on fast queries.
+            if (m_context.is_landscape_collecting()) {
+                unsigned qid = q->get_id();
+                landscape_map & lm = m_context.get_landscape();
+                lm.ensure_qi_patterns(qid + 1);
+                lm.update_qi_pattern(qid, static_cast<uint32_t>(bh), /*useful=*/false);
+            }
         }
         if (stat->get_num_instances() % m_params.m_qi_profile_freq == 0) {
             m_qm.display_stats(verbose_stream(), q);

@@ -86,6 +86,9 @@ public:
                m_conflicts_since_update >= CONFLICT_INTERVAL;
     }
 
+    // Whether the driver is frozen (productive query, no perturbation).
+    bool is_frozen() const { return m_frozen; }
+
     // QI flood awareness (blind spot #1): true when substantial QI
     // activity has occurred since the last update.
     bool qi_flood_detected() const {
