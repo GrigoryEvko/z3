@@ -326,6 +326,7 @@ namespace sat {
         FILE*                   m_adaptive_log = nullptr; // JSONL trace (smt.adaptive_log)
 
         smt::landscape_map      m_landscape;             // Spatial awareness (Tier 0/1/2)
+        bool                    m_landscape_active = false; // true when adaptive log is active (gates all landscape hooks)
 
         void del_clauses(clause_vector& clauses);
 

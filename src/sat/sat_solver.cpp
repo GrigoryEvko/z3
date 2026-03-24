@@ -1014,7 +1014,7 @@ namespace sat {
         m_justification[v]         = j;
         // E3: Propagation-phase alignment — sample every 64th propagation.
         // Must read old m_phase[v] BEFORE the update below.
-        if (!j.is_none() && !m_is_probing && (m_trail.size() & 63) == 0) {
+        if (m_landscape_active && !j.is_none() && !m_is_probing && (m_trail.size() & 63) == 0) {
             bool aligned = (!l.sign()) == m_phase[v];
             m_landscape.dynamics_on_prop_alignment(aligned);
         }
@@ -2395,28 +2395,26 @@ namespace sat {
             next_lit.neg();
 
         TRACE(sat_decide, tout << scope_lvl() << ": next-case-split: " << next_lit << "\n";);
-        // Phase timing: decide
-        m_landscape.dynamics_phase_begin();
         assign_scoped(next_lit);
-        m_landscape.on_decision(next_lit.var(), is_pos, scope_lvl(), m_trail.size());
-        // Dynamics: propagation chain length + reversal detection
-        m_landscape.dynamics_on_decision(m_trail.size());
-        // A3: Phase flip detection — compare chosen polarity with phase cache.
-        m_landscape.dynamics_on_phase_flip(is_pos != m_phase[next]);
-        {
-            // Reversal: check if polarity flipped vs last decision on this var
-            bool_var bv = next_lit.var();
-            auto& lp = m_landscape.last_decided_polarity();
-            if (bv >= lp.size())
-                lp.resize(bv + 1, 0);
-            uint8_t prev = lp[bv];
-            uint8_t cur = next_lit.sign() ? 1 : 2; // 1=negative(false), 2=positive(true)
-            if (prev != 0 && prev != cur)
-                m_landscape.dynamics_on_reversal();
-            lp[bv] = cur;
-            m_landscape.dynamics().reversal_window++;
+        if (m_landscape_active) {
+            m_landscape.dynamics_phase_begin();
+            m_landscape.on_decision(next_lit.var(), is_pos, scope_lvl(), m_trail.size());
+            m_landscape.dynamics_on_decision(m_trail.size());
+            m_landscape.dynamics_on_phase_flip(is_pos != m_phase[next]);
+            {
+                bool_var bv = next_lit.var();
+                auto& lp = m_landscape.last_decided_polarity();
+                if (bv >= lp.size())
+                    lp.resize(bv + 1, 0);
+                uint8_t prev = lp[bv];
+                uint8_t cur = next_lit.sign() ? 1 : 2;
+                if (prev != 0 && prev != cur)
+                    m_landscape.dynamics_on_reversal();
+                lp[bv] = cur;
+                m_landscape.dynamics().reversal_window++;
+            }
+            m_landscape.dynamics_phase_end_decide();
         }
-        m_landscape.dynamics_phase_end_decide();
         return true;
     }
 
@@ -2428,22 +2426,21 @@ namespace sat {
 
     lbool solver::basic_search() {
         lbool is_sat = l_undef;
+        bool const la = m_landscape_active;  // cache flag for hot loop
         while (is_sat == l_undef && !should_cancel()) {
             if (inconsistent()) {
-                // Phase timing: conflict analysis
-                m_landscape.dynamics_phase_begin();
+                if (la) m_landscape.dynamics_phase_begin();
                 is_sat = resolve_conflict_core();
-                m_landscape.dynamics_phase_end_conflict();
+                if (la) m_landscape.dynamics_phase_end_conflict();
             }
             else if (should_propagate()) {
-                // Phase timing: BCP
-                m_landscape.dynamics_phase_begin();
+                if (la) m_landscape.dynamics_phase_begin();
                 unsigned trail_before = m_trail.size();
                 propagate(true);
-                m_landscape.dynamics_phase_end_bcp();
-                // Count BCP propagations for theory_prop_density denominator
-                unsigned bcp_props = m_trail.size() - trail_before;
-                m_landscape.dynamics().props_this_round += bcp_props;
+                if (la) {
+                    m_landscape.dynamics_phase_end_bcp();
+                    m_landscape.dynamics().props_this_round += m_trail.size() - trail_before;
+                }
             }
             else if (do_cleanup(false)) continue;
             else if (should_gc()) do_gc();
@@ -2451,10 +2448,9 @@ namespace sat {
             else if (should_restart()) { if (!m_restart_enabled) return l_undef; do_restart(!m_config.m_restart_fast); }
             else if (should_simplify()) do_simplify();
             else if (!decide()) {
-                // Phase timing: decide (final_check path = no decision was made)
-                m_landscape.dynamics_phase_begin();
+                if (la) m_landscape.dynamics_phase_begin();
                 is_sat = final_check();
-                m_landscape.dynamics_phase_end_decide();
+                if (la) m_landscape.dynamics_phase_end_decide();
             }
         }
         return is_sat;
@@ -2793,8 +2789,10 @@ namespace sat {
         }
 
         // Initialize landscape map for spatial awareness.
-        m_landscape.init_search();
-        {
+        // Only activate when adaptive log is active (otherwise pure overhead).
+        m_landscape_active = (m_adaptive_log != nullptr);
+        if (m_landscape_active) {
+            m_landscape.init_search();
             unsigned nv = num_vars();
             unsigned nc = num_clauses();
             if (nv > 0) {
@@ -2804,8 +2802,6 @@ namespace sat {
             if (nc > 0)
                 m_landscape.ensure_clause_profiles(nc);
             // Build clause pointer → index reverse map for on_clause_antecedent.
-            // Use m_clauses.size() (input clauses only), not nc (which includes
-            // units, binaries, and learned clauses).
             {
                 unsigned n_input = m_clauses.size();
                 if (n_input > 0) {
@@ -3475,26 +3471,23 @@ namespace sat {
             .d("slow_glue", static_cast<double>(m_slow_glue_avg));
 
         // Landscape: compute phase hash and health for region tracking.
-        {
+        // Only run when landscape is active (adaptive log present).
+        if (m_landscape_active) {
             unsigned nv = num_vars();
             uint64_t phase_hash = 0;
-            // Sample every 64th variable to keep cost bounded.
             for (unsigned v = 0; v < nv; v += 64) {
                 uint64_t bit = m_phase[v] ? 1ULL : 0ULL;
                 phase_hash ^= fmix64(static_cast<uint64_t>(v) | (bit << 32));
             }
-            // Health = conflicts_since_restart / trail_size (higher = more productive).
             float health = 0.0f;
             if (m_trail.size() > 0) {
                 health = static_cast<float>(m_conflicts_since_restart) /
                          static_cast<float>(m_trail.size());
             }
             m_landscape.on_restart(phase_hash, health);
-            // Update polarity history for sampled variables.
             for (unsigned v = 0; v < nv; v += 64) {
                 m_landscape.update_polarity_history(v, m_phase[v]);
             }
-            // Complete fanout for the last decision before restart.
             if (m_landscape.get_last_decision_var() != UINT32_MAX) {
                 unsigned trail_now = m_trail.size();
                 unsigned trail_prev = m_landscape.get_last_trail_pos();
@@ -3504,21 +3497,19 @@ namespace sat {
                 }
                 m_landscape.set_last_decision_var(UINT32_MAX);
             }
-            // Dynamics: restart interval (datapoint 15) + theory prop density (18)
             m_landscape.dynamics_on_restart(m_conflicts_since_restart);
-
-            // A4: Activity Gini — compute from VSIDS activity array.
-            m_landscape.dynamics_compute_activity_gini(m_activity.data(), num_vars());
-
-            // C1: Trail stability — fraction of vars that maintained assignment polarity.
+            // A4: Activity Gini — only every 5th restart (O(N) scan is expensive).
+            if (m_restarts % 5 == 0)
+                m_landscape.dynamics_compute_activity_gini(m_activity.data(), num_vars());
+            // C1: Trail stability
             {
-                unsigned nv = num_vars();
-                unsigned step = (nv > 4096) ? (nv / 4096) : 1;
+                unsigned nv2 = num_vars();
+                unsigned step = (nv2 > 4096) ? (nv2 / 4096) : 1;
                 unsigned same = 0, total = 0;
                 auto& lp = m_landscape.last_decided_polarity();
-                for (unsigned v = 0; v < nv; v += step) {
+                for (unsigned v = 0; v < nv2; v += step) {
                     if (v >= lp.size()) break;
-                    if (lp[v] == 0) continue;  // never decided
+                    if (lp[v] == 0) continue;
                     bool prev_pol = (lp[v] == 2);
                     if (prev_pol == m_phase[v]) same++;
                     total++;
@@ -3723,25 +3714,18 @@ namespace sat {
                 .d("fast_glue", static_cast<double>(m_fast_glue_avg))
                 .d("slow_glue", static_cast<double>(m_slow_glue_avg));
         }
-        // Landscape: dump every 250 conflicts.
-        if (m_conflicts_since_init > 0 && m_conflicts_since_init % 250 == 0) {
-            // Causal signal batch update at LANDSCAPE dump cadence.
-            // SAT solver: QI signals (A1, B1, C2-theory, C3) are always 0.
+        // Landscape: dump every 500 conflicts (only when active).
+        if (m_landscape_active && m_conflicts_since_init > 0 && m_conflicts_since_init % 500 == 0) {
             double stress_gini = m_landscape.stress_concentration();
             m_landscape.dynamics_update_rates(
-                0,                           // qi_inserts (no QI in SAT solver)
-                m_stats.m_decision,           // decisions
-                m_landscape.dynamics().theory_lemma_count,  // theory lemmas
-                stress_gini);
-            // C4: SAT solver has no agility metric; leave at 0.
-
+                0, m_stats.m_decision,
+                m_landscape.dynamics().theory_lemma_count, stress_gini);
             if (m_adaptive_log)
                 m_landscape.dump_to_alog(m_adaptive_log, m_conflicts_since_init, num_vars());
         }
-        // Landscape: periodic stress decay every 1000 conflicts.
-        if (m_conflicts_since_init > 0 && m_conflicts_since_init % 1000 == 0) {
+        // Landscape: periodic stress decay + clause scan every 5000 conflicts.
+        if (m_landscape_active && m_conflicts_since_init > 0 && m_conflicts_since_init % 5000 == 0) {
             m_landscape.decay_stress();
-            // Periodic clause scan for saving literals.
             unsigned nc = m_clauses.size();
             for (unsigned ci = 0; ci < nc; ++ci) {
                 clause* cls = m_clauses[ci];
@@ -4062,8 +4046,8 @@ namespace sat {
         m_conflict_clause_size    = m_lemma.size();
         m_conflict_decision_level = m_conflict_lvl;
 
-        // --- Landscape map: record conflict data ---
-        {
+        // --- Landscape map: record conflict data (only when active) ---
+        if (m_landscape_active) {
             unsigned num_lits = m_lemma.size();
             unsigned var_buf[8];
             unsigned var_count = 0;
@@ -4073,15 +4057,10 @@ namespace sat {
                     var_buf[var_count++] = m_lemma[i].var();
             }
             m_landscape.on_learned_clause(var_count, var_buf);
-
-            // Tier 1b: mark variables as conflict participants.
             for (unsigned i = 0; i < num_lits; ++i) {
-                bool was_dec = (i == 0); // FUIP literal approximates the decision
+                bool was_dec = (i == 0);
                 m_landscape.on_var_in_conflict(m_lemma[i].var(), was_dec);
             }
-
-            // Tier 1a: bump antecedent count for reason clauses of learned-clause
-            // literals. Records which input clauses contribute to conflict derivation.
             for (unsigned i = 0; i < num_lits; ++i) {
                 bool_var v = m_lemma[i].var();
                 justification js = m_justification[v];
@@ -4093,35 +4072,20 @@ namespace sat {
                         m_landscape.on_clause_antecedent(cidx);
                 }
             }
-
-            // Tier 2b: full conflict metadata.
             uint64_t clause_hash = fmix64(static_cast<uint64_t>(num_lits));
             for (unsigned i = 0; i < num_lits && i < 8; ++i)
                 clause_hash ^= fmix64(static_cast<uint64_t>(m_lemma[i].index()));
-
             unsigned backjump = (m_conflict_lvl > backjump_lvl)
                               ? (m_conflict_lvl - backjump_lvl) : 0;
             m_landscape.on_conflict_full(
                 clause_hash, var_buf, var_count, glue,
-                backjump, m_trail.size(),
-                0 /* no theory in pure SAT */, num_lits);
-
-            // Dynamics: conflict-time datapoints (8-11, 14, 16-17, 20)
-            // In the pure SAT path, theory_conflict is always false.
-            // When m_ext is present (euf_solver), check if the conflict
-            // justification was an extension justification.
+                backjump, m_trail.size(), 0, num_lits);
             bool th_conflict = m_conflict.is_ext_justification();
             m_landscape.dynamics_on_conflict(
                 m_conflict_lvl, m_trail.size(),
                 num_vars(), num_lits,
                 glue, m_conflict_lvl, backjump_lvl, th_conflict);
-
-            // Efficiency signals (E1, E2, E4)
-            // E1: Wasted work — decisions undone per conflict
             m_landscape.dynamics_on_wasted_work(m_conflict_lvl, backjump_lvl);
-
-            // E2: Learned clause velocity — fraction of antecedent clauses that are learned.
-            // Scan reason clauses of learned-clause literals (already iterated above).
             for (unsigned i = 1; i < num_lits; ++i) {
                 bool_var v = m_lemma[i].var();
                 justification js = m_justification[v];
@@ -4130,8 +4094,6 @@ namespace sat {
                     m_landscape.dynamics_on_antecedent_clause(c.is_learned());
                 }
             }
-
-            // E4: Conflict clause novelty — 64-bit Bloom signature comparison
             {
                 unsigned novelty_buf[64];
                 unsigned n = num_lits < 64 ? num_lits : 64;
