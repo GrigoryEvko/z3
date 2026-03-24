@@ -3942,23 +3942,12 @@ namespace smt {
         m_polarity.reset();
         m_avg_backjump_ratio           = 0.0;
         m_final_checks_since_restart   = 0;
-        // Restore settings if G4 retry cascade changed them
-        // (prevents permanent mutation across incremental check-sat calls).
-        // The retry flags are NOT reset: once a retry has been attempted for
-        // this solver instance, we don't retry again on subsequent check-sat
-        // calls. Multi-check-sat files share the same theory structure, so
-        // a retry that failed on one scope won't help on later scopes.
+        // Restore relevancy if G4 retry changed it (prevents permanent mutation across check-sat calls)
         if (m_relevancy_retried) {
             m_fparams.m_relevancy_lvl = m_saved_relevancy_lvl;
             m_relevancy_lvl = m_saved_relevancy_lvl;
         }
-        if (m_mbqi_retried) {
-            m_fparams.m_mbqi = m_saved_mbqi;
-        }
-        if (m_g4_retry_active) {
-            m.limit().pop();
-            m_g4_retry_active = false;
-        }
+        m_relevancy_retried            = false;
         m_fallback_cascade.reset();
         m_luby_idx                     = 1;
         m_lemma_gc_threshold           = m_fparams.m_lemma_gc_initial;
@@ -4276,7 +4265,6 @@ namespace smt {
         TRACE(search_lite, tout << "searching...\n";);
         lbool    status            = l_undef;
         unsigned curr_lvl          = m_scope_lvl;
-        m_search_rlimit_start      = m.limit().count();
 
         while (true) {
             SASSERT(!inconsistent());
@@ -4288,7 +4276,7 @@ namespace smt {
 
             if (!restart(status, curr_lvl)) {
                 break;
-            }
+            }            
         }
 
         TRACE(guessed_literals,
@@ -4302,24 +4290,11 @@ namespace smt {
     bool context::restart(lbool& status, unsigned curr_lvl) {
         SASSERT(status != l_true || !inconsistent());
 
-        // Pop G4 retry budget if one was active. If the retry was canceled
-        // by budget expiry (not a real user cancel), convert to QUANTIFIERS
-        // giveup so the solver continues to the next check-sat scope.
-        if (m_g4_retry_active) {
-            m.limit().pop();
-            m_g4_retry_active = false;
-            if (m_last_search_failure == CANCELED) {
-                m_last_search_failure = QUANTIFIERS;
-                status = l_undef;
-                return false;
-            }
-        }
-
         reset_model();
 
-        if (m_last_search_failure != OK)
+        if (m_last_search_failure != OK) 
             return false;
-        if (status == l_false)
+        if (status == l_false) 
             return false;
         if (status == l_true && !m_qmanager->has_quantifiers() && !has_lambda()) 
             return false;
@@ -4333,59 +4308,24 @@ namespace smt {
             switch (cmr) {
             case quantifier_manager::SAT:
                 return false;
-            case quantifier_manager::UNKNOWN: {
-                // G4 retry cascade for queries returning unknown (incomplete quantifiers).
-                //
-                // Step 1: disable relevancy → exposes all E-graph atoms to QI matching.
-                // Step 2: enable MBQI → model-based instance generation.
-                //
-                // Each retry gets a 15x rlimit budget based on the original search
-                // cost (before any retry work). This is generous enough to solve
-                // cases like OrdSet-35 (needs ~13x) while bounding multi-check-sat
-                // files that would otherwise waste the entire wall-clock timeout.
-                //
-                // Retry flags persist across scopes: once a strategy has been tried
-                // for this solver instance, we don't retry on subsequent check-sat
-                // calls. This prevents retry storms on multi-scope files.
-                //
-                // Save/restore in init_search() prevents permanent parameter mutation
-                // across incremental check-sat calls.
-                if (m_fparams.m_auto_tune) {
-                    // Step 1: relevancy retry
-                    if (relevancy_lvl() > 0 && !m_relevancy_retried) {
-                        // Capture original search cost before any G4 retry work.
-                        // 15x multiplier: generous enough for OrdSet-35 (needs ~13x),
-                        // tight enough to not waste time on futile retries.
-                        m_g4_base_cost = m.limit().count() - m_search_rlimit_start;
-                        uint64_t budget = std::min(m_g4_base_cost * 15, static_cast<uint64_t>(UINT32_MAX));
-                        m_relevancy_retried = true;
-                        m_saved_relevancy_lvl = m_fparams.m_relevancy_lvl;
-                        m_fparams.m_relevancy_lvl = 0;
-                        m_relevancy_lvl = 0;
-                        m_g4_retry_active = true;
-                        m.limit().push(static_cast<unsigned>(budget));
-                        IF_VERBOSE(2, verbose_stream() << "(smt.g4 step1: relevancy=0 retry, budget=" << budget << ")\n";);
-                        break;
-                    }
-                    // Step 2: MBQI retry (if not already enabled).
-                    // Reuse m_g4_base_cost from step1 so the budget doesn't inflate.
-                    if (!m_fparams.m_mbqi && !m_mbqi_retried) {
-                        uint64_t budget = std::min(m_g4_base_cost * 15, static_cast<uint64_t>(UINT32_MAX));
-                        m_mbqi_retried = true;
-                        m_saved_mbqi = m_fparams.m_mbqi;
-                        m_fparams.m_mbqi = true;
-                        m_g4_retry_active = true;
-                        m.limit().push(static_cast<unsigned>(budget));
-                        IF_VERBOSE(2, verbose_stream() << "(smt.g4 step2: MBQI retry, budget=" << budget << ")\n";);
-                        break;
-                    }
+            case quantifier_manager::UNKNOWN:
+                // G4: retry with relevancy=0 for short queries before giving up.
+                // Save original relevancy so it's restored for subsequent check-sat calls
+                // in incremental mode (push/pop). Without restore, permanent relevancy=0
+                // causes QI explosion on later queries (regression on OrdSet-57, ModifiesGen-185).
+                if (m_fparams.m_auto_tune && m_num_conflicts < 1000 && relevancy_lvl() > 0 && !m_relevancy_retried && m_scope_lvl == 0) {
+                    m_relevancy_retried = true;
+                    m_saved_relevancy_lvl = m_fparams.m_relevancy_lvl;
+                    m_fparams.m_relevancy_lvl = 0;
+                    m_relevancy_lvl = 0;
+                    IF_VERBOSE(2, verbose_stream() << "(smt.g4 relevancy retry: temporarily disabling relevancy)\n";);
+                    break;
                 }
                 IF_VERBOSE(2, verbose_stream() << "(smt.giveup quantifiers)\n";);
                 // giving up
                 m_last_search_failure = QUANTIFIERS;
                 status = l_undef;
                 return false;
-            }
             default:
                 break;
             }
@@ -4678,8 +4618,8 @@ namespace smt {
             if (m_last_search_failure != OK)
                 return true;
 
-            if (get_cancel_flag())
-                return true;
+            if (get_cancel_flag()) 
+                return true;            
 
             if (m_progress_callback) {
                 m_progress_callback->fast_progress_sample();
