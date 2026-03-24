@@ -241,11 +241,21 @@ namespace smt {
         // Apply category-specific parameter tuning.
         // These settings are refinements on top of what setup_<logic>() already did.
         // We only override settings where we have high confidence.
+
+        // Relevancy-dependent case split strategies (CS_RELEVANCY, CS_RELEVANCY_ACTIVITY,
+        // CS_RELEVANCY_GOAL) require relevancy_lvl >= 2 to populate the case split queue.
+        // The case split queue is already created before apply_tuning runs, so if the
+        // user chose a relevancy-based strategy, we must not disable relevancy here.
+        bool relevancy_required =
+            (p.m_case_split_strategy == CS_RELEVANCY ||
+             p.m_case_split_strategy == CS_RELEVANCY_ACTIVITY ||
+             p.m_case_split_strategy == CS_RELEVANCY_GOAL);
+
         switch (cat) {
 
         case query_category::PURE_SAT:
             // No theories: disable all QI overhead, strip relevancy
-            p.m_relevancy_lvl         = 0;
+            if (!relevancy_required) p.m_relevancy_lvl = 0;
             p.m_ematching             = false;
             p.m_mbqi                  = false;
             p.m_qi_eager_threshold    = 1000.0; // effectively disable
@@ -253,7 +263,7 @@ namespace smt {
 
         case query_category::QF_BV:
             // Pure bitvectors: disable QI, low relevancy, enable ext gates
-            p.m_relevancy_lvl         = 0;
+            if (!relevancy_required) p.m_relevancy_lvl = 0;
             p.m_ematching             = false;
             p.m_mbqi                  = false;
             p.m_bv_cc                 = false;
@@ -263,7 +273,7 @@ namespace smt {
 
         case query_category::QF_LIA:
             // Linear integer arithmetic: theory-based phase selection
-            p.m_relevancy_lvl         = 0;
+            if (!relevancy_required) p.m_relevancy_lvl = 0;
             p.m_arith_reflect         = false;
             p.m_arith_propagate_eqs   = false;
             p.m_nnf_cnf               = false;
@@ -273,7 +283,7 @@ namespace smt {
 
         case query_category::QF_LRA:
             // Linear real arithmetic: similar to QF_LIA with theory phase
-            p.m_relevancy_lvl         = 0;
+            if (!relevancy_required) p.m_relevancy_lvl = 0;
             p.m_arith_reflect         = false;
             p.m_arith_propagate_eqs   = false;
             p.m_eliminate_term_ite    = true;
@@ -285,7 +295,7 @@ namespace smt {
 
         case query_category::QF_NLA:
             // Non-linear arithmetic: use old arith solver which handles NLA better
-            p.m_relevancy_lvl         = 0;
+            if (!relevancy_required) p.m_relevancy_lvl = 0;
             p.m_nnf_cnf               = false;
             p.m_ematching             = false;
             p.m_mbqi                  = false;
@@ -293,7 +303,7 @@ namespace smt {
 
         case query_category::QF_UF:
             // Pure UF: fast congruence closure
-            p.m_relevancy_lvl         = 0;
+            if (!relevancy_required) p.m_relevancy_lvl = 0;
             p.m_nnf_cnf               = false;
             p.m_ematching             = false;
             p.m_mbqi                  = false;
@@ -301,7 +311,7 @@ namespace smt {
 
         case query_category::QF_AUFLIA:
             // Quantifier-free arrays + UF + LIA
-            p.m_relevancy_lvl         = 0;
+            if (!relevancy_required) p.m_relevancy_lvl = 0;
             p.m_nnf_cnf               = false;
             p.m_ematching             = false;
             p.m_mbqi                  = false;
@@ -314,7 +324,7 @@ namespace smt {
             p.m_mbqi                  = true;
             // Use relevancy to prune but don't be too aggressive
             if (num_quantifiers < 20) {
-                p.m_relevancy_lvl     = 0;
+                if (!relevancy_required) p.m_relevancy_lvl = 0;
             }
             break;
 
