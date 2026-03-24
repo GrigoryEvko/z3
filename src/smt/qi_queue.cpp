@@ -481,6 +481,41 @@ namespace smt {
         // propagation/equality merging, not direct conflict participation.
         // Total conflicts capture the solver's overall health better.
         //
+        // G5: Adaptive eager threshold reduction for high-waste searches.
+        // Uses QI-ATTRIBUTED conflicts (instances appearing in FUIP antecedent
+        // chains) as the productivity signal, not total SAT conflicts.
+        // Total conflicts include noise from the SAT solver working on
+        // QI-generated clauses; QI-attributed conflicts measure whether QI
+        // is actually producing useful lemmas.
+        //
+        // Signal: inserts_per_qi_conflict = velocity_inserts / qi_conflicts_delta
+        // Heap-40:       340K / 6 = 56,667 (extreme waste)
+        // ModifiesGen-195: 562K / 69 = 8,145 (borderline useful)
+        // Healthy F*:    ~600 / ~40 = 15 (productive)
+        //
+        // Threshold: 10,000 inserts per QI conflict. Above this, QI is
+        // flooding the E-graph without contributing to proof progress.
+        // Warmup: 10K inserts AND 20+ total conflicts (search must be past
+        // initial phase).
+        if (m_params.m_auto_tune && !m_eager_threshold_reduced && m_qi_velocity_inserts > 10000) {
+            unsigned qi_conflicts_delta = m_stats.m_num_qi_conflicts - m_qi_velocity_conflicts_base;
+            unsigned total_conflicts = m_context.get_num_conflicts();
+            if (total_conflicts >= 20) {
+                double qi_waste = static_cast<double>(m_qi_velocity_inserts) / std::max(qi_conflicts_delta, 1u);
+                if (qi_waste > 10000.0) {
+                    double new_threshold = std::max(m_eager_cost_threshold * 0.5, 3.0);
+                    if (new_threshold < m_eager_cost_threshold) {
+                        m_eager_threshold_reduced = true;
+                        IF_VERBOSE(2, verbose_stream() << "(smt.g5 qi eager reduction: waste="
+                                   << qi_waste << " inserts=" << m_qi_velocity_inserts
+                                   << " qi_conflicts=" << qi_conflicts_delta
+                                   << " eager " << m_eager_cost_threshold << " -> " << new_threshold << ")\n";);
+                        m_eager_cost_threshold = new_threshold;
+                    }
+                }
+            }
+        }
+
         // The gate only fires for extreme ratios (true dead zones):
         //   BFS at 5000 inserts/conflict, bankruptcy at 20000.
         // Productive Boogie: ratio ~300. F*: ratio ~600-5000. Loops: 100K+.
@@ -921,6 +956,7 @@ namespace smt {
         m_qi_velocity_inserts = 0;
         m_qi_velocity_conflicts_base = 0;
         m_qi_bankrupt = false;
+        m_eager_threshold_reduced = false;
     }
 
     void qi_queue::init_search_eh() {
@@ -931,6 +967,7 @@ namespace smt {
         m_qi_velocity_inserts = 0;
         m_qi_velocity_conflicts_base = m_stats.m_num_qi_conflicts;
         m_qi_bankrupt = false;
+        m_eager_threshold_reduced = false;
         // NOTE: do NOT reset m_final_check_no_conflict_streak here.
         // For incremental queries (push/pop with many check-sat calls),
         // the streak must persist across check-sat calls so the

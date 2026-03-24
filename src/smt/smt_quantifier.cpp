@@ -845,6 +845,10 @@ namespace smt {
         return m_imp->m_qi_queue.get_qi_velocity_inserts();
     }
 
+    unsigned quantifier_manager::get_qi_conflicts_delta() const {
+        return m_imp->m_qi_queue.get_qi_conflicts_delta();
+    }
+
     float quantifier_manager::get_egraph_growth_rate_ema() const {
         return m_imp->m_qi_queue.get_egraph_growth_rate_ema();
     }

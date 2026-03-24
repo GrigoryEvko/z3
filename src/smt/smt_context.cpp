@@ -3948,6 +3948,13 @@ namespace smt {
             m_relevancy_lvl = m_saved_relevancy_lvl;
         }
         m_relevancy_retried            = false;
+        // Restore eager threshold if G5 reduced it (prevents permanent mutation across check-sat calls)
+        if (m_eager_reduced) {
+            m_fparams.m_qi_eager_threshold = m_saved_eager_threshold;
+            if (m_qmanager->has_quantifiers())
+                m_qmanager->set_eager_threshold(m_saved_eager_threshold);
+        }
+        m_eager_reduced                = false;
         m_fallback_cascade.reset();
         m_luby_idx                     = 1;
         m_lemma_gc_threshold           = m_fparams.m_lemma_gc_initial;
@@ -4309,6 +4316,31 @@ namespace smt {
             case quantifier_manager::SAT:
                 return false;
             case quantifier_manager::UNKNOWN:
+                // G5 (check-model path): adaptive QI eager threshold reduction.
+                // Uses inserts-per-QI-conflict as the waste signal: when QI
+                // floods the E-graph without causing QI-attributed conflicts,
+                // halve the eager threshold and retry. Floor at 3.0.
+                if (m_fparams.m_auto_tune && !m_eager_reduced && m_qmanager->has_quantifiers()) {
+                    unsigned qi_inserts   = m_qmanager->get_qi_velocity_inserts();
+                    unsigned qi_conflicts = m_qmanager->get_qi_conflicts_delta();
+                    if (qi_inserts > 5000) {
+                        double qi_waste = static_cast<double>(qi_inserts) / std::max(qi_conflicts, 1u);
+                        if (qi_waste > 10000.0) {
+                            double old_eager = m_fparams.m_qi_eager_threshold;
+                            double new_eager = std::max(old_eager * 0.5, 3.0);
+                            if (new_eager < old_eager) {
+                                m_eager_reduced = true;
+                                m_saved_eager_threshold = old_eager;
+                                m_fparams.m_qi_eager_threshold = new_eager;
+                                m_qmanager->set_eager_threshold(new_eager);
+                                IF_VERBOSE(2, verbose_stream() << "(smt.g5 qi waste: " << qi_waste
+                                           << " inserts=" << qi_inserts << " qi_conflicts=" << qi_conflicts
+                                           << " eager " << old_eager << " -> " << new_eager << ")\n";);
+                                break;
+                            }
+                        }
+                    }
+                }
                 // G4: retry with relevancy=0 for short queries before giving up.
                 // Save original relevancy so it's restored for subsequent check-sat calls
                 // in incremental mode (push/pop). Without restore, permanent relevancy=0
