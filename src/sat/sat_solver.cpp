@@ -5890,6 +5890,8 @@ namespace sat {
 
         for (bool_var w = m_justification.size(); w-- > v;) {
             m_case_split_queue.del_var_eh(w);
+            if (m_config.m_dual_mode && w < m_vmtf_links.size())
+                vmtf_dequeue(w);
             m_probing.reset_cache(literal(w, true));
             m_probing.reset_cache(literal(w, false));
         }
@@ -5923,6 +5925,14 @@ namespace sat {
             m_frozen_refcount.shrink(v);
         if (m_assumption_mark.size() > 2*v)
             m_assumption_mark.shrink(2*v);
+        if (m_config.m_dual_mode) {
+            if (m_vmtf_links.size() > v)
+                m_vmtf_links.shrink(v);
+            if (m_vmtf_bumped.size() > v)
+                m_vmtf_bumped.shrink(v);
+            if (m_vmtf_search != null_bool_var && m_vmtf_search >= static_cast<bool_var>(v))
+                m_vmtf_search = m_vmtf_queue_tail;
+        }
         m_simplifier.reset_todos();
     }
 
@@ -5938,8 +5948,14 @@ namespace sat {
         scope & s        = m_scopes[new_lvl];
         m_inconsistent   = false; // TBD: use model seems to make this redundant: s.m_inconsistent;
         unassign_vars(s.m_trail_lim, new_lvl);
-        for (bool_var v : m_vars_to_free)
+        for (bool_var v : m_vars_to_free) {
             m_case_split_queue.del_var_eh(v);
+            if (m_config.m_dual_mode && v < m_vmtf_links.size()) {
+                vmtf_dequeue(v);
+                if (m_vmtf_search == v)
+                    m_vmtf_search = m_vmtf_queue_tail;
+            }
+        }
         m_scope_lvl -= num_scopes;
         reinit_clauses(s.m_clauses_to_reinit_lim);
         m_scopes.shrink(new_lvl);

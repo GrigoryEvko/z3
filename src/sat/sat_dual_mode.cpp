@@ -42,6 +42,9 @@ namespace sat {
             m_vmtf_links[lk.next].prev = lk.prev;
         else
             m_vmtf_queue_tail = lk.prev;
+        // Reset own links so the node is cleanly unlinked.
+        lk.prev = null_bool_var;
+        lk.next = null_bool_var;
     }
 
     void solver::vmtf_enqueue(bool_var v) {
@@ -61,6 +64,14 @@ namespace sat {
             m_vmtf_links.push_back(vmtf_link());
             m_vmtf_bumped.push_back(0);
         }
+        // If v is a recycled variable still linked in the VMTF list,
+        // dequeue it first to avoid creating a cycle.
+        // vmtf_dequeue resets prev/next to null_bool_var.
+        vmtf_link& lk = m_vmtf_links[v];
+        if (lk.prev != null_bool_var || lk.next != null_bool_var ||
+            m_vmtf_queue_head == v || m_vmtf_queue_tail == v) {
+            vmtf_dequeue(v);
+        }
         m_vmtf_bumped[v] = ++m_vmtf_counter;
         vmtf_enqueue(v);
         vmtf_update_search(v);
@@ -78,7 +89,7 @@ namespace sat {
         if (v == null_bool_var || v >= m_vmtf_links.size())
             return;
         // Already at tail (most recently bumped)? Nothing to do.
-        if (m_vmtf_links[v].next == null_bool_var)
+        if (m_vmtf_queue_tail == v)
             return;
         vmtf_dequeue(v);
         m_vmtf_bumped[v] = ++m_vmtf_counter;
