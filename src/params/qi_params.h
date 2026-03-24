@@ -31,7 +31,7 @@ struct qi_params {
     std::string        m_qi_cost;
     std::string        m_qi_new_gen;
     double             m_qi_eager_threshold = 10.0;
-    double             m_qi_lazy_threshold = 20.0;
+    double             m_qi_lazy_threshold = 25.0;
     unsigned           m_qi_max_eager_multipatterns = 0;
     unsigned           m_qi_max_lazy_multipattern_matching = 2;
     bool               m_qi_profile = false;
