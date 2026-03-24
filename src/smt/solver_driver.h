@@ -141,9 +141,9 @@ private:
 
     // Safety freeze: if H > FREEZE_THRESH for FREEZE_STREAK consecutive
     // measurements, freeze parameters to protect productive queries.
-    static constexpr unsigned FREEZE_STREAK  = 3;
-    static constexpr double   FREEZE_THRESH  = 0.5;
-    static constexpr double   UNFREEZE_THRESH = 0.3;
+    static constexpr unsigned FREEZE_STREAK  = 2;
+    static constexpr double   FREEZE_THRESH  = 0.15;
+    static constexpr double   UNFREEZE_THRESH = 0.05;
 
     static constexpr unsigned UNFREEZE_CHECK  = 50;  // re-check every 50 updates
 

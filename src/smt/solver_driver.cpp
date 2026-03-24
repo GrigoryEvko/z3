@@ -150,13 +150,23 @@ void solver_driver::init_search(context& ctx) {
     m_base_mbqi            = ctx.get_fparams().m_mbqi;
     m_base_relevancy_lvl   = ctx.get_fparams().m_relevancy_lvl;
 
-    // Check if parameters are non-default (from previous check-sat).
+    // On first search, initialize parameters from solver's ACTUAL baselines
+    // (not the driver's hardcoded defaults which may differ).
+    // On subsequent searches (incremental), preserve learned parameters.
     bool has_non_default = false;
     for (unsigned j = 0; j < N_PARAMS; j++) {
         if (get_param(j) != s_meta[j].default_val) {
             has_non_default = true;
             break;
         }
+    }
+    if (!has_non_default) {
+        // First search: sync driver params with solver's actual defaults
+        m_params.qi_eager_threshold = m_base_qi_eager;
+        m_params.qi_surprisal_scale = 1.0;
+        m_params.restart_margin_scale = 1.0;
+        m_params.activity_decay_scale = 1.0;
+        m_params.gc_aggressiveness = 1.0;
     }
 
     // Persist parameters across check-sat calls (the learned config).
@@ -498,12 +508,10 @@ void solver_driver::update(context& ctx) {
         m_consecutive_good++;
 
         // During warmup: abort immediately on ANY good measurement.
-        // Productive queries should never be perturbed by portfolio configs.
+        // Productive queries should never have params touched at all.
+        // DON'T apply_params — the solver is already working fine.
         if (!m_warmup_done) {
             m_frozen = true;
-            for (unsigned j = 0; j < N_PARAMS; j++)
-                set_param(j, s_meta[j].default_val);
-            apply_params(ctx);
             m_warmup_done = true;
             m_warmup_cycle = WARMUP_CYCLES;
         }

@@ -309,15 +309,15 @@ namespace smt {
             }
         }
         // A3: Phase flip detection for SPSA causal signal.
-        if (decision && d.m_phase_available && m_fparams.m_auto_tune) {
+        // Lazy activation: only after 2000 conflicts to avoid overhead on easy queries.
+        if (decision && d.m_phase_available && m_fparams.m_auto_tune && m_num_conflicts > 2000) {
             bool actual_polarity = !l.sign();
             m_landscape.dynamics_on_phase_flip(actual_polarity != d.m_phase);
         }
 
         // E3: Propagation-phase alignment — sample every 64th propagation.
-        // Check if BCP-forced polarity matches the solver's phase cache.
         if (!decision && d.m_phase_available && m_fparams.m_auto_tune &&
-            (m_stats.m_num_propagations & 63) == 0) {
+            m_num_conflicts > 2000 && (m_stats.m_num_propagations & 63) == 0) {
             bool aligned = (!l.sign()) == d.m_phase;
             m_landscape.dynamics_on_prop_alignment(aligned);
         }
@@ -338,10 +338,9 @@ namespace smt {
         if (m.has_trace_stream())
             trace_assign(l, j, decision);
 
-        if (decision && m_fparams.m_auto_tune) {
-            // Lightweight fanout tracking: measure propagation fanout of the
-            // PREVIOUS decision (trail growth since that decision was made).
-            // Only update on non-trivial fanout (>0) to avoid cache misses.
+        if (decision && m_fparams.m_auto_tune && m_num_conflicts > 2000) {
+            // Lazy-activated fanout tracking: only after 2000 conflicts.
+            // Easy queries (< 2000 conflicts) get ZERO landscape overhead.
             unsigned trail_size = m_assigned_literals.size();
             unsigned last_var = m_landscape.get_last_decision_var();
             if (last_var != UINT32_MAX) {
@@ -1803,7 +1802,7 @@ namespace smt {
 
         // Landscape-guided polarity: use saving-literal data when signal is strong.
         // Only fires after 1000+ conflicts (periodic scan must have run at least once).
-        if (m_fparams.m_auto_tune && m_num_conflicts > 1000) {
+        if (m_fparams.m_auto_tune && m_num_conflicts > 2000) {
             int safety = m_landscape.polarity_safety(var);
             if (safety > 0) return true;   // true protects more clauses
             if (safety < 0) return false;  // false protects more clauses
