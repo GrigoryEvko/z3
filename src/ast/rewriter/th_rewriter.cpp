@@ -67,7 +67,10 @@ struct th_rewriter_cfg : public default_rewriter_cfg {
     // Persistent rewrite cache: survives reset()/set_substitution() calls.
     // Only populated/consulted when m_subst is null or empty, ensuring
     // entries are substitution-independent pure theory rewrites.
+    // Invalidated when elim_and changes, since cached AND nodes would be
+    // stale after DeMorgan transformation is toggled.
     act_cache *         m_persistent_cache = nullptr;
+    bool                m_persistent_cache_elim_and = false;
     unsigned long long  m_max_memory; // in bytes
     bool                m_new_subst = false;
     expr_fast_mark1     m_visited;
@@ -112,6 +115,15 @@ struct th_rewriter_cfg : public default_rewriter_cfg {
         m_seq_rw.updt_params(p);
         m_rec_rw.updt_params(p);
         updt_local_params(p);
+        // Invalidate persistent cache when elim_and changes, since cached
+        // results computed with the old setting would be stale (AND nodes
+        // surviving when they should have been DeMorgan-transformed, or
+        // vice versa).
+        bool new_elim_and = m_b_rw.elim_and();
+        if (new_elim_and != m_persistent_cache_elim_and && m_persistent_cache) {
+            m_persistent_cache->reset();
+            m_persistent_cache_elim_and = new_elim_and;
+        }
     }
 
     bool flat_assoc(func_decl * f) const {
@@ -902,6 +914,7 @@ struct th_rewriter_cfg : public default_rewriter_cfg {
         m_used_dependencies(m) {
         updt_local_params(p);
         m_persistent_cache = alloc(act_cache, m);
+        m_persistent_cache_elim_and = m_b_rw.elim_and();
     }
 
     ~th_rewriter_cfg() {
