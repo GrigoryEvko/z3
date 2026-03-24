@@ -113,9 +113,13 @@ private:
     // True QI floods (3.6M inserts) still get ~72 triggers.
     static constexpr unsigned QI_INSERT_INTERVAL = 50000;
 
-    // Warmup: don't activate SPSA before 25000 decisions (5 portfolio cycles).
-    static constexpr unsigned WARMUP_DECISIONS = 25000;
-    static constexpr unsigned WARMUP_CYCLES    = 5;
+    // Warmup: observe health before activating SPSA.
+    // Reduced from 25000/5 to 5000/1: portfolio probing is disabled anyway
+    // (irreversible state from non-default configs), and most UFLIA queries
+    // have <10K total decisions — the old 25K gate meant the driver never
+    // even exited warmup on typical F*/Pulse queries.
+    static constexpr unsigned WARMUP_DECISIONS = 5000;
+    static constexpr unsigned WARMUP_CYCLES    = 1;
 
     // SPSA hyperparameters.
     static constexpr double LR         = 0.01;    // learning rate

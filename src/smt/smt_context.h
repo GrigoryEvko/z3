@@ -741,6 +741,10 @@ namespace smt {
         solver_driver & get_driver() { return m_driver; }
         solver_driver const & get_driver() const { return m_driver; }
 
+        // Always-on driver signals (not gated by landscape collection)
+        double get_driver_avg_backjump() const { return m_driver_avg_backjump; }
+        double get_driver_avg_glue() const { return m_driver_avg_glue; }
+
         // Blind spot #1: QI insert count notification for the driver.
         // Instead of triggering the driver directly from QI inserts (which
         // changes parameters mid-batch and breaks delicate queries), the QI
@@ -2417,6 +2421,13 @@ namespace smt {
         // Gates ALL per-decision/per-conflict landscape hooks to eliminate
         // ~17% CPU overhead on fast/medium queries that never need it.
         bool                        m_landscape_collecting = false;
+
+        // Always-on driver signals: lightweight EMAs updated on EVERY conflict,
+        // NOT gated by m_landscape_collecting.  These give the driver meaningful
+        // health information even on short UFLIA queries (<1000 conflicts) where
+        // the full landscape is never activated.
+        double                      m_driver_avg_backjump { 0.0 };  //!< EMA of (scope_lvl - new_lvl) absolute
+        double                      m_driver_avg_glue     { 0.0 };  //!< EMA of learned clause size (proxy for LBD)
 
         // Solver driver: adaptive controller (reads landscape, tunes parameters)
         solver_driver               m_driver;

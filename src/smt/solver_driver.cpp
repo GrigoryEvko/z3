@@ -105,7 +105,10 @@ void solver_driver::reset_to_defaults() {
     memset(m_warmup_H, 0, sizeof(m_warmup_H));
 
     // Build warmup configurations (design doc Section 9.1).
-    // Cycle 0: defaults (already set above, snapshot at init_search).
+    // With WARMUP_CYCLES=1, we only observe defaults for one cycle.
+    // Portfolio probing (non-default configs) is disabled: applying them
+    // creates irreversible state (QI instances, E-graph merges) that
+    // persists after revert, causing regressions on incremental F* queries.
     for (unsigned i = 0; i < WARMUP_CYCLES; i++) {
         m_warmup_configs[i].qi_eager_threshold    = s_meta[0].default_val;
         m_warmup_configs[i].qi_surprisal_scale    = s_meta[1].default_val;
@@ -116,22 +119,6 @@ void solver_driver::reset_to_defaults() {
         m_warmup_configs[i].mbqi_probability      = s_meta[6].default_val;
         m_warmup_configs[i].gc_aggressiveness     = s_meta[7].default_val;
     }
-    // Cycle 1: SAT-seeking.
-    m_warmup_configs[1].qi_eager_threshold    = 50.0;
-    m_warmup_configs[1].mbqi_probability      = 0.4;
-    m_warmup_configs[1].relevancy_probability = 0.3;
-    // Cycle 2: UNSAT-seeking (conservative: don't lower qi_eager below default
-    // to avoid flooding the solver with QI instances that persist after warmup).
-    m_warmup_configs[2].mbqi_probability      = 0.0;
-    m_warmup_configs[2].relevancy_probability = 1.0;
-    m_warmup_configs[2].restart_margin_scale  = 0.5;
-    // Cycle 3: QI-throttled.
-    m_warmup_configs[3].qi_eager_threshold    = 80.0;
-    m_warmup_configs[3].qi_surprisal_scale    = 2.5;
-    m_warmup_configs[3].mbqi_probability      = 0.8;
-    // Cycle 4: Wide search.
-    m_warmup_configs[4].phase_noise           = 0.15;
-    m_warmup_configs[4].restart_margin_scale  = 0.5;
 
     // Scope stack.
     m_scopes.reset();
@@ -243,14 +230,19 @@ void solver_driver::pop() {
 double solver_driver::compute_health(context& ctx) {
     auto const& d = ctx.get_landscape().dynamics();
     unsigned decisions = std::max(m_total_decisions, 1u);
+    bool landscape_active = ctx.is_landscape_collecting();
 
     // s1: conflict_rate -- conflicts per decision, normalized so 0.1 = max health.
     double raw_rate = static_cast<double>(m_total_conflicts) / static_cast<double>(decisions);
     double s1 = std::min(raw_rate / 0.1, 1.0);
 
     // s2: conflict_quality -- relative glue trend (improving = higher health).
-    // Maintain fast/slow glue EMAs from the landscape's avg_glue.
-    double glue = static_cast<double>(d.avg_glue);
+    // Use the always-on driver_avg_glue signal (clause size proxy) which is
+    // maintained on EVERY conflict regardless of landscape collection state.
+    // Falls back to landscape avg_glue when available for higher fidelity.
+    double glue = landscape_active ? static_cast<double>(d.avg_glue) : 0.0;
+    if (glue <= 0.0)
+        glue = ctx.get_driver_avg_glue();
     if (glue > 0.0) {
         m_glue_fast = (1.0 - 0.10) * m_glue_fast + 0.10 * glue;
         m_glue_slow = (1.0 - 0.01) * m_glue_slow + 0.01 * glue;
@@ -261,38 +253,77 @@ double solver_driver::compute_health(context& ctx) {
         s2 = std::max(0.0, std::min(1.0, 1.0 - m_glue_fast / m_glue_slow));
     }
 
-    // s3: new_variable_rate -- directly from dynamics.
-    double s3 = std::max(0.0, std::min(1.0, static_cast<double>(d.new_variable_rate)));
+    // s3: new_variable_rate -- from landscape when active, else from raw counter ratio.
+    double s3;
+    if (landscape_active) {
+        s3 = std::max(0.0, std::min(1.0, static_cast<double>(d.new_variable_rate)));
+    } else {
+        // Proxy: conflict-to-decision ratio as exploration indicator.
+        // Low ratio = lots of decisions without conflicts = exploring new territory.
+        // High ratio = productive. We want s3 high when exploring.
+        s3 = std::max(0.0, std::min(1.0, 1.0 - raw_rate / 0.2));
+    }
 
     // s4: stress_trend -- decreasing stress Gini = positive health.
-    double s4 = std::max(0.0, std::min(1.0, -static_cast<double>(d.stress_gini_trend) * 10.0));
+    double s4;
+    if (landscape_active) {
+        s4 = std::max(0.0, std::min(1.0, -static_cast<double>(d.stress_gini_trend) * 10.0));
+    } else {
+        s4 = 0.5;  // neutral when no stress data
+    }
 
-    // s5: trail_stability -- directly from dynamics.
-    double s5 = std::max(0.0, std::min(1.0, static_cast<double>(d.trail_stability)));
+    // s5: trail_stability -- from landscape when active, else neutral.
+    double s5;
+    if (landscape_active) {
+        s5 = std::max(0.0, std::min(1.0, static_cast<double>(d.trail_stability)));
+    } else {
+        s5 = 0.5;
+    }
 
     // s6: fp_hit_rate -- directly from dynamics (0 if no QI).
     double s6 = std::max(0.0, std::min(1.0, static_cast<double>(d.fp_hit_rate)));
 
     // s7: wasted_work_rate -- lower waste = higher health.
-    // At waste=50, health contribution = 0. At waste=0, contribution = 1.
-    double wasted = static_cast<double>(d.wasted_work_rate);
+    // Use always-on driver_avg_backjump which tracks absolute backjump distance
+    // on every conflict. Falls back to landscape wasted_work_rate when available.
+    double wasted;
+    if (landscape_active && d.wasted_work_rate > 0.0f) {
+        wasted = static_cast<double>(d.wasted_work_rate);
+    } else {
+        // driver_avg_backjump is an EMA of (conflict_lvl - new_lvl).
+        // Normalize: 50 levels of backjump = max waste.
+        wasted = ctx.get_driver_avg_backjump();
+    }
     double s7 = std::max(0.0, std::min(1.0, 1.0 - wasted / 50.0));
 
-    // s8: conflict_novelty -- directly from dynamics.
-    double s8 = std::max(0.0, std::min(1.0, static_cast<double>(d.conflict_novelty)));
+    // s8: conflict_novelty -- from landscape when active, else neutral.
+    double s8;
+    if (landscape_active) {
+        s8 = std::max(0.0, std::min(1.0, static_cast<double>(d.conflict_novelty)));
+    } else {
+        s8 = 0.5;
+    }
 
     // Determine which signals are active (N/A signals get weight redistributed).
     bool has_qi   = (d.qi_instance_rate > 0.0f || d.fp_hit_rate > 0.0f);
     bool has_conf = (m_total_conflicts > 10);
 
     // Blind spot #4: shallow backjump (theory bounce) correction.
-    // avg_backjump_frac = (conflict_lvl - backjump_lvl) / conflict_lvl.
-    // When < 0.05, conflicts only backjump 1-2 levels out of hundreds,
-    // meaning the solver is bouncing off a wall. The high conflict rate
-    // inflates s1 (conflict_rate signal), masking that the conflicts are
-    // useless. Halve s1 so shallow-conflict queries don't appear healthy.
-    if (has_conf && d.avg_backjump_frac < 0.05f && d.avg_backjump_frac > 0.0f) {
-        s1 *= 0.5;
+    // Use always-on signal when landscape is inactive.
+    if (has_conf) {
+        double avg_bj_frac;
+        if (landscape_active && d.avg_backjump_frac > 0.0f) {
+            avg_bj_frac = static_cast<double>(d.avg_backjump_frac);
+        } else {
+            // Approximate: backjump / scope_lvl. Use avg_backjump / avg decisions-per-conflict.
+            // Rough proxy: if avg backjump < 2, it's shallow.
+            avg_bj_frac = (ctx.get_driver_avg_backjump() > 0.0 && decisions > 0)
+                ? std::min(ctx.get_driver_avg_backjump() / std::max(static_cast<double>(m_total_decisions) / std::max(m_total_conflicts, 1u), 1.0), 1.0)
+                : 0.5;
+        }
+        if (avg_bj_frac < 0.05 && avg_bj_frac > 0.0) {
+            s1 *= 0.5;
+        }
     }
 
     double w1 = W1, w2 = W2, w3 = W3, w4 = W4;
@@ -364,9 +395,12 @@ void solver_driver::spsa_step(double H, context& ctx) {
         // Blind spot #3: freeze QI parameters when no QI is active.
         // Indices 0,1 = qi_eager_threshold, qi_surprisal_scale.
         // Give QI 10 driver cycles to appear before freezing.
+        // Use both landscape and the always-on QI insert counter so this
+        // works even before landscape collection starts.
         {
             auto const& d = ctx.get_landscape().dynamics();
             bool has_qi = (d.qi_instance_rate > 0.0f || d.fp_hit_rate > 0.0f ||
+                           m_qi_inserts_at_notify > 0 ||
                            m_update_count < 10);
             if (!has_qi) {
                 m_delta[0] = 0;  // no perturbation for qi_eager

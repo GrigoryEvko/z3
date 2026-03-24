@@ -3941,6 +3941,8 @@ namespace smt {
         m_consecutive_stuck            = 0;
         m_polarity.reset();
         m_avg_backjump_ratio           = 0.0;
+        m_driver_avg_backjump          = 0.0;
+        m_driver_avg_glue              = 0.0;
         m_final_checks_since_restart   = 0;
         // Restore relevancy if G4 retry changed it (prevents permanent mutation across check-sat calls)
         if (m_relevancy_retried) {
@@ -4535,6 +4537,15 @@ namespace smt {
                         if (nv > 0) m_landscape.ensure_var_profiles(nv);
                         if (nc > 0) m_landscape.ensure_clause_profiles(nc);
                     }
+                    // QI-waste fast trigger: if QI is flooding with almost no conflicts,
+                    // force an immediate driver update even if the normal interval hasn't
+                    // elapsed. This catches short UFLIA queries where 10K+ QI instances
+                    // are created but the solver only has ~50 conflicts.
+                    if (m_qmanager && !m_driver.is_frozen() &&
+                        m_driver.qi_flood_detected()) {
+                        m_driver.update(*this);
+                        m_driver.reset_interval();
+                    }
                 }
 
                 SASSERT(m_scope_lvl >= m_base_lvl);
@@ -4598,7 +4609,8 @@ namespace smt {
                     m_driver.inc_decisions();
                     if (m_qmanager)
                         m_driver.notify_qi_inserts(m_qmanager->get_qi_velocity_inserts());
-                    if (m_driver.should_update()) {
+                    if (m_driver.should_update() ||
+                        (!m_driver.is_frozen() && m_driver.qi_flood_detected())) {
                         m_driver.update(*this);
                         m_driver.reset_interval();
                     }
@@ -4858,6 +4870,17 @@ namespace smt {
                 double ratio = static_cast<double>(conflict_lvl - new_lvl) / static_cast<double>(conflict_lvl);
                 static constexpr double BJ_ALPHA = 0.05;
                 m_avg_backjump_ratio = BJ_ALPHA * ratio + (1.0 - BJ_ALPHA) * m_avg_backjump_ratio;
+            }
+
+            // Always-on driver signals: lightweight EMAs for the solver driver.
+            // NOT gated by m_landscape_collecting so the driver has meaningful
+            // health data even on short UFLIA queries with <1000 conflicts.
+            {
+                static constexpr double DA = 0.05;  // EMA alpha
+                double bj_dist = static_cast<double>(conflict_lvl > new_lvl ? conflict_lvl - new_lvl : 0);
+                m_driver_avg_backjump = DA * bj_dist + (1.0 - DA) * m_driver_avg_backjump;
+                // Clause size as glue proxy (smt::context has no LBD computation).
+                m_driver_avg_glue = DA * static_cast<double>(num_lits) + (1.0 - DA) * m_driver_avg_glue;
             }
 
             // --- Efficiency signals (E1-E4) for landscape map ---
