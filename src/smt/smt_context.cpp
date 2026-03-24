@@ -4382,8 +4382,10 @@ namespace smt {
             // Landscape dynamics at restart (gated by auto_tune).
             if (m_fparams.m_auto_tune) {
                 m_landscape.dynamics_on_restart(m_num_conflicts_since_restart);
-                m_landscape.dynamics_compute_activity_gini(
-                    m_activity.data(), get_num_bool_vars());
+                // A4: Activity Gini — every 5th restart (O(N) scan).
+                if (m_num_restarts % 5 == 0)
+                    m_landscape.dynamics_compute_activity_gini(
+                        m_activity.data(), get_num_bool_vars());
                 // C1: Trail stability
                 unsigned nv = get_num_bool_vars();
                 unsigned step = (nv > 4096) ? (nv / 4096) : 1;
