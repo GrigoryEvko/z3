@@ -337,6 +337,22 @@ namespace smt {
         // Track global insert count for velocity ratio computation.
         m_qi_velocity_inserts++;
 
+        // Blind spot #5: dump landscape every 50000 QI inserts for tracing.
+        // During QI floods, the solver makes no decisions and few conflicts,
+        // so the normal landscape dump (every 250 conflicts) never fires.
+        //
+        // The driver update (blind spot #1) is handled separately via
+        // QI_INSERT_INTERVAL in should_update(), piggybacked on the next
+        // decision/conflict boundary.
+        if (m_qi_velocity_inserts % 50000 == 0) {
+            if (m_context.get_adaptive_log()) {
+                m_context.get_landscape().dump_to_alog(
+                    m_context.get_adaptive_log(),
+                    m_context.get_num_conflicts(),
+                    m_context.get_num_bool_vars());
+            }
+        }
+
         float cost             = get_cost(q, pat, generation, min_top_generation, max_top_generation);
         float const base_cost  = cost;  // snapshot for inflation cap
         // Relevancy-guided QI gating: penalize bindings with low soft-relevancy.

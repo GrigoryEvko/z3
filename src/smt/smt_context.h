@@ -738,6 +738,12 @@ namespace smt {
         solver_driver & get_driver() { return m_driver; }
         solver_driver const & get_driver() const { return m_driver; }
 
+        // Blind spot #1: QI insert count notification for the driver.
+        // Instead of triggering the driver directly from QI inserts (which
+        // changes parameters mid-batch and breaks delicate queries), the QI
+        // insert count is piggybacked on decision/conflict paths. The driver's
+        // should_update() checks QI inserts as a third trigger condition.
+
         // Quantifier manager reference (for driver to set qi_eager_threshold).
         quantifier_manager & get_qmanager_ref() { return *m_qmanager; }
 

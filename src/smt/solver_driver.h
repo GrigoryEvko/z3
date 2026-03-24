@@ -73,15 +73,30 @@ public:
     // Counter accessors for integration into bounded_search().
     void inc_decisions()  { m_decisions_since_update++; m_total_decisions++; }
     void inc_conflicts()  { m_conflicts_since_update++; m_total_conflicts++; }
+
+    // Notify the driver of QI insert count for blind spot #1 detection.
+    // Called from bounded_search conflict/decision paths so the driver
+    // can trigger when QI floods with no decisions/conflicts.
+    void notify_qi_inserts(unsigned total_inserts) {
+        m_qi_inserts_at_notify = total_inserts;
+    }
+
     bool should_update() const {
         return m_decisions_since_update >= DECISION_INTERVAL ||
                m_conflicts_since_update >= CONFLICT_INTERVAL;
+    }
+
+    // QI flood awareness (blind spot #1): true when substantial QI
+    // activity has occurred since the last update.
+    bool qi_flood_detected() const {
+        return (m_qi_inserts_at_notify - m_qi_inserts_at_last_update) >= QI_INSERT_INTERVAL;
     }
 
     // Reset interval counters after an update.
     void reset_interval() {
         m_decisions_since_update = 0;
         m_conflicts_since_update = 0;
+        m_qi_inserts_at_last_update = m_qi_inserts_at_notify;
     }
 
 private:
@@ -90,6 +105,10 @@ private:
     // Update intervals.
     static constexpr unsigned DECISION_INTERVAL = 5000;
     static constexpr unsigned CONFLICT_INTERVAL = 250;
+    // QI insert interval for blind spot #1: high enough that moderate-QI
+    // queries (100K inserts) only trigger ~2x, avoiding over-perturbation.
+    // True QI floods (3.6M inserts) still get ~72 triggers.
+    static constexpr unsigned QI_INSERT_INTERVAL = 50000;
 
     // Warmup: don't activate SPSA before 25000 decisions (5 portfolio cycles).
     static constexpr unsigned WARMUP_DECISIONS = 25000;
@@ -120,10 +139,12 @@ private:
     static constexpr double W7 = 0.20;  // wasted_work_rate
     static constexpr double W8 = 0.10;  // conflict_novelty
 
-    // Safety freeze: if H > 0.5 for 3 consecutive, freeze parameters.
+    // Safety freeze: if H > FREEZE_THRESH for FREEZE_STREAK consecutive
+    // measurements, freeze parameters to protect productive queries.
     static constexpr unsigned FREEZE_STREAK  = 3;
     static constexpr double   FREEZE_THRESH  = 0.5;
     static constexpr double   UNFREEZE_THRESH = 0.3;
+
     static constexpr unsigned UNFREEZE_CHECK  = 50;  // re-check every 50 updates
 
     // Parameter metadata (compile-time constant after init).
@@ -169,6 +190,8 @@ private:
     unsigned m_spsa_step_count;    // incremented on each GRADIENT step (for decay)
     unsigned m_decisions_since_update;
     unsigned m_conflicts_since_update;
+    unsigned m_qi_inserts_at_notify;      // latest QI insert count from notify
+    unsigned m_qi_inserts_at_last_update; // QI insert count at last driver update
 
     // Safety freeze state.
     bool     m_frozen;

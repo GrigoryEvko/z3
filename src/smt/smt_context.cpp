@@ -4523,8 +4523,12 @@ namespace smt {
                     return l_false;
 
                 // Solver driver: count conflicts for update scheduling.
+                // Also notify QI insert count so the driver triggers during
+                // QI floods even if decisions/conflicts are rare (blind spot #1).
                 if (m_fparams.m_auto_tune) {
                     m_driver.inc_conflicts();
+                    if (m_qmanager)
+                        m_driver.notify_qi_inserts(m_qmanager->get_qi_velocity_inserts());
                 }
 
                 SASSERT(m_scope_lvl >= m_base_lvl);
@@ -4583,8 +4587,11 @@ namespace smt {
                 }
             } else {
                 // Solver driver: count decisions and check update trigger.
+                // Also notify QI insert count (blind spot #1).
                 if (m_fparams.m_auto_tune) {
                     m_driver.inc_decisions();
+                    if (m_qmanager)
+                        m_driver.notify_qi_inserts(m_qmanager->get_qi_velocity_inserts());
                     if (m_driver.should_update()) {
                         m_driver.update(*this);
                         m_driver.reset_interval();

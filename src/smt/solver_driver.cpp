@@ -92,6 +92,8 @@ void solver_driver::reset_to_defaults() {
     m_spsa_step_count       = 0;
     m_decisions_since_update = 0;
     m_conflicts_since_update = 0;
+    m_qi_inserts_at_notify      = 0;
+    m_qi_inserts_at_last_update = 0;
 
     // Safety.
     m_frozen           = false;
@@ -173,6 +175,8 @@ void solver_driver::init_search(context& ctx) {
     m_spsa_step_count       = 0;
     m_decisions_since_update = 0;
     m_conflicts_since_update = 0;
+    m_qi_inserts_at_notify      = 0;
+    m_qi_inserts_at_last_update = 0;
     m_frozen           = false;
     m_consecutive_good = 0;
     m_total_decisions  = 0;
@@ -271,6 +275,16 @@ double solver_driver::compute_health(context& ctx) {
     bool has_qi   = (d.qi_instance_rate > 0.0f || d.fp_hit_rate > 0.0f);
     bool has_conf = (m_total_conflicts > 10);
 
+    // Blind spot #4: shallow backjump (theory bounce) correction.
+    // avg_backjump_frac = (conflict_lvl - backjump_lvl) / conflict_lvl.
+    // When < 0.05, conflicts only backjump 1-2 levels out of hundreds,
+    // meaning the solver is bouncing off a wall. The high conflict rate
+    // inflates s1 (conflict_rate signal), masking that the conflicts are
+    // useless. Halve s1 so shallow-conflict queries don't appear healthy.
+    if (has_conf && d.avg_backjump_frac < 0.05f && d.avg_backjump_frac > 0.0f) {
+        s1 *= 0.5;
+    }
+
     double w1 = W1, w2 = W2, w3 = W3, w4 = W4;
     double w5 = W5, w6 = W6, w7 = W7, w8 = W8;
 
@@ -332,10 +346,23 @@ void solver_driver::update_temperature(double H) {
 // SPSA gradient estimation (design doc Section 5)
 // ---------------------------------------------------------------
 
-void solver_driver::spsa_step(double H, context& /*ctx*/) {
+void solver_driver::spsa_step(double H, context& ctx) {
     if (m_update_count % 2 == 0) {
         // PERTURBATION STEP: apply random perturbation, record health.
         generate_perturbation();
+
+        // Blind spot #3: freeze QI parameters when no QI is active.
+        // Indices 0,1 = qi_eager_threshold, qi_surprisal_scale.
+        // Give QI 10 driver cycles to appear before freezing.
+        {
+            auto const& d = ctx.get_landscape().dynamics();
+            bool has_qi = (d.qi_instance_rate > 0.0f || d.fp_hit_rate > 0.0f ||
+                           m_update_count < 10);
+            if (!has_qi) {
+                m_delta[0] = 0;  // no perturbation for qi_eager
+                m_delta[1] = 0;  // no perturbation for qi_surprisal
+            }
+        }
 
         double c_k = PERTURB_C / std::pow(1.0 + m_spsa_step_count, C_DECAY);
 
@@ -360,6 +387,10 @@ void solver_driver::spsa_step(double H, context& /*ctx*/) {
         double c_k = PERTURB_C / std::pow(1.0 + m_spsa_step_count, C_DECAY);
 
         for (unsigned j = 0; j < N_PARAMS; j++) {
+            // Skip frozen parameters (delta[j]==0 from blind spot #3).
+            // Without this guard, the gradient estimate blows up (dH/1e-10).
+            if (m_delta[j] == 0) continue;
+
             // SPSA gradient estimate: dH / (2 * c_k * delta[j]).
             // delta[j] is +/-1, so division is exact (no near-zero denominator).
             double g = dH / (2.0 * c_k * m_delta[j] + 1e-10);
