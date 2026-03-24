@@ -1421,12 +1421,6 @@ namespace smt {
         bool               m_relevancy_retried   { false };
         unsigned           m_saved_relevancy_lvl { 2 };     //!< saved before G4 retry, restored in init_search
 
-        // G5: adaptive QI eager threshold reduction for high-waste queries.
-        // When inserts-per-QI-conflict exceeds 10,000, halve the eager threshold
-        // (floor 3.0). One-shot per search to avoid oscillation.
-        bool               m_eager_reduced        { false };
-        double             m_saved_eager_threshold { 10.0 };  //!< saved before G5, restored in init_search
-
         // Fallback cascade (C1-C5)
         fallback_cascade   m_fallback_cascade;             //!< escalation state for stuck solver
         void               fallback_escalate();            //!< advance cascade level and apply config

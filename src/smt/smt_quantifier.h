@@ -127,9 +127,6 @@ namespace smt {
         // QI velocity insert counter (for SPSA causal signal A1).
         unsigned get_qi_velocity_inserts() const;
 
-        // Per-search QI-attributed conflicts (delta since init_search_eh).
-        unsigned get_qi_conflicts_delta() const;
-
         // E-graph growth rate EMA (for SPSA causal signal C3).
         float get_egraph_growth_rate_ema() const;
 

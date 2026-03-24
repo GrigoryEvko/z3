@@ -170,7 +170,6 @@ namespace smt {
         unsigned                      m_qi_velocity_inserts = 0;
         unsigned                      m_qi_velocity_conflicts_base = 0; // qi_conflicts at search start
         bool                          m_qi_bankrupt = false;
-        bool                          m_eager_threshold_reduced = false; // G5: one-shot per search
 
         void init_parser_vars();
         q::quantifier_stat * set_values(quantifier * q, app * pat, unsigned generation, unsigned min_top_generation, unsigned max_top_generation, float cost);
@@ -211,8 +210,6 @@ namespace smt {
         void on_conflict_failure_decay() { m_failure_filter.on_conflict(); }
         // SPSA causal signal accessors
         unsigned get_qi_velocity_inserts() const { return m_qi_velocity_inserts; }
-        // Per-search QI-attributed conflicts (delta since init_search_eh).
-        unsigned get_qi_conflicts_delta() const { return m_stats.m_num_qi_conflicts - m_qi_velocity_conflicts_base; }
         float    get_egraph_growth_rate_ema() const { return m_egraph_metrics.m_growth_rate_ema; }
 
         // Solver driver: direct write to the cached eager threshold.
