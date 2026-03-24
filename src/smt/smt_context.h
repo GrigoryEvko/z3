@@ -1417,9 +1417,20 @@ namespace smt {
         // Stuck detection (B7-B9)
         unsigned           m_consecutive_stuck   { 0 };  //!< consecutive low-velocity restarts
 
-        // G4: relevancy retry for short queries returning unknown
+        // G4: retry cascade for queries returning unknown (incomplete quantifiers).
+        // Step 1: disable relevancy filtering → exposes all E-graph atoms to QI matching.
+        // Step 2: enable MBQI → model-based instance generation finds what E-matching missed.
+        // Budget: each retry gets 15x the original (pre-retry) search cost.
+        // Retry flags persist across scopes: once a strategy has been tried and
+        // failed, subsequent scopes in the same file don't retry (prevents storms
+        // on multi-check-sat files like RBMap/RBSet).
         bool               m_relevancy_retried   { false };
+        bool               m_mbqi_retried        { false };
         unsigned           m_saved_relevancy_lvl { 2 };     //!< saved before G4 retry, restored in init_search
+        bool               m_saved_mbqi          { false };  //!< saved before G4 MBQI retry
+        uint64_t           m_search_rlimit_start { 0 };     //!< rlimit count at search() entry
+        uint64_t           m_g4_base_cost        { 0 };     //!< original search cost before first G4 retry
+        bool               m_g4_retry_active     { false };  //!< true during a G4 budgeted retry
 
         // Fallback cascade (C1-C5)
         fallback_cascade   m_fallback_cascade;             //!< escalation state for stuck solver
