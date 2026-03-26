@@ -181,6 +181,12 @@ private:
     double m_glue_fast;    // fast glue EMA (alpha = 0.1)
     double m_glue_slow;    // slow glue EMA (alpha = 0.01)
 
+    // Conflict velocity EMAs for deceleration detection.
+    // Tracks conflicts per driver update interval. When fast drops below
+    // slow, the solver is decelerating (running out of productive paths).
+    double m_conflict_velocity_fast;  // EMA alpha = 0.15
+    double m_conflict_velocity_slow;  // EMA alpha = 0.02
+
     // Baseline values captured from solver at init_search time.
     // The driver's scale params (restart_margin_scale etc.) multiply these baselines.
     double m_base_restart_agility;  // from fparams.m_restart_agility_threshold

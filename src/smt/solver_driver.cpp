@@ -77,6 +77,10 @@ void solver_driver::reset_to_defaults() {
     m_glue_fast = 0.0;
     m_glue_slow = 0.0;
 
+    // Conflict velocity EMAs.
+    m_conflict_velocity_fast = 0.0;
+    m_conflict_velocity_slow = 0.0;
+
     // Baselines (will be properly captured at init_search).
     m_base_restart_agility = 0.18;
     m_base_inv_decay       = 1.052;
@@ -236,6 +240,17 @@ double solver_driver::compute_health(context& ctx) {
     auto const& d = ctx.get_landscape().dynamics();
     unsigned decisions = std::max(m_total_decisions, 1u);
     bool landscape_active = ctx.is_landscape_collecting();
+
+    // Update conflict velocity EMAs (conflicts per driver interval).
+    // Tracks whether the solver is decelerating. Reserved for future use —
+    // the deceleration penalty was tested but caused 8% CPU overhead from
+    // premature unfreeze on semi-productive queries. Kept as always-on
+    // diagnostic signal for now.
+    {
+        double velocity = static_cast<double>(m_conflicts_since_update);
+        m_conflict_velocity_fast = 0.85 * m_conflict_velocity_fast + 0.15 * velocity;
+        m_conflict_velocity_slow = 0.98 * m_conflict_velocity_slow + 0.02 * velocity;
+    }
 
     // s1: conflict_rate -- conflicts per decision, normalized so 0.1 = max health.
     double raw_rate = static_cast<double>(m_total_conflicts) / static_cast<double>(decisions);
@@ -440,9 +455,6 @@ double solver_driver::compute_health(context& ctx) {
     }
 
     // Blind spot #9: QI bankruptcy override.
-    // When the velocity gate has already declared bankruptcy (inserts/conflicts > 20000),
-    // the QI subsystem is provably unproductive. Force health to near-zero to guarantee
-    // the driver unfreezes and starts aggressive parameter exploration.
     if (ctx.has_quantifiers() && ctx.get_qmanager_ref().is_qi_bankrupt()) {
         H = std::min(H, 0.02);
     }
@@ -798,7 +810,9 @@ void solver_driver::dump_to_alog(FILE* alog) const {
         .d("gc_aggr", m_params.gc_aggressiveness)
         .u("qi_ins", m_qi_inserts_at_notify)
         .u("tot_confl", m_total_conflicts)
-        .u("tot_dec", m_total_decisions);
+        .u("tot_dec", m_total_decisions)
+        .d("cv_fast", m_conflict_velocity_fast)
+        .d("cv_slow", m_conflict_velocity_slow);
 }
 
 } // namespace smt
