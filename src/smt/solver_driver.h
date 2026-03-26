@@ -199,6 +199,8 @@ private:
     unsigned m_conflicts_since_update;
     unsigned m_qi_inserts_at_notify;      // latest QI insert count from notify
     unsigned m_qi_inserts_at_last_update; // QI insert count at last driver update
+    unsigned m_fp_hits_at_last_update;    // FP hit snapshot for always-on hit rate
+    unsigned m_fp_misses_at_last_update;  // FP miss snapshot for always-on hit rate
 
     // Safety freeze state.
     bool     m_frozen;

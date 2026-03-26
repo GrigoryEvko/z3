@@ -94,6 +94,8 @@ void solver_driver::reset_to_defaults() {
     m_conflicts_since_update = 0;
     m_qi_inserts_at_notify      = 0;
     m_qi_inserts_at_last_update = 0;
+    m_fp_hits_at_last_update    = 0;
+    m_fp_misses_at_last_update  = 0;
 
     // Safety.
     m_frozen           = false;
@@ -174,6 +176,8 @@ void solver_driver::init_search(context& ctx) {
     m_conflicts_since_update = 0;
     m_qi_inserts_at_notify      = 0;
     m_qi_inserts_at_last_update = 0;
+    m_fp_hits_at_last_update    = 0;
+    m_fp_misses_at_last_update  = 0;
     m_frozen           = false;
     m_consecutive_good = 0;
     m_total_decisions  = 0;
@@ -280,8 +284,22 @@ double solver_driver::compute_health(context& ctx) {
         s5 = 0.5;
     }
 
-    // s6: fp_hit_rate -- directly from dynamics (0 if no QI).
-    double s6 = std::max(0.0, std::min(1.0, static_cast<double>(d.fp_hit_rate)));
+    // s6: fp_hit_rate -- from landscape when active, direct from qmanager otherwise.
+    double s6;
+    if (landscape_active && d.fp_hit_rate > 0.0f) {
+        s6 = std::max(0.0, std::min(1.0, static_cast<double>(d.fp_hit_rate)));
+    } else if (ctx.has_quantifiers()) {
+        // Always-on: bypass landscape, read raw FP counters directly.
+        unsigned fp_h = ctx.get_qmanager_ref().get_fp_hit_total();
+        unsigned fp_m = ctx.get_qmanager_ref().get_fp_miss_total();
+        unsigned dh = fp_h - m_fp_hits_at_last_update;
+        unsigned dm = fp_m - m_fp_misses_at_last_update;
+        m_fp_hits_at_last_update = fp_h;
+        m_fp_misses_at_last_update = fp_m;
+        s6 = (dh + dm > 0) ? static_cast<double>(dh) / static_cast<double>(dh + dm) : 0.5;
+    } else {
+        s6 = 0.5;  // neutral when no QI
+    }
 
     // s7: wasted_work_rate -- lower waste = higher health.
     // Use always-on driver_avg_backjump which tracks absolute backjump distance
@@ -371,6 +389,19 @@ double solver_driver::compute_health(context& ctx) {
         if (qi_ratio > 5000.0) {
             double severity = std::min((qi_ratio - 5000.0) / 45000.0, 1.0);
             double penalty = severity * 0.8;
+
+            // Blind spot #7: E-graph growth amplifier.
+            // Read qi_egraph_growth_rate_ema directly (bypasses landscape gate).
+            // High growth with zero conflicts = runaway term generation.
+            // Amplifies the flood penalty by up to 25% when growth rate > 5%.
+            if (ctx.has_quantifiers()) {
+                float eg = ctx.get_qmanager_ref().get_egraph_growth_rate_ema();
+                if (eg > 0.05f) {
+                    double eg_boost = std::min(static_cast<double>(eg - 0.05f) * 5.0, 0.25);
+                    penalty = std::min(penalty + eg_boost, 1.0);
+                }
+            }
+
             H -= penalty;
         }
     }
