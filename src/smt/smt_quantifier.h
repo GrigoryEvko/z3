@@ -124,6 +124,12 @@ namespace smt {
         unsigned get_fp_hit_total() const;
         unsigned get_fp_miss_total() const;
 
+        // MAM match total (for driver MAM-to-conflict ratio signal).
+        unsigned get_mam_match_total() const;
+
+        // QI bankruptcy flag (velocity gate declared inserts/conflicts > 20000).
+        bool is_qi_bankrupt() const;
+
         // QI velocity insert counter (for SPSA causal signal A1).
         unsigned get_qi_velocity_inserts() const;
 

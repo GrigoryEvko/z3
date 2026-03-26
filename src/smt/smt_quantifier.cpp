@@ -842,6 +842,14 @@ namespace smt {
         return m_imp->m_fp_miss_total;
     }
 
+    unsigned quantifier_manager::get_mam_match_total() const {
+        return m_imp->m_mam_match_total;
+    }
+
+    bool quantifier_manager::is_qi_bankrupt() const {
+        return m_imp->m_qi_queue.is_qi_bankrupt();
+    }
+
     unsigned quantifier_manager::get_qi_velocity_inserts() const {
         return m_imp->m_qi_queue.get_qi_velocity_inserts();
     }

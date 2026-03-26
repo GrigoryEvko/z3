@@ -96,6 +96,7 @@ void solver_driver::reset_to_defaults() {
     m_qi_inserts_at_last_update = 0;
     m_fp_hits_at_last_update    = 0;
     m_fp_misses_at_last_update  = 0;
+    m_mam_matches_at_last_update = 0;
 
     // Safety.
     m_frozen           = false;
@@ -390,20 +391,38 @@ double solver_driver::compute_health(context& ctx) {
             double severity = std::min((qi_ratio - 5000.0) / 45000.0, 1.0);
             double penalty = severity * 0.8;
 
-            // Blind spot #7: E-graph growth amplifier.
-            // Read qi_egraph_growth_rate_ema directly (bypasses landscape gate).
-            // High growth with zero conflicts = runaway term generation.
-            // Amplifies the flood penalty by up to 25% when growth rate > 5%.
             if (ctx.has_quantifiers()) {
+                // Blind spot #7: E-graph growth amplifier.
+                // High growth with zero conflicts = runaway term generation.
                 float eg = ctx.get_qmanager_ref().get_egraph_growth_rate_ema();
                 if (eg > 0.05f) {
                     double eg_boost = std::min(static_cast<double>(eg - 0.05f) * 5.0, 0.25);
                     penalty = std::min(penalty + eg_boost, 1.0);
                 }
+
+                // Blind spot #8: MAM match-to-conflict ratio.
+                // Measures how many MAM pattern matches produce each conflict.
+                // Healthy: ~20-50 matches/conflict. Flood: 100K+ matches/conflict.
+                unsigned mam = ctx.get_qmanager_ref().get_mam_match_total();
+                unsigned dm = mam - m_mam_matches_at_last_update;
+                m_mam_matches_at_last_update = mam;
+                if (dm > 1000 && m_total_conflicts < 10) {
+                    // MAM burning CPU with no useful conflicts — boost penalty.
+                    double mam_boost = std::min(static_cast<double>(dm) / 100000.0, 0.15);
+                    penalty = std::min(penalty + mam_boost, 1.0);
+                }
             }
 
             H -= penalty;
         }
+    }
+
+    // Blind spot #9: QI bankruptcy override.
+    // When the velocity gate has already declared bankruptcy (inserts/conflicts > 20000),
+    // the QI subsystem is provably unproductive. Force health to near-zero to guarantee
+    // the driver unfreezes and starts aggressive parameter exploration.
+    if (ctx.has_quantifiers() && ctx.get_qmanager_ref().is_qi_bankrupt()) {
+        H = std::min(H, 0.02);
     }
 
     // Sanity: if health is NaN (all signals broken), return neutral.
