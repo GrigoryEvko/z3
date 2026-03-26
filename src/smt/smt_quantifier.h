@@ -130,6 +130,9 @@ namespace smt {
         // QI bankruptcy flag (velocity gate declared inserts/conflicts > 20000).
         bool is_qi_bankrupt() const;
 
+        // Fraction of QI inserts from zero-conflict quantifiers (driver signal).
+        double get_zero_conflict_insert_fraction() const;
+
         // QI velocity insert counter (for SPSA causal signal A1).
         unsigned get_qi_velocity_inserts() const;
 

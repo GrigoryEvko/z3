@@ -850,6 +850,20 @@ namespace smt {
         return m_imp->m_qi_queue.is_qi_bankrupt();
     }
 
+    double quantifier_manager::get_zero_conflict_insert_fraction() const {
+        unsigned total_inserts = 0, zero_conflict_inserts = 0;
+        for (quantifier * q : *this) {
+            auto * stat = m_imp->get_stat(q);
+            if (!stat) continue;
+            unsigned ins = stat->get_inserts_total();
+            if (ins == 0) continue;
+            total_inserts += ins;
+            if (stat->get_num_conflicts_curr_search() == 0)
+                zero_conflict_inserts += ins;
+        }
+        return (total_inserts > 0) ? static_cast<double>(zero_conflict_inserts) / static_cast<double>(total_inserts) : 0.0;
+    }
+
     unsigned quantifier_manager::get_qi_velocity_inserts() const {
         return m_imp->m_qi_queue.get_qi_velocity_inserts();
     }

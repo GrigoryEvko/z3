@@ -267,6 +267,13 @@ double solver_driver::compute_health(context& ctx) {
         // Low ratio = lots of decisions without conflicts = exploring new territory.
         // High ratio = productive. We want s3 high when exploring.
         s3 = std::max(0.0, std::min(1.0, 1.0 - raw_rate / 0.2));
+        // Correction: when QI is flooding (>10K inserts, <10 conflicts), "no conflicts"
+        // doesn't mean "exploring" — it means QI is consuming all solver time.
+        // Blend toward neutral proportional to QI insert rate.
+        if (m_qi_inserts_at_notify > 10000 && m_total_conflicts < 10) {
+            double qi_dominance = std::min(static_cast<double>(m_qi_inserts_at_notify) / 100000.0, 1.0);
+            s3 = s3 * (1.0 - qi_dominance) + 0.5 * qi_dominance;
+        }
     }
 
     // s4: stress_trend -- decreasing stress Gini = positive health.
@@ -314,6 +321,12 @@ double solver_driver::compute_health(context& ctx) {
         wasted = ctx.get_driver_avg_backjump();
     }
     double s7 = std::max(0.0, std::min(1.0, 1.0 - wasted / 50.0));
+    // Correction: when QI is flooding, "no backjumps" doesn't mean "no waste" —
+    // the waste is in QI, not in SAT backjumps. Blend toward neutral.
+    if (!landscape_active && m_qi_inserts_at_notify > 10000 && m_total_conflicts < 10) {
+        double qi_dominance = std::min(static_cast<double>(m_qi_inserts_at_notify) / 100000.0, 1.0);
+        s7 = s7 * (1.0 - qi_dominance) + 0.5 * qi_dominance;
+    }
 
     // s8: conflict_novelty -- from landscape when active, else neutral.
     double s8;
@@ -410,6 +423,15 @@ double solver_driver::compute_health(context& ctx) {
                     // MAM burning CPU with no useful conflicts — boost penalty.
                     double mam_boost = std::min(static_cast<double>(dm) / 100000.0, 0.15);
                     penalty = std::min(penalty + mam_boost, 1.0);
+                }
+
+                // Blind spot #10: zero-conflict quantifier instance fraction.
+                // When >80% of inserts come from quantifiers with 0 conflicts in
+                // the current search, the QI subsystem is provably wasting work.
+                double zcf = ctx.get_qmanager_ref().get_zero_conflict_insert_fraction();
+                if (zcf > 0.8) {
+                    double zcf_boost = (zcf - 0.8) * 0.5;  // up to 0.10 at zcf=1.0
+                    penalty = std::min(penalty + zcf_boost, 1.0);
                 }
             }
 
