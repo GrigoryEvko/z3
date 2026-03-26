@@ -513,7 +513,8 @@ namespace smt {
                 unsigned nc = stat->get_num_conflicts_curr_search();
                 if (nc == 0 && ni > 5000) {
                     double surprisal = m_qi_queue.get_surprisal_coeff() * std::log2(static_cast<double>(ni) / 5000.0);
-                    if (surprisal > m_params.m_qi_eager_threshold * 1.05) {
+                    if (surprisal > m_qi_queue.get_eager_threshold() * 1.05) {
+                        m_qi_queue.inc_fast_rejected();
                         return false;
                     }
                 }

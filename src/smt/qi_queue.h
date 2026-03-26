@@ -208,6 +208,7 @@ namespace smt {
         void record_binding_failure(uint64_t h) { m_failure_filter.record_failure(h); }
         void record_binding_success(uint64_t h) { m_failure_filter.record_success(h); }
         void on_conflict_failure_decay() { m_failure_filter.on_conflict(); }
+        void inc_fast_rejected() { m_stats.m_num_fast_rejected++; }
         // SPSA causal signal accessors
         unsigned get_qi_velocity_inserts() const { return m_qi_velocity_inserts; }
         float    get_egraph_growth_rate_ema() const { return m_egraph_metrics.m_growth_rate_ema; }
@@ -216,6 +217,7 @@ namespace smt {
         // qi_queue::setup() copies m_params.m_qi_eager_threshold once;
         // subsequent runtime changes must go through this setter.
         void set_eager_threshold(double t) { m_eager_cost_threshold = t; }
+        double get_eager_threshold() const { return m_eager_cost_threshold; }
 
         // Solver driver: scale the Bayesian surprisal coefficient.
         // Base coefficient is 2.0; the driver multiplies by qi_surprisal_scale.

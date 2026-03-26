@@ -355,6 +355,26 @@ double solver_driver::compute_health(context& ctx) {
 
     double H = w1*s1 + w2*s2 + w3*s3 + w4*s4 + w5*s5 + w6*s6 + w7*s7 + w8*s8;
 
+    // Blind spot #6: QI flood penalty.
+    // When the landscape is inactive (< 5000 conflicts), the existing signals are
+    // blind to QI waste: s3 and s7 read ~1.0 ("no conflicts = healthy"), has_qi is
+    // false (stale landscape), and H evaluates to ~0.80 during catastrophic floods.
+    //
+    // Use the always-on QI insert counter (m_qi_inserts_at_notify) to detect floods
+    // independently of the landscape. When inserts/conflicts ratio exceeds the
+    // velocity gate's BFS threshold (5000), apply a direct health penalty that
+    // scales with the severity of the flood. This does NOT change weight
+    // redistribution (which would affect all QI queries), only penalizes floods.
+    if (m_qi_inserts_at_notify > 10000) {
+        double qi_ratio = static_cast<double>(m_qi_inserts_at_notify)
+                        / std::max(static_cast<double>(m_total_conflicts), 1.0);
+        if (qi_ratio > 5000.0) {
+            double severity = std::min((qi_ratio - 5000.0) / 45000.0, 1.0);
+            double penalty = severity * 0.8;
+            H -= penalty;
+        }
+    }
+
     // Sanity: if health is NaN (all signals broken), return neutral.
     if (std::isnan(H) || std::isinf(H))
         H = 0.5;
