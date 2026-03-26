@@ -651,7 +651,15 @@ void solver_driver::update(context& ctx) {
 
     // Unfreeze check: if frozen and health drops, resume exploration.
     if (m_frozen) {
-        if (H < UNFREEZE_THRESH && m_update_count % UNFREEZE_CHECK == 0) {
+        bool qi_emergency = (ctx.has_quantifiers() &&
+                             ctx.get_qmanager_ref().is_qi_bankrupt());
+        // Fast unfreeze: when QI bankruptcy is active, the solver is provably
+        // stuck — don't wait for the 50-update cycle, unfreeze immediately.
+        if (qi_emergency && H < UNFREEZE_THRESH) {
+            m_frozen = false;
+            m_consecutive_good = 0;
+        }
+        else if (H < UNFREEZE_THRESH && m_update_count % UNFREEZE_CHECK == 0) {
             m_frozen = false;
             m_consecutive_good = 0;
         }
@@ -787,7 +795,10 @@ void solver_driver::dump_to_alog(FILE* alog) const {
         .d("phase_noise", m_params.phase_noise)
         .d("relevancy", m_params.relevancy_probability)
         .d("mbqi", m_params.mbqi_probability)
-        .d("gc_aggr", m_params.gc_aggressiveness);
+        .d("gc_aggr", m_params.gc_aggressiveness)
+        .u("qi_ins", m_qi_inserts_at_notify)
+        .u("tot_confl", m_total_conflicts)
+        .u("tot_dec", m_total_decisions);
 }
 
 } // namespace smt
