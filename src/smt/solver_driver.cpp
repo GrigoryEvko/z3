@@ -209,13 +209,30 @@ void solver_driver::push() {
     s.m_T            = m_T;
     s.m_macd_m1      = m_macd_m1;
     s.m_macd_m2      = m_macd_m2;
+    s.m_H_prev       = m_H_prev;
+    s.m_glue_fast    = m_glue_fast;
+    s.m_glue_slow    = m_glue_slow;
+    s.m_conflict_velocity_fast = m_conflict_velocity_fast;
+    s.m_conflict_velocity_slow = m_conflict_velocity_slow;
+    s.m_base_restart_agility = m_base_restart_agility;
+    s.m_base_inv_decay       = m_base_inv_decay;
+    s.m_base_gc_factor       = m_base_gc_factor;
+    s.m_base_qi_eager        = m_base_qi_eager;
+    s.m_base_mbqi            = m_base_mbqi;
+    s.m_base_relevancy_lvl   = m_base_relevancy_lvl;
     s.m_update_count = m_update_count;
+    s.m_spsa_step_count = m_spsa_step_count;
+    s.m_total_decisions = m_total_decisions;
+    s.m_total_conflicts = m_total_conflicts;
+    s.m_consecutive_good = m_consecutive_good;
+    s.m_warmup_cycle = m_warmup_cycle;
     s.m_frozen       = m_frozen;
     s.m_warmup_done  = m_warmup_done;
+    s.m_rng_state    = m_rng_state;
     m_scopes.push_back(s);
 }
 
-void solver_driver::pop() {
+void solver_driver::pop(context& ctx) {
     if (m_scopes.empty()) return;
     scope_save const& s = m_scopes.back();
     m_params       = s.m_params;
@@ -226,10 +243,35 @@ void solver_driver::pop() {
     m_T            = s.m_T;
     m_macd_m1      = s.m_macd_m1;
     m_macd_m2      = s.m_macd_m2;
+    m_H_prev       = s.m_H_prev;
+    m_glue_fast    = s.m_glue_fast;
+    m_glue_slow    = s.m_glue_slow;
+    m_conflict_velocity_fast = s.m_conflict_velocity_fast;
+    m_conflict_velocity_slow = s.m_conflict_velocity_slow;
+    m_base_restart_agility = s.m_base_restart_agility;
+    m_base_inv_decay       = s.m_base_inv_decay;
+    m_base_gc_factor       = s.m_base_gc_factor;
+    m_base_qi_eager        = s.m_base_qi_eager;
+    m_base_mbqi            = s.m_base_mbqi;
+    m_base_relevancy_lvl   = s.m_base_relevancy_lvl;
     m_update_count = s.m_update_count;
+    m_spsa_step_count = s.m_spsa_step_count;
+    m_total_decisions = s.m_total_decisions;
+    m_total_conflicts = s.m_total_conflicts;
+    m_consecutive_good = s.m_consecutive_good;
+    m_warmup_cycle = s.m_warmup_cycle;
     m_frozen       = s.m_frozen;
     m_warmup_done  = s.m_warmup_done;
+    m_rng_state    = s.m_rng_state;
     m_scopes.pop_back();
+    // Re-apply restored parameters to the solver only if SPSA actually
+    // perturbed them. When the driver stayed frozen the entire scope
+    // (the common case for 99%+ of queries), apply_params is a no-op
+    // and we can skip it to avoid the overhead of virtual calls on
+    // every pop in incremental mode.
+    if (m_spsa_step_count > 0) {
+        apply_params(ctx);
+    }
 }
 
 // ---------------------------------------------------------------

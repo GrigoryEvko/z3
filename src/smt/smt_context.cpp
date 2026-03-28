@@ -3103,6 +3103,13 @@ namespace smt {
         bs.m_lemmas_lim = m_lemmas.size();
         bs.m_inconsistent = inconsistent();
         bs.m_simp_qhead_lim = m_simp_qhead;
+        // Save strategy-critical fparams mutated during search.
+        // Only ematching/mbqi toggles affect soundness (disabling ematching
+        // permanently blocks proof search for all later scopes).
+        // Relevancy and heuristic thresholds are learned state that
+        // benefits incremental queries and is NOT restored.
+        bs.m_saved_ematching              = m_fparams.m_ematching;
+        bs.m_saved_mbqi                   = m_fparams.m_mbqi;
         m_base_lvl++;
         m_search_lvl++; // Not really necessary. But, it is useful to enforce the invariant m_search_lvl >= m_base_lvl
         SASSERT(m_base_lvl <= m_scope_lvl);
@@ -3115,7 +3122,18 @@ namespace smt {
         // Solver driver: restore state for each popped scope.
         if (m_fparams.m_auto_tune) {
             for (unsigned i = 0; i < num_scopes; i++)
-                m_driver.pop();
+                m_driver.pop(*this);
+        }
+        // Restore strategy-critical fparams to prevent soundness leaks.
+        // Must happen before pop_scope (which shrinks m_base_scopes).
+        // The target base_scope is at index (m_base_lvl - num_scopes).
+        {
+            unsigned target_lvl = (m_base_lvl > num_scopes) ? m_base_lvl - num_scopes : 0;
+            if (target_lvl < m_base_scopes.size()) {
+                base_scope const & bs = m_base_scopes[target_lvl];
+                m_fparams.m_ematching          = bs.m_saved_ematching;
+                m_fparams.m_mbqi               = bs.m_saved_mbqi;
+            }
         }
         pop_scope(num_scopes);
     }

@@ -48,7 +48,7 @@ public:
 
     // Called on push/pop for incremental lifecycle.
     void push();
-    void pop();
+    void pop(context& ctx);
 
     // Dump state to adaptive JSONL log.
     void dump_to_alog(FILE* alog) const;
@@ -220,15 +220,33 @@ private:
     bool     m_warmup_done;
 
     // Push/pop scope stack.
+    // Must save ALL state that can be modified during search, including
+    // baselines (captured from fparams at init_search) and internal EMAs.
+    // Missing fields here cause state leaks across push/pop boundaries.
     struct scope_save {
         params   m_params;
         double   m_adam_m1[N_PARAMS];
         double   m_adam_m2[N_PARAMS];
         double   m_H_fast, m_H_slow, m_T;
         double   m_macd_m1, m_macd_m2;
+        double   m_H_prev;
+        double   m_glue_fast, m_glue_slow;
+        double   m_conflict_velocity_fast, m_conflict_velocity_slow;
+        double   m_base_restart_agility;
+        double   m_base_inv_decay;
+        double   m_base_gc_factor;
+        double   m_base_qi_eager;
+        bool     m_base_mbqi;
+        unsigned m_base_relevancy_lvl;
         unsigned m_update_count;
+        unsigned m_spsa_step_count;
+        unsigned m_total_decisions;
+        unsigned m_total_conflicts;
+        unsigned m_consecutive_good;
+        unsigned m_warmup_cycle;
         bool     m_frozen;
         bool     m_warmup_done;
+        uint32_t m_rng_state;
     };
     svector<scope_save> m_scopes;
 

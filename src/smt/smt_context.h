@@ -1035,6 +1035,14 @@ namespace smt {
             unsigned                m_lemmas_lim;
             unsigned                m_simp_qhead_lim;
             unsigned                m_inconsistent;
+            // Snapshot of strategy-critical fparams mutated during search.
+            // m_ematching/m_mbqi toggles change the proving strategy entirely.
+            // Without restore, a scope that disables ematching permanently
+            // blocks it for all subsequent scopes -> soundness bug.
+            // Relevancy and heuristic thresholds are NOT restored: they
+            // represent useful learned state for incremental queries.
+            bool                    m_saved_ematching;
+            bool                    m_saved_mbqi;
         };
 
         svector<scope>              m_scopes;

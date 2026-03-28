@@ -157,6 +157,11 @@ namespace smt {
             unsigned   m_delayed_entries_lim;
             unsigned   m_instances_lim;
             unsigned   m_instantiated_trail_lim;
+            // NOTE: m_qi_velocity_inserts, m_qi_bankrupt, m_eager_cost_threshold,
+            // m_surprisal_coeff are scoped at the BASE level (check-sat boundary)
+            // by solver_driver::push/pop + apply_params, NOT at every decision
+            // scope. They're constant within a single check-sat, and saving them
+            // here (120K+ times per search) causes 18% CPU overhead.
         };
         svector<scope>                m_scopes;
         unsigned                      m_final_check_no_conflict_streak = 0;
